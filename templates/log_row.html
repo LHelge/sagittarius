@@ -4,4 +4,13 @@
   <td>{{ qtype }}</td>
   <td><span class="sgt-badge {{ outcome_class }}">{{ outcome_label }}</span></td>
   <td class="sgt-num">{{ latency_ms }} ms</td>
+  <td>
+    {% if action_kind == "allow" %}
+    <button class="sgt-btn-sm" data-on-click="@post('/log/whitelist?domain={{ qname }}', {headers: {'X-CSRF-Token': $csrf}})">Whitelist</button>
+    {% else if action_kind == "deny" %}
+    <button class="sgt-btn-sm secondary" data-on-click="@post('/log/blacklist?domain={{ qname }}', {headers: {'X-CSRF-Token': $csrf}})">Blacklist</button>
+    {% else %}
+    <span class="sgt-muted">—</span>
+    {% endif %}
+  </td>
 </tr>

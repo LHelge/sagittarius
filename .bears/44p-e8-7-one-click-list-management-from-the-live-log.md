@@ -1,10 +1,10 @@
 ---
 id: 44p
 title: E8.7 · One-click list management from the live log
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:58:08.052116418Z
-updated: 2026-05-29T07:58:08.052116418Z
+updated: 2026-05-29T21:42:24.360557971Z
 tags:
 - web
 depends_on:

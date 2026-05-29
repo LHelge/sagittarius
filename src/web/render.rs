@@ -57,8 +57,11 @@ impl std::error::Error for WebError {}
 
 impl From<crate::storage::Error> for WebError {
     fn from(e: crate::storage::Error) -> Self {
-        // Storage errors are server-side; surface generically and log detail.
-        Self::Internal(format!("storage: {e}"))
+        match e {
+            // A rejected domain is a client input problem, not a server fault.
+            crate::storage::Error::InvalidDomain(_) => Self::BadRequest(e.to_string()),
+            other => Self::Internal(format!("storage: {other}")),
+        }
     }
 }
 
@@ -101,8 +104,9 @@ fn error_page(status: StatusCode, heading: &str, detail: &str) -> String {
     )
 }
 
-/// Minimal HTML-escaping for the few interpolated strings on the error page.
-fn html_escape(s: &str) -> String {
+/// Minimal HTML-escaping for the few interpolated strings on the error page
+/// and in dynamically-built fragments (e.g. the toast).
+pub(crate) fn html_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
