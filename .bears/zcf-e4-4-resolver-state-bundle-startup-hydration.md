@@ -1,10 +1,10 @@
 ---
 id: zcf
 title: E4.4 · Resolver-state bundle + startup hydration
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:11:37.960923384Z
-updated: 2026-05-29T07:11:37.960923384Z
+updated: 2026-05-29T13:50:09.489760763Z
 tags:
 - dns
 - cache

@@ -2,10 +2,10 @@
 id: rbn
 title: E4 · Resolver state & cache
 type: epic
-status: open
+status: done
 priority: P1
 created: 2026-05-28T22:38:11.988738775Z
-updated: 2026-05-28T22:44:02.492064481Z
+updated: 2026-05-29T13:50:09.489919454Z
 tags:
 - dns
 - cache
