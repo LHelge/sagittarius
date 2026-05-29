@@ -18,7 +18,13 @@
 //! [`Outcome`] category, which E8.7 uses to show only effective one-click
 //! actions.
 
-use std::{convert::Infallible, sync::Arc};
+use std::{
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use askama::Template;
 use askama_web::WebTemplate;
@@ -135,11 +141,15 @@ struct LogRowView {
     latency_ms: u64,
     /// Lowercased "qname client" haystack for the client-side text filter.
     search: String,
-    /// One-click action offered for this row: `"allow"` (whitelist a
-    /// blocklist-blocked row), `"deny"` (blacklist a resolved row), or `""`
-    /// when no action would be effective (E8.7).
-    action_kind: &'static str,
+    /// Pre-rendered one-click action cell (the [`ActionButton`] partial), so
+    /// the seed render and the SSE stream emit identical markup.
+    action_html: String,
 }
+
+/// Monotonic id for each rendered log row, so a one-click action can target the
+/// exact button that was clicked (E8.7) — even for repeated queries to the same
+/// domain.
+static ROW_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl LogRowView {
     fn from_event(ev: &QueryEvent) -> Self {
@@ -154,6 +164,15 @@ impl LogRowView {
         } else {
             ""
         };
+        let row_id = ROW_SEQ.fetch_add(1, Ordering::Relaxed);
+        let action_html = ActionButton {
+            kind: action_kind,
+            added: false,
+            domain: qname.clone(),
+            row_id,
+        }
+        .render()
+        .unwrap_or_default();
         Self {
             client,
             qname,
@@ -163,9 +182,23 @@ impl LogRowView {
             outcome_cat: cat,
             latency_ms: ev.latency.as_millis() as u64,
             search,
-            action_kind,
+            action_html,
         }
     }
+}
+
+/// The one-click action cell for a log row.  Toggles between the add action
+/// (Whitelist / Blacklist) and the corresponding remove action once applied,
+/// patched in place by the action handlers via its `act-{row_id}` id (E8.7).
+#[derive(Template, WebTemplate)]
+#[template(path = "log_action.html")]
+pub(crate) struct ActionButton {
+    /// `"allow"`, `"deny"`, or `""` (no effective action).
+    pub kind: &'static str,
+    /// Whether the domain is now on the list (renders the remove variant).
+    pub added: bool,
+    pub domain: String,
+    pub row_id: u64,
 }
 
 /// The query-log page.
