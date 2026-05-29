@@ -1,0 +1,10 @@
+[package]
+name = "sagittarius"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, self-hosted DNS sinkhole in a single Rust binary"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/LHelge/sagittarius"
+readme = "README.md"
+
+[dependencies]
