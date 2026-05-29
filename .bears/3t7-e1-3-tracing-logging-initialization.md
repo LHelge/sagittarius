@@ -1,10 +1,10 @@
 ---
 id: 3t7
 title: E1.3 · Tracing / logging initialization
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:00:14.828714036Z
-updated: 2026-05-29T06:00:14.828714036Z
+updated: 2026-05-29T10:11:55.932146295Z
 tags:
 - foundation
 - logging
