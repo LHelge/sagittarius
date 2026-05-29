@@ -53,17 +53,29 @@ This is a conscious trade-off: **fmt + clippy on commit, tests on push**.
 - **Discuss substantial changes** by opening an issue first, before investing
   time in implementation.
 
-## SQLx offline cache
+## Database & the SQLx offline cache
 
-If you add or change a compile-time `sqlx` query (`query!` / `query_as!`) or
-add a database migration, also run:
+Sagittarius stores its configuration in a single SQLite file and uses SQLx with
+**compile-time-checked** queries (`query!` / `query_as!`). Those queries are
+verified at build time against the committed **`.sqlx/` offline cache**, so:
 
-```sh
-cargo sqlx prepare
-```
+- **Just building or testing needs no database.** `cargo build` / `cargo test`
+  use `.sqlx/` automatically; CI sets `SQLX_OFFLINE=true` to enforce this.
+- **Changing a query or a migration** means you must regenerate the cache. Point
+  SQLx at a local dev database, apply the migrations, then re-prepare:
 
-Commit the updated `.sqlx/` directory alongside your changes. Without it the
-offline build (`SQLX_OFFLINE=true`) and CI will fail.
+  ```sh
+  cp .env.example .env                 # sets DATABASE_URL=sqlite://dev.db
+  cargo sqlx database create           # one-time
+  cargo sqlx migrate run               # apply migrations/
+  cargo sqlx prepare -- --all-targets  # regenerate .sqlx/ (incl. test queries)
+  ```
+
+  Commit the updated `.sqlx/` directory alongside your change. CI's `sqlx-cache`
+  job runs `cargo sqlx prepare --check` and fails if the cache is stale.
+
+`.env` and the local `dev.db` are git-ignored; `cargo install sqlx-cli` provides
+the `cargo sqlx` subcommands.
 
 ## License
 

@@ -1,10 +1,10 @@
 ---
 id: g8v
 title: E3.7 · Offline .sqlx query cache + verified offline build
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:55:49.139262691Z
-updated: 2026-05-29T06:55:49.139262691Z
+updated: 2026-05-29T13:03:21.445604013Z
 tags:
 - storage
 - ci

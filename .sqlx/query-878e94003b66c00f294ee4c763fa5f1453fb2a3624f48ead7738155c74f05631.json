@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                id              AS \"id!\",\n                address,\n                transport,\n                tls_server_name,\n                enabled         AS \"enabled!: bool\",\n                sort_order      AS \"sort_order!\"\n            FROM upstreams\n            WHERE enabled = 1\n            ORDER BY sort_order",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "address",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "transport",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "tls_server_name",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "sort_order!",
+        "ordinal": 5,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "878e94003b66c00f294ee4c763fa5f1453fb2a3624f48ead7738155c74f05631"
+}

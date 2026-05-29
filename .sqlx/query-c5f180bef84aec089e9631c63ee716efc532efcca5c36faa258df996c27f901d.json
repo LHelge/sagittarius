@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO local_records (name, record_type, value, ttl)\n            VALUES (?, ?, ?, ?)\n            RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c5f180bef84aec089e9631c63ee716efc532efcca5c36faa258df996c27f901d"
+}

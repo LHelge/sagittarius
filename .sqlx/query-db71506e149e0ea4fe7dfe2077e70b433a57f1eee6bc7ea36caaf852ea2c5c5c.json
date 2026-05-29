@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM allowlist WHERE domain = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "db71506e149e0ea4fe7dfe2077e70b433a57f1eee6bc7ea36caaf852ea2c5c5c"
+}

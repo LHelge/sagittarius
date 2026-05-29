@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM blacklist WHERE domain = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "bed7eb64555bcd5f978f05deaddd58681e27f0247e6155e0ef4b17310183fe2e"
+}

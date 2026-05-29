@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE settings SET\n                cache_min_ttl               = ?,\n                cache_max_ttl               = ?,\n                cache_negative_ttl_cap      = ?,\n                cache_capacity              = ?,\n                blocking_mode               = ?,\n                custom_block_ipv4           = ?,\n                custom_block_ipv6           = ?,\n                blocklist_refresh_interval  = ?,\n                ui_theme                    = ?\n            WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "82980121b830c2f5d83ba6b09899348cdd936b8945f54325c1d0df658adacbbb"
+}

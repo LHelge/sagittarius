@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM upstreams WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "4c8f8f1513bcf813a6889ec1afaaa3d4dc9ceb104f48997e3da3bfd5a5b112a4"
+}

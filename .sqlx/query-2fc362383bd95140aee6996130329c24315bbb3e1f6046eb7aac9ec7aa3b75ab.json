@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                content,\n                fetched_at  AS \"fetched_at!\"\n            FROM blocklist_cache\n            WHERE blocklist_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "content",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "fetched_at!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "2fc362383bd95140aee6996130329c24315bbb3e1f6046eb7aac9ec7aa3b75ab"
+}

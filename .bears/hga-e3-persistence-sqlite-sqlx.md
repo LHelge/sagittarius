@@ -2,10 +2,10 @@
 id: hga
 title: E3 · Persistence (SQLite + sqlx)
 type: epic
-status: open
+status: done
 priority: P1
 created: 2026-05-28T22:38:06.046909766Z
-updated: 2026-05-29T06:54:55.398762930Z
+updated: 2026-05-29T13:03:21.445823390Z
 tags:
 - storage
 depends_on:
