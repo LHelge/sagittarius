@@ -1,10 +1,10 @@
 ---
 id: gv7
 title: E8.5 · Dashboard (runtime stats + blocklist size)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:57:18.517226360Z
-updated: 2026-05-29T07:57:18.517226360Z
+updated: 2026-05-29T21:31:08.547932587Z
 tags:
 - web
 depends_on:
