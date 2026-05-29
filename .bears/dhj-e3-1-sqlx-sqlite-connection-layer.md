@@ -1,10 +1,10 @@
 ---
 id: dhj
 title: E3.1 · sqlx + SQLite connection layer
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:55:01.699056225Z
-updated: 2026-05-29T06:55:01.699056225Z
+updated: 2026-05-29T12:25:09.457530721Z
 tags:
 - storage
 depends_on:
