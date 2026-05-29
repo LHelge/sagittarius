@@ -1,10 +1,10 @@
 ---
 id: 9x4
 title: E7.2 · Blocklist parsers (hosts + domain-list)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:47:12.803612913Z
-updated: 2026-05-29T07:47:12.803612913Z
+updated: 2026-05-29T19:36:46.708330016Z
 tags:
 - blocklist
 depends_on:
