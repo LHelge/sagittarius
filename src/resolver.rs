@@ -26,11 +26,13 @@
 //! | [`local`] | Authoritative local-record matcher (exact + wildcard suffix-probe, most-specific wins) |
 //! | [`matchset`] | Lock-free, hot-swappable domain name set primitive (admin blacklist, allowlist, blocklist) |
 //! | [`state`] | [`state::ResolverState`] bundle + startup hydration (SPEC §3.1, §3.2) |
+//! | [`upstream`] | Hickory-backed upstream transport clients (UDP/TCP/DoT/DoH) (SPEC §7) |
 
 pub mod cache;
 pub mod local;
 pub mod matchset;
 pub mod state;
+pub mod upstream;
 
 /// A type alias for `Result<T, Error>` in the resolver module.
 pub type Result<T> = std::result::Result<T, Error>;
