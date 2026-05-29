@@ -22,8 +22,10 @@
 //!
 //! | Submodule | Responsibility |
 //! |---|---|
+//! | [`local`] | Authoritative local-record matcher (exact + wildcard suffix-probe, most-specific wins) |
 //! | [`matchset`] | Lock-free, hot-swappable domain name set primitive (admin blacklist, allowlist, blocklist) |
 
+pub mod local;
 pub mod matchset;
 
 /// Errors that can occur during DNS resolution.
