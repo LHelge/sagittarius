@@ -11,10 +11,11 @@
 //!    different origin is rejected.
 //! 3. **Session-bound anti-CSRF token** — a token derived as
 //!    `HMAC-SHA256(server_key, session_id)` is issued to every rendered page
-//!    (via [`crate::web::Chrome`]) and must accompany authenticated mutations,
-//!    either as the `X-CSRF-Token` header (Datastar `data-headers`) or as a
-//!    `csrf_token` form field.  Because it is keyed by the session id it
-//!    rotates automatically on login.
+//!    (via [`crate::web::Chrome`], exposed as the Datastar `csrf` signal on
+//!    `<body>`) and must accompany authenticated mutations. It is accepted from
+//!    any of: the `X-CSRF-Token` header, the `csrf` field of a JSON body
+//!    (Datastar `@post` sends all signals as JSON), or a `csrf_token` urlencoded
+//!    form field. Because it is keyed by the session id it rotates on login.
 //!
 //! Pre-authentication forms (login, the first-run wizard) have no session yet,
 //! so they are protected by the `SameSite` + origin checks alone; the token
@@ -85,29 +86,39 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
     };
     let expected = state.csrf_token(&session_id);
 
-    // Token may arrive in the X-CSRF-Token header (Datastar) ...
+    // The token may arrive in the `X-CSRF-Token` header (explicit API clients) …
     if let Some(header_token) = req
         .headers()
         .get("x-csrf-token")
         .and_then(|v| v.to_str().ok())
+        && auth::ct_eq(header_token, &expected)
     {
-        return if auth::ct_eq(header_token, &expected) {
-            next.run(req).await
-        } else {
-            warn!("CSRF: rejected mutation with bad X-CSRF-Token header");
-            forbidden()
-        };
+        return next.run(req).await;
     }
 
-    // ... or as a `csrf_token` form field (buffer the body, then rebuild it).
+    // … or in the request body, which we buffer and then put back so the
+    // handler still sees it. Two body shapes carry the token:
+    //   - Datastar `@post` sends all signals as a JSON object → the `csrf`
+    //     field (signal set on <body> via data-signals-csrf),
+    //   - plain HTML forms send urlencoded → the `csrf_token` field.
+    let is_json = req
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("application/json"));
+
     let (parts, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, MAX_FORM_BODY).await {
         Ok(b) => b,
         Err(_) => return forbidden(),
     };
-    let ok = form_field(&bytes, "csrf_token").is_some_and(|t| auth::ct_eq(&t, &expected));
-    if !ok {
-        warn!("CSRF: rejected mutation with missing/invalid csrf_token field");
+    let token = if is_json {
+        json_field(&bytes, "csrf")
+    } else {
+        form_field(&bytes, "csrf_token")
+    };
+    if !token.is_some_and(|t| auth::ct_eq(&t, &expected)) {
+        warn!("CSRF: rejected mutation with missing/invalid token");
         return forbidden();
     }
     next.run(Request::from_parts(parts, Body::from(bytes)))
@@ -134,6 +145,13 @@ fn origin_ok(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
     }
     // Neither header present: rely on SameSite + the token.
     true
+}
+
+/// Extract a string field from a JSON object body by key (used for Datastar's
+/// signal payload).
+fn json_field(body: &Bytes, key: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    value.get(key)?.as_str().map(str::to_owned)
 }
 
 /// Extract a urlencoded form field value by key.
@@ -189,6 +207,19 @@ mod tests {
         let body = Bytes::from_static(b"foo=1&csrf_token=abc123&bar=2");
         assert_eq!(form_field(&body, "csrf_token").as_deref(), Some("abc123"));
         assert_eq!(form_field(&body, "missing"), None);
+    }
+
+    #[test]
+    fn json_field_extracts_token() {
+        let body = Bytes::from_static(br#"{"csrf":"abc123","f_text":"","queries":5}"#);
+        assert_eq!(json_field(&body, "csrf").as_deref(), Some("abc123"));
+        assert_eq!(json_field(&body, "missing"), None);
+        // Non-string and malformed inputs are rejected, not panicked on.
+        assert_eq!(json_field(&Bytes::from_static(b"not json"), "csrf"), None);
+        assert_eq!(
+            json_field(&Bytes::from_static(br#"{"csrf":5}"#), "csrf"),
+            None
+        );
     }
 
     #[test]

@@ -191,9 +191,11 @@ impl AppState {
             // Live query log + the shared SSE stream (log + dashboard counters).
             .route("/log", get(Self::query_log))
             .route("/events", get(Self::events))
-            // One-click list actions from the live log.
+            // One-click list actions from the live log (add + undo).
             .route("/log/whitelist", post(Self::log_whitelist))
+            .route("/log/unwhitelist", post(Self::log_unwhitelist))
             .route("/log/blacklist", post(Self::log_blacklist))
+            .route("/log/unblacklist", post(Self::log_unblacklist))
             // Manual list + local-record management (E8.8).
             .route("/blacklist", get(Self::blacklist_page))
             .route("/blacklist/add", post(Self::blacklist_add))
@@ -870,6 +872,28 @@ mod tests {
             .await
             .unwrap();
         assert!(names.contains(&dom));
+
+        // The real Datastar path: token in the JSON signal body (no header),
+        // with a row id — succeeds and returns the toggled "Remove" button.
+        let dom2: Name = "ads2.example.com".parse().unwrap();
+        let r = client
+            .post(format!(
+                "{base}/log/blacklist?domain=ads2.example.com&row=7"
+            ))
+            .header("cookie", &cookie)
+            .header("content-type", "application/json")
+            .body(format!("{{\"csrf\":\"{csrf}\",\"f_text\":\"\"}}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let body = r.text().await.unwrap();
+        assert!(
+            body.contains("id=\"act-7\""),
+            "must toggle the row's button"
+        );
+        assert!(body.contains("Remove from blacklist"));
+        assert!(app.resolver.blacklist().contains(&dom2));
 
         cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)

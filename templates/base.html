@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="/assets/app.css" />
     <script type="module" src="/assets/datastar.js"></script>
   </head>
-  <body{% if chrome.authenticated %} data-signals-csrf="'{{ chrome.csrf_token }}'"{% endif %}>
+  <body{% if chrome.authenticated %} data-signals:csrf="'{{ chrome.csrf_token }}'"{% endif %}>
     {% if chrome.show_nav %}
     <header class="sgt-topbar">
       <nav class="container-fluid">

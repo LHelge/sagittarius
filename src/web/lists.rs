@@ -34,7 +34,7 @@ use crate::{
     storage::lists::{
         AllowlistRepository, BlacklistRepository, SqliteAllowlistRepo, SqliteBlacklistRepo,
     },
-    web::{AppState, auth::CurrentUser, render::WebError},
+    web::{AppState, auth::CurrentUser, live_log::ActionButton, render::WebError},
 };
 
 impl AppState {
@@ -92,32 +92,76 @@ impl AppState {
 
     // ── One-click handlers (from the live log) ────────────────────────────────
 
-    /// `POST /log/whitelist?domain=…` — allowlist a blocklist-blocked domain.
+    /// `POST /log/whitelist?domain=…&row=…` — allowlist a blocklist-blocked domain.
     pub async fn log_whitelist(
         _user: CurrentUser,
         State(state): State<AppState>,
-        Query(q): Query<DomainQuery>,
+        Query(q): Query<ActionQuery>,
     ) -> Response {
         match state.add_to_allowlist(&q.domain).await {
-            Ok(()) => toast(format!(
-                "Added {} to the allowlist — it will resolve on the next query.",
-                q.domain
-            )),
+            Ok(()) => action_sse(
+                "allow",
+                true,
+                &q,
+                format!(
+                    "Added {} to the allowlist — it resolves on the next query.",
+                    q.domain
+                ),
+            ),
             Err(e) => e.into_response(),
         }
     }
 
-    /// `POST /log/blacklist?domain=…` — blacklist a resolved domain.
+    /// `POST /log/unwhitelist?domain=…&row=…` — remove a domain from the allowlist.
+    pub async fn log_unwhitelist(
+        _user: CurrentUser,
+        State(state): State<AppState>,
+        Query(q): Query<ActionQuery>,
+    ) -> Response {
+        match state.remove_from_allowlist(&q.domain).await {
+            Ok(()) => action_sse(
+                "allow",
+                false,
+                &q,
+                format!("Removed {} from the allowlist.", q.domain),
+            ),
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// `POST /log/blacklist?domain=…&row=…` — blacklist a resolved domain.
     pub async fn log_blacklist(
         _user: CurrentUser,
         State(state): State<AppState>,
-        Query(q): Query<DomainQuery>,
+        Query(q): Query<ActionQuery>,
     ) -> Response {
         match state.add_to_blacklist(&q.domain).await {
-            Ok(()) => toast(format!(
-                "Added {} to the blacklist — it will be blocked on the next query.",
-                q.domain
-            )),
+            Ok(()) => action_sse(
+                "deny",
+                true,
+                &q,
+                format!(
+                    "Added {} to the blacklist — it is blocked on the next query.",
+                    q.domain
+                ),
+            ),
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// `POST /log/unblacklist?domain=…&row=…` — remove a domain from the blacklist.
+    pub async fn log_unblacklist(
+        _user: CurrentUser,
+        State(state): State<AppState>,
+        Query(q): Query<ActionQuery>,
+    ) -> Response {
+        match state.remove_from_blacklist(&q.domain).await {
+            Ok(()) => action_sse(
+                "deny",
+                false,
+                &q,
+                format!("Removed {} from the blacklist.", q.domain),
+            ),
             Err(e) => e.into_response(),
         }
     }
@@ -309,21 +353,44 @@ struct ListPageTemplate {
     error: Option<String>,
 }
 
-/// `?domain=` query parameter for the one-click actions.
+/// Query parameters for the one-click actions: the target `domain` and the
+/// optional originating row id (so the clicked button can be toggled in place).
 #[derive(Debug, Deserialize)]
-pub struct DomainQuery {
+pub struct ActionQuery {
     pub domain: String,
+    pub row: Option<u64>,
 }
 
-/// Build a one-shot Datastar SSE response that morphs the `#sgt-toast` element
-/// with a success message.
-fn toast(message: String) -> Response {
-    let html = format!(
+/// Build the one-shot Datastar SSE response for a one-click list action:
+/// morph the originating row's button to its toggled state (when a `row` id is
+/// present) and show a `#sgt-toast` confirmation.
+fn action_sse(kind: &'static str, added: bool, q: &ActionQuery, message: String) -> Response {
+    let mut events: Vec<Event> = Vec::new();
+
+    if let Some(row_id) = q.row {
+        let button = ActionButton {
+            kind,
+            added,
+            domain: q.domain.clone(),
+            row_id,
+        }
+        .render()
+        .unwrap_or_default();
+        events.push(PatchElements::new(button).write_as_axum_sse_event());
+    }
+
+    let toast = format!(
         r#"<div id="sgt-toast" class="sgt-toast sgt-notice--ok" role="status">{}</div>"#,
         crate::web::render::html_escape(&message)
     );
-    let event = PatchElements::new(html).write_as_axum_sse_event();
-    Sse::new(async_stream::stream! { yield Ok::<Event, Infallible>(event); }).into_response()
+    events.push(PatchElements::new(toast).write_as_axum_sse_event());
+
+    Sse::new(async_stream::stream! {
+        for event in events {
+            yield Ok::<Event, Infallible>(event);
+        }
+    })
+    .into_response()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

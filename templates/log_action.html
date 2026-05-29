@@ -1,0 +1,15 @@
+{% if kind == "allow" %}
+  {% if added %}
+  <button id="act-{{ row_id }}" class="sgt-btn-sm secondary outline" data-on:click="@post('/log/unwhitelist?domain={{ domain }}&amp;row={{ row_id }}')">Remove from allowlist</button>
+  {% else %}
+  <button id="act-{{ row_id }}" class="sgt-btn-sm" data-on:click="@post('/log/whitelist?domain={{ domain }}&amp;row={{ row_id }}')">Whitelist</button>
+  {% endif %}
+{% else if kind == "deny" %}
+  {% if added %}
+  <button id="act-{{ row_id }}" class="sgt-btn-sm secondary outline" data-on:click="@post('/log/unblacklist?domain={{ domain }}&amp;row={{ row_id }}')">Remove from blacklist</button>
+  {% else %}
+  <button id="act-{{ row_id }}" class="sgt-btn-sm secondary" data-on:click="@post('/log/blacklist?domain={{ domain }}&amp;row={{ row_id }}')">Blacklist</button>
+  {% endif %}
+{% else %}
+<span class="sgt-muted">—</span>
+{% endif %}
