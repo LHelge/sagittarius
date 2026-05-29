@@ -2,10 +2,10 @@
 id: dqh
 title: E7 · Blocklist ingestion & refresh
 type: epic
-status: open
+status: done
 priority: P1
 created: 2026-05-28T22:38:29.954422483Z
-updated: 2026-05-28T22:44:28.236167639Z
+updated: 2026-05-29T19:56:27.875815833Z
 tags:
 - blocklist
 depends_on:
