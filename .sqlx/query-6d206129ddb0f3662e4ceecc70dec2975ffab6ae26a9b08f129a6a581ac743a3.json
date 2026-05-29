@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blocklists (url, format, enabled)\n            VALUES (?, ?, ?)\n            RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6d206129ddb0f3662e4ceecc70dec2975ffab6ae26a9b08f129a6a581ac743a3"
+}

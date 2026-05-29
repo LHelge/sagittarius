@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE upstreams SET enabled = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "9bd12fcb7c13746cc0822eb7963069bd1f4ee0df39d9b15b0ce1281d1b2a45a4"
+}

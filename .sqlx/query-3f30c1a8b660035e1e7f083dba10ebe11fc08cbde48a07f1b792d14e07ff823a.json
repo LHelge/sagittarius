@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blocklist_cache (blocklist_id, content, fetched_at)\n            VALUES (?, ?, unixepoch())\n            ON CONFLICT(blocklist_id) DO UPDATE SET\n                content    = excluded.content,\n                fetched_at = excluded.fetched_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3f30c1a8b660035e1e7f083dba10ebe11fc08cbde48a07f1b792d14e07ff823a"
+}

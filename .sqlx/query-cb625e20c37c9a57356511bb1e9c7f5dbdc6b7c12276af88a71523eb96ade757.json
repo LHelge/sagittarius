@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blacklist (domain) VALUES (?) ON CONFLICT(domain) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "cb625e20c37c9a57356511bb1e9c7f5dbdc6b7c12276af88a71523eb96ade757"
+}

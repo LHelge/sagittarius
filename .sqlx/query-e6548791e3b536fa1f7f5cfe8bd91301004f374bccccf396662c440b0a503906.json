@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                cache_min_ttl,\n                cache_max_ttl,\n                cache_negative_ttl_cap,\n                cache_capacity,\n                blocking_mode,\n                custom_block_ipv4,\n                custom_block_ipv6,\n                blocklist_refresh_interval,\n                ui_theme\n            FROM settings\n            WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "cache_min_ttl",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cache_max_ttl",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cache_negative_ttl_cap",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cache_capacity",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "blocking_mode",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "custom_block_ipv4",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "custom_block_ipv6",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "blocklist_refresh_interval",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ui_theme",
+        "ordinal": 8,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e6548791e3b536fa1f7f5cfe8bd91301004f374bccccf396662c440b0a503906"
+}

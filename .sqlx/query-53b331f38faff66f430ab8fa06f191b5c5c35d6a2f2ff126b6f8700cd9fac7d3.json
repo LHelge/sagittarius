@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM blocklists WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "53b331f38faff66f430ab8fa06f191b5c5c35d6a2f2ff126b6f8700cd9fac7d3"
+}

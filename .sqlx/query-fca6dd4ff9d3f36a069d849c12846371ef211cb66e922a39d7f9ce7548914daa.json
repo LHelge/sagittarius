@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE upstreams SET\n                address         = ?,\n                transport       = ?,\n                tls_server_name = ?,\n                enabled         = ?,\n                sort_order      = ?\n            WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "fca6dd4ff9d3f36a069d849c12846371ef211cb66e922a39d7f9ce7548914daa"
+}
