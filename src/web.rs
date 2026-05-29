@@ -24,6 +24,7 @@ pub mod dashboard;
 pub mod lists;
 pub mod live_log;
 pub mod origin;
+pub mod records;
 pub mod render;
 pub mod wizard;
 
@@ -183,6 +184,16 @@ impl AppState {
             // One-click list actions from the live log.
             .route("/log/whitelist", post(Self::log_whitelist))
             .route("/log/blacklist", post(Self::log_blacklist))
+            // Manual list + local-record management (E8.8).
+            .route("/blacklist", get(Self::blacklist_page))
+            .route("/blacklist/add", post(Self::blacklist_add))
+            .route("/blacklist/remove", post(Self::blacklist_remove))
+            .route("/allowlist", get(Self::allowlist_page))
+            .route("/allowlist/add", post(Self::allowlist_add))
+            .route("/allowlist/remove", post(Self::allowlist_remove))
+            .route("/local", get(Self::local_page))
+            .route("/local/add", post(Self::local_add))
+            .route("/local/remove", post(Self::local_remove))
             // First-run wizard (public; gated by the wizard layer below).
             .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
             // Authentication (public).
@@ -804,6 +815,108 @@ mod tests {
             .await
             .unwrap();
         assert!(names.contains(&dom));
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn management_blacklist_form_roundtrip() {
+        use crate::{
+            codec::name::Name,
+            storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+            web::auth::hash_password,
+        };
+        use reqwest::redirect::Policy;
+
+        let (_dir, state) = test_state().await;
+        SqliteAdminUserRepo::new(state.db.pool().clone())
+            .create("admin", &hash_password("s3cret").unwrap())
+            .await
+            .unwrap();
+        let app = state.clone();
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { server.serve(c2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let csrf = app.csrf_token(&session_id_of(&cookie));
+        let dom: Name = "ads.example.com".parse().unwrap();
+
+        // Add via the management form (CSRF token travels as a form field).
+        let r = client
+            .post(format!("{base}/blacklist/add"))
+            .header("cookie", &cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("csrf_token={csrf}&domain=ads.example.com"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/blacklist");
+        assert!(app.resolver.blacklist().contains(&dom));
+
+        // The page lists the entry.
+        let page = client
+            .get(format!("{base}/blacklist"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains("ads.example.com."));
+
+        // A form missing the CSRF token is rejected.
+        let r = client
+            .post(format!("{base}/blacklist/add"))
+            .header("cookie", &cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("domain=evil.example.com")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403);
+
+        // Remove round-trips the in-memory set too.
+        let r = client
+            .post(format!("{base}/blacklist/remove"))
+            .header("cookie", &cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("csrf_token={csrf}&domain=ads.example.com"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        assert!(!app.resolver.blacklist().contains(&dom));
 
         cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)

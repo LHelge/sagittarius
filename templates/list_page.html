@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · sagittarius{% endblock %}
+{% block content %}
+<hgroup>
+  <h1>{{ title }}</h1>
+  <p class="sgt-muted">{{ description }}</p>
+</hgroup>
+
+{% if let Some(error) = error %}
+<p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
+{% endif %}
+
+<form method="post" action="{{ base_path }}/add" class="sgt-actions">
+  <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+  <input type="text" name="domain" placeholder="example.com" required aria-label="Domain" />
+  <button type="submit">Add</button>
+</form>
+
+{% if entries.is_empty() %}
+<p class="sgt-muted">No entries yet.</p>
+{% else %}
+<div class="sgt-table-wrap">
+  <table>
+    <thead><tr><th>Domain</th><th class="sgt-num">{{ entries.len() }} total</th></tr></thead>
+    <tbody>
+      {% for domain in entries %}
+      <tr>
+        <td class="sgt-mono">{{ domain }}</td>
+        <td class="sgt-num">
+          <form method="post" action="{{ base_path }}/remove" class="sgt-inline-form">
+            <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+            <input type="hidden" name="domain" value="{{ domain }}" />
+            <button type="submit" class="secondary outline sgt-btn-sm">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}
