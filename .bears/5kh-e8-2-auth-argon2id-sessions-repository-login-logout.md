@@ -1,10 +1,10 @@
 ---
 id: 5kh
 title: 'E8.2 · Auth: Argon2id + sessions repository + login/logout'
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:57:04.434822048Z
-updated: 2026-05-29T08:20:54.731345768Z
+updated: 2026-05-29T21:13:35.989937742Z
 tags:
 - web
 - auth
