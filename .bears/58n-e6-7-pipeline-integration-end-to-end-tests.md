@@ -1,10 +1,10 @@
 ---
 id: 58n
 title: E6.7 · Pipeline integration + end-to-end tests
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:42:25.396829332Z
-updated: 2026-05-29T07:42:25.396829332Z
+updated: 2026-05-29T18:01:57.284483054Z
 tags:
 - pipeline
 - dns

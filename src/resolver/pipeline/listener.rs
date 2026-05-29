@@ -257,6 +257,17 @@ impl DnsListeners {
         })
     }
 
+    /// Return the local socket addresses of all bound UDP sockets.
+    ///
+    /// Useful in tests (and for metrics) to learn the ephemeral port assigned
+    /// when `0` was passed as the port in the bind address.
+    pub fn udp_local_addrs(&self) -> Vec<SocketAddr> {
+        self.udp
+            .iter()
+            .filter_map(|s| s.local_addr().ok())
+            .collect()
+    }
+
     /// Spawn all serve loops on `tracker`, cancellable via `token`.
     ///
     /// One tokio task is spawned per UDP socket and per TCP listener.  Each
