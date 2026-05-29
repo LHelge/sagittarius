@@ -12,6 +12,7 @@
 //! | [`codec`] | Custom lazy DNS wire-format parser/serializer |
 //! | [`resolver`] | DNS query pipeline (tower service stack) |
 //! | [`storage`] | SQLite persistence (config, lists, credentials) |
+//! | [`telemetry`] | Logging initialisation (tracing subscriber setup) |
 //! | [`web`] | axum-based admin HTTP server with askama/Datastar UI |
 //! | [`app`] | Runtime that owns shared state and wires subsystems |
 //! | [`error`] | Crate-wide error types and `Result` alias |
@@ -22,4 +23,5 @@ pub mod config;
 pub mod error;
 pub mod resolver;
 pub mod storage;
+pub mod telemetry;
 pub mod web;
