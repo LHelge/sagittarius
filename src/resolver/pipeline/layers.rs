@@ -52,6 +52,7 @@ pub const BLOCK_TTL_SECS: u32 = 60;
 /// through to the inner service.
 ///
 /// Construct via [`DecisionStack::new`] or [`DecisionLayer`].
+#[derive(Clone)]
 pub struct DecisionStack<S> {
     state: Arc<ResolverState>,
     inner: S,

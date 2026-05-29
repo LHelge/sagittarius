@@ -1,10 +1,10 @@
 ---
 id: unc
 title: E6.4 · Cross-cutting tower middleware (rate limit, concurrency, timeout)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:42:01.496267400Z
-updated: 2026-05-29T08:19:53.218805367Z
+updated: 2026-05-29T17:22:58.407613023Z
 tags:
 - pipeline
 - dns
