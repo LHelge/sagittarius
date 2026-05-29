@@ -1,10 +1,10 @@
 ---
 id: nve
 title: E7.1 · HTTP fetcher with conditional requests
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:47:07.772204123Z
-updated: 2026-05-29T08:20:43.870953084Z
+updated: 2026-05-29T19:30:56.598360420Z
 tags:
 - blocklist
 depends_on:

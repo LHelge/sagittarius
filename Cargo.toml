@@ -17,6 +17,8 @@ hickory-net = { version = "0.26", features = ["tls-ring", "https-ring", "webpki-
 hickory-proto = "0.26"
 moka = { version = "0.12.15", features = ["future"] }
 rand = "0.10.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls-no-provider", "gzip"] }
+rustls = { version = "0.23.40", default-features = false, features = ["ring"] }
 rustls-pki-types = "1.14.1"
 socket2 = "0.6.4"
 sqlx = { version = "~0.8", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
@@ -28,4 +30,6 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+flate2 = "1.1.9"
 tempfile = "3.27.0"
+wiremock = "0.6.5"
