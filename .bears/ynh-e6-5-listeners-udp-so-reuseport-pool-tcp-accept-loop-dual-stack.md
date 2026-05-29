@@ -1,10 +1,10 @@
 ---
 id: ynh
 title: E6.5 · Listeners (UDP SO_REUSEPORT pool + TCP accept loop, dual-stack)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:42:15.076991051Z
-updated: 2026-05-29T08:20:01.225344897Z
+updated: 2026-05-29T17:48:09.005358260Z
 tags:
 - pipeline
 - dns

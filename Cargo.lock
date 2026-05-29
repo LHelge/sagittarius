@@ -1650,6 +1650,7 @@ dependencies = [
  "moka",
  "rand 0.10.1",
  "rustls-pki-types",
+ "socket2",
  "sqlx",
  "tempfile",
  "thiserror",
