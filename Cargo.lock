@@ -1502,6 +1502,7 @@ dependencies = [
  "hickory-net",
  "hickory-proto",
  "moka",
+ "rand 0.10.1",
  "rustls-pki-types",
  "sqlx",
  "tempfile",

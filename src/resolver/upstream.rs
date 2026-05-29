@@ -13,9 +13,13 @@ use std::fmt;
 
 pub mod client;
 pub mod forward;
+pub mod pool;
 
 pub use client::{UpstreamBackground, UpstreamClient};
 pub use forward::{DEFAULT_QUERY_TIMEOUT, ForwardResult};
+pub use pool::{
+    DEFAULT_FAILOVER_BUDGET, RandomSelector, SharedUpstreamPool, UpstreamPool, UpstreamSelector,
+};
 
 // ── Transport enum ────────────────────────────────────────────────────────────
 
@@ -95,6 +99,10 @@ pub enum Error {
         #[source]
         source: hickory_net::NetError,
     },
+
+    /// Every upstream in the pool failed (or the pool is empty).
+    #[error("all upstreams failed after {attempts} attempt(s)")]
+    AllUpstreamsFailed { attempts: usize },
 }
 
 /// Convenience alias for `Result<T, upstream::Error>`.

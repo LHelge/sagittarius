@@ -1,10 +1,10 @@
 ---
 id: jcz
 title: 'E5.3 · Upstreams pool: random selection + failover'
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:23:26.848297884Z
-updated: 2026-05-29T08:19:43.804286489Z
+updated: 2026-05-29T15:43:48.587616794Z
 tags:
 - upstream
 - dns
