@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · sagittarius{% endblock %}
+{% block content %}
+<hgroup>
+  <h1>Dashboard</h1>
+  <p class="sgt-muted">Since-startup figures. Live values stream in as queries are processed.</p>
+</hgroup>
+
+<section
+  class="sgt-cards"
+  data-signals="{queries: {{ total }}, blocked: {{ blocked }}, cached: {{ cached }}, forwarded: {{ forwarded }}}"
+>
+  <article class="sgt-card">
+    <span class="sgt-figure" data-text="$queries.toLocaleString()">{{ total }}</span>
+    <span class="sgt-label">Queries</span>
+  </article>
+  <article class="sgt-card">
+    <span class="sgt-figure" data-text="$blocked.toLocaleString()">{{ blocked }}</span>
+    <span class="sgt-label">Blocked</span>
+  </article>
+  <article class="sgt-card">
+    <span
+      class="sgt-figure"
+      data-text="($queries ? ($blocked * 100 / $queries).toFixed(1) : '0.0') + '%'"
+    >0.0%</span>
+    <span class="sgt-label">Blocked ratio</span>
+  </article>
+  <article class="sgt-card">
+    <span class="sgt-figure" data-text="$cached.toLocaleString()">{{ cached }}</span>
+    <span class="sgt-label">Cached</span>
+  </article>
+  <article class="sgt-card">
+    <span class="sgt-figure" data-text="$forwarded.toLocaleString()">{{ forwarded }}</span>
+    <span class="sgt-label">Forwarded</span>
+  </article>
+  <article class="sgt-card">
+    <span class="sgt-figure">{{ blocklist_size }}</span>
+    <span class="sgt-label">Blocklist domains</span>
+  </article>
+</section>
+
+<div class="sgt-columns">
+  <article>
+    <header><strong>Top domains</strong></header>
+    {% if top_domains.is_empty() %}
+    <p class="sgt-muted">No queries yet.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>Domain</th><th class="sgt-num">Queries</th></tr></thead>
+      <tbody>
+        {% for (domain, count) in top_domains %}
+        <tr><td class="sgt-mono">{{ domain }}</td><td class="sgt-num">{{ count }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </article>
+
+  <article>
+    <header><strong>Top clients</strong></header>
+    {% if top_clients.is_empty() %}
+    <p class="sgt-muted">No queries yet.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>Client</th><th class="sgt-num">Queries</th></tr></thead>
+      <tbody>
+        {% for (client, count) in top_clients %}
+        <tr><td class="sgt-mono">{{ client }}</td><td class="sgt-num">{{ count }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </article>
+</div>
+{% endblock %}

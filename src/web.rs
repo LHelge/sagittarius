@@ -20,6 +20,7 @@
 pub mod assets;
 pub mod auth;
 pub mod csrf;
+pub mod dashboard;
 pub mod origin;
 pub mod render;
 pub mod wizard;
@@ -29,13 +30,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-use askama::Template;
-use askama_web::WebTemplate;
 use axum::{
-    Router,
-    extract::State,
-    middleware,
-    response::IntoResponse,
+    Router, middleware,
     routing::{get, post},
 };
 
@@ -178,7 +174,7 @@ impl AppState {
     /// Assemble the admin [`Router`] with all routes and the shared state.
     fn router(self) -> Router {
         Router::new()
-            .route("/", get(Self::index))
+            .route("/", get(Self::dashboard))
             // First-run wizard (public; gated by the wizard layer below).
             .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
             // Authentication (public).
@@ -198,25 +194,6 @@ impl AppState {
             .layer(middleware::from_fn_with_state(self.clone(), wizard::guard))
             .with_state(self)
     }
-
-    /// `GET /` — placeholder landing page (the real dashboard arrives in E8.5).
-    ///
-    /// Gated by [`CurrentUser`]: unauthenticated requests are redirected to
-    /// `/login`.
-    async fn index(user: CurrentUser, State(state): State<AppState>) -> impl IntoResponse {
-        IndexTemplate {
-            chrome: state.chrome("dashboard", &user).await,
-        }
-    }
-}
-
-// ── Templates ───────────────────────────────────────────────────────────────
-
-/// Placeholder landing page rendered at `/`.
-#[derive(Template, WebTemplate)]
-#[template(path = "index.html")]
-struct IndexTemplate {
-    chrome: Chrome,
 }
 
 // ── AdminServer ─────────────────────────────────────────────────────────────
@@ -313,24 +290,16 @@ mod tests {
         (dir, state)
     }
 
-    #[tokio::test]
-    async fn index_page_renders_with_pico_and_datastar() {
-        let (_dir, state) = test_state().await;
-        let user = CurrentUser {
-            user_id: 1,
-            session_id: "sess".to_owned(),
-        };
-        let chrome = state.chrome("dashboard", &user).await;
-        let html = IndexTemplate { chrome }.render().expect("render index");
-
-        // Base layout wired the vendored assets and the brand.
-        assert!(html.contains("/assets/pico.pumpkin.min.css"));
-        assert!(html.contains("/assets/datastar.js"));
-        assert!(html.contains("sagittarius"));
-        // Dashboard nav item is marked current.
-        assert!(html.contains("aria-current=\"page\""));
-        // The session-bound CSRF token is embedded for forms/Datastar.
-        assert!(html.contains(&state.csrf_token("sess")));
+    /// Extract the session id (the `id` component) from a `name=id.token` cookie.
+    fn session_id_of(cookie: &str) -> String {
+        cookie
+            .split_once('=')
+            .unwrap()
+            .1
+            .split_once('.')
+            .unwrap()
+            .0
+            .to_owned()
     }
 
     #[tokio::test]
@@ -418,7 +387,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 200);
-        assert!(r.text().await.unwrap().contains("aria-current=\"page\""));
+        let dash = r.text().await.unwrap();
+        // The dashboard renders inside the base layout with the vendored assets,
+        // the active nav marker, and the session-bound CSRF token.
+        assert!(dash.contains("/assets/pico.pumpkin.min.css"));
+        assert!(dash.contains("/assets/datastar.js"));
+        assert!(dash.contains("aria-current=\"page\""));
+        assert!(dash.contains(&app.csrf_token(&session_id_of(&cookie))));
 
         // Expire the session server-side: the same cookie no longer authorizes.
         sqlx::query("UPDATE sessions SET expires_at = 0")
@@ -455,15 +430,7 @@ mod tests {
 
         // The logout mutation requires the session-bound CSRF token. Derive it
         // from the session id (the cookie's `id` component).
-        let session_id = cookie
-            .split_once('=')
-            .unwrap()
-            .1
-            .split_once('.')
-            .unwrap()
-            .0
-            .to_owned();
-        let csrf = app.csrf_token(&session_id);
+        let csrf = app.csrf_token(&session_id_of(&cookie));
 
         // Without the token the mutation is rejected.
         let r = client

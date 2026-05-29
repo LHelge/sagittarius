@@ -174,5 +174,8 @@
 /* Muted helper text. */
 .sgt-muted { color: var(--pico-muted-color); font-size: 0.88rem; }
 
+/* Right-aligned numeric table column. */
+.sgt-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
 /* Let dense management tables scroll horizontally on small screens. */
 .sgt-table-wrap { overflow-x: auto; }
