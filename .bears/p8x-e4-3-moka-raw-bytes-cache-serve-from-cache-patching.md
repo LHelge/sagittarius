@@ -1,10 +1,10 @@
 ---
 id: p8x
 title: E4.3 · moka raw-bytes cache + serve-from-cache patching
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:11:18.305171135Z
-updated: 2026-05-29T08:18:26.160186039Z
+updated: 2026-05-29T13:43:15.607634180Z
 tags:
 - dns
 - cache
