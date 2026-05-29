@@ -8,11 +8,7 @@
 //! collected under [`sagittarius::error`].
 
 use clap::Parser;
-use sagittarius::{
-    app::App,
-    config::{Cli, Config},
-    telemetry::Telemetry,
-};
+use sagittarius::{app::App, cli::Cli, config::Config, telemetry::Telemetry};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
