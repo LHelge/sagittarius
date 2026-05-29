@@ -1,10 +1,10 @@
 ---
 id: jss
 title: E5.4 · Integration tests (mock/local upstream)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:23:34.569179710Z
-updated: 2026-05-29T07:23:34.569179710Z
+updated: 2026-05-29T16:08:24.908101844Z
 tags:
 - upstream
 - dns
