@@ -17,8 +17,9 @@
 //! |---|---|---|
 //! | [`fetch`] | E7.1 | HTTP GET with conditional-request support (ETag / Last-Modified) |
 //! | [`parse`] | E7.2 | Parse `hosts` and `domain-list` formats into a normalized `Name` set |
-//! | `aggregate` | E7.3 | Merge parsed entries into the in-memory [`crate::resolver::matchset`] |
+//! | [`aggregate`] | E7.3 | Merge parsed entries into the in-memory [`crate::resolver::matchset`] |
 //! | `scheduler` | E7.4 | Periodic refresh loop driven by the storage layer |
 
+pub mod aggregate;
 pub mod fetch;
 pub mod parse;

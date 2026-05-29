@@ -1,10 +1,10 @@
 ---
 id: pbr
 title: E7.3 · Aggregation + atomic swap
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:47:21.182173111Z
-updated: 2026-05-29T07:47:21.182173111Z
+updated: 2026-05-29T19:41:19.025147423Z
 tags:
 - blocklist
 depends_on:
