@@ -1,10 +1,10 @@
 ---
 id: qr4
 title: E2.4 · Shallow message parse & defensive validation
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:24:30.820847161Z
-updated: 2026-05-29T06:24:30.820847161Z
+updated: 2026-05-29T11:30:44.454228443Z
 tags:
 - codec
 - dns
