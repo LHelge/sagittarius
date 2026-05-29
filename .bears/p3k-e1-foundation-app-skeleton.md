@@ -2,10 +2,10 @@
 id: p3k
 title: E1 · Foundation & app skeleton
 type: epic
-status: open
+status: done
 priority: P0
 created: 2026-05-28T22:37:53.795402437Z
-updated: 2026-05-28T22:43:28.846099073Z
+updated: 2026-05-29T10:39:01.478283597Z
 tags:
 - foundation
 ---

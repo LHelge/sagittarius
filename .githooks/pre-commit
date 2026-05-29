@@ -1,0 +1,30 @@
+#!/bin/sh
+# pre-commit: runs fast checks (fmt + clippy) before every commit.
+# Tests are deferred to pre-push to keep commits snappy.
+
+set -e
+
+PASS=0
+
+echo "==> cargo fmt --all --check"
+if ! cargo fmt --all --check; then
+    echo ""
+    echo "ERROR: Code is not formatted. Run 'cargo fmt' and re-stage your changes."
+    PASS=1
+fi
+
+echo "==> cargo clippy --all-targets -- -D warnings"
+if ! cargo clippy --all-targets -- -D warnings; then
+    echo ""
+    echo "ERROR: Clippy reported warnings/errors. Fix the issues above before committing."
+    PASS=1
+fi
+
+if [ "$PASS" -ne 0 ]; then
+    echo ""
+    echo "Commit blocked. Fix the issues above and try again."
+    exit 1
+fi
+
+echo ""
+echo "pre-commit checks passed."

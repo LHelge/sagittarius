@@ -1,0 +1,16 @@
+#!/bin/sh
+# pre-push: runs the full test suite before every push.
+# Fmt + clippy run on pre-commit; tests live here because they are slower
+# and need not block every individual commit in a local branch.
+
+set -e
+
+echo "==> cargo test"
+if ! cargo test; then
+    echo ""
+    echo "ERROR: Tests failed. Fix the failures above before pushing."
+    exit 1
+fi
+
+echo ""
+echo "pre-push checks passed."

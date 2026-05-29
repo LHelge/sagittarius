@@ -1,10 +1,10 @@
 ---
 id: nuj
 title: E1.5 · CI workflow & pre-commit hooks
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:00:36.643424636Z
-updated: 2026-05-29T06:00:36.643424636Z
+updated: 2026-05-29T10:39:01.478112963Z
 tags:
 - foundation
 - ci
