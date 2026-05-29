@@ -32,6 +32,7 @@
 //! - `pipeline/layers.rs` — decision layers (E6.2)
 //! - `pipeline/forward.rs` — upstream forwarding inner service (E6.3)
 
+pub mod cache_layer;
 pub mod engine;
 pub mod forward;
 pub mod layers;

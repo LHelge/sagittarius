@@ -30,6 +30,7 @@ use crate::{
     resolver::{
         pipeline::{
             BoxError, DnsRequest, PipelineResponse,
+            cache_layer::CacheService,
             forward::ForwardService,
             layers::DecisionStack,
             middleware::{ProtectiveConfig, build_protective_service, classify_rejection},
@@ -138,8 +139,9 @@ where
 /// Layer order (outermost → innermost):
 /// 1. [`TelemetryLayer`] — records every query (including protective rejections)
 /// 2. Protective middleware (`rate-limit`, `load-shed`, `concurrency`, `timeout`)
-/// 3. [`DecisionStack`] — local / blacklist / allowlist / blocklist / cache
-/// 4. [`ForwardService`] — upstream forwarding + cache-store leaf
+/// 3. [`DecisionStack`] — local / blacklist / allowlist / blocklist
+/// 4. [`CacheService`] — read-through cache (serve on hit, store on miss)
+/// 5. [`ForwardService`] — upstream forwarding leaf
 ///
 /// The returned [`tower::util::BoxCloneService`] is cloned once per datagram
 /// by the UDP listener (see `DnsListeners::serve`).
@@ -150,7 +152,8 @@ pub fn build_engine(
     config: &ProtectiveConfig,
 ) -> tower::util::BoxCloneService<DnsRequest, PipelineResponse, BoxError> {
     let forward = ForwardService::new(pool, state.clone());
-    let decision = DecisionStack::new(state, forward);
+    let cached = CacheService::new(state.clone(), forward);
+    let decision = DecisionStack::new(state, cached);
     let protected = build_protective_service(config, decision);
 
     TelemetryLayer::new(telemetry)

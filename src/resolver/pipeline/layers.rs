@@ -1,9 +1,11 @@
 //! Decision-stack layer: SPEC §5 match precedence as a single wrapping service.
 //!
-//! [`DecisionStack`] implements the five-stage precedence check described in
+//! [`DecisionStack`] implements the list/local precedence checks described in
 //! SPEC §5, short-circuiting on a hit and falling through to the inner service
-//! on a cache miss.  The inner service is the upstream forwarding service
-//! (E6.3), tested here with a stub.
+//! on a miss.  The inner service is the cache layer
+//! ([`CacheService`](crate::resolver::pipeline::cache_layer::CacheService)),
+//! which wraps the upstream-forward leaf (E6.3); the cache lookup/store lives
+//! there, not here.  Tested with a stub inner.
 //!
 //! # Precedence (ordered, each stage short-circuits except allowlist)
 //!
@@ -13,8 +15,7 @@
 //! 3. **Allowlist** — sets a bypass flag; never short-circuits.
 //! 4. **Blocklist** — sinkhole for aggregated third-party lists; bypassed by
 //!    the allowlist.
-//! 5. **Cache** — serve a patched cached response if one exists.
-//! 6. **Miss** — fall through to the inner service (upstream forward).
+//! 5. **Miss** — fall through to the inner service (cache layer → forward).
 
 use std::{
     future::Future,
@@ -46,10 +47,10 @@ pub const BLOCK_TTL_SECS: u32 = 60;
 
 /// A tower [`Service`] that implements the SPEC §5 resolution precedence.
 ///
-/// Wraps an inner service (the upstream forwarding service, E6.3) and
-/// short-circuits based on local records, admin blacklist, allowlist,
-/// blocklist, and cache lookups — in that order.  Only a cache miss falls
-/// through to the inner service.
+/// Wraps an inner service (the cache layer, which wraps the forward leaf) and
+/// short-circuits based on local records, admin blacklist, allowlist, and
+/// blocklist — in that order.  A miss on all checks falls through to the inner
+/// service.
 ///
 /// Construct via [`DecisionStack::new`] or [`DecisionLayer`].
 #[derive(Clone)]
@@ -166,16 +167,10 @@ where
                 return Ok(PipelineResponse::new(bytes, Outcome::BlockedByBlocklist));
             }
 
-            // ── Stage 5: Cache ────────────────────────────────────────────────
+            // ── Stage 5: Miss — hand off to the inner service ─────────────────
             //
-            // The cache get is the only async operation; block_mode and Guard
-            // are already consumed/dropped above.
-            let client_txn_id = req.header().id;
-            if let Some(cached_bytes) = state.cache().get(req.question(), client_txn_id).await {
-                return Ok(PipelineResponse::new(cached_bytes, Outcome::Cached));
-            }
-
-            // ── Stage 6: Miss — forward to inner service ──────────────────────
+            // The inner service is the cache layer (lookup + store) wrapping the
+            // upstream-forward leaf; the cache read/write lives there, not here.
             inner.call(req).await
         })
     }
@@ -226,10 +221,9 @@ mod tests {
     use crate::{
         codec::{
             header::{Header, Rcode},
-            message::{Qclass, Qtype, Query, Question},
+            message::Query,
             name::Name,
             reader::Reader,
-            ttl::TtlScan,
             writer::Writer,
         },
         resolver::{
@@ -293,34 +287,6 @@ mod tests {
             req.raw().clone(),
             Outcome::Forwarded,
         )))
-    }
-
-    /// Build a minimal A-record DNS response for use in the cache.
-    fn build_a_response(id: u16, domain: &str, ttl: u32) -> Bytes {
-        let mut w = Writer::with_capacity(128);
-        Header::new(id)
-            .with_qr(true)
-            .with_rd(true)
-            .with_ra(true)
-            .with_qdcount(1)
-            .with_ancount(1)
-            .write(&mut w);
-
-        let n: Name = domain.parse().expect("valid name");
-        n.write(&mut w);
-        w.write_u16(1u16); // QTYPE A
-        w.write_u16(1u16); // QCLASS IN
-
-        // Answer RR: owner = compression pointer 0xC0 0x0C
-        w.write_u8(0xC0);
-        w.write_u8(0x0C);
-        w.write_u16(1u16); // TYPE A
-        w.write_u16(1u16); // CLASS IN
-        w.write_u32(ttl); // TTL
-        w.write_u16(4u16); // RDLENGTH
-        w.write_slice(&[127, 0, 0, 1]); // RDATA 127.0.0.1
-
-        w.finish()
     }
 
     /// Parse the DNS header from raw response bytes.
@@ -499,44 +465,6 @@ mod tests {
             Outcome::Forwarded,
             "plain miss must fall through to Forwarded"
         );
-    }
-
-    /// A cache hit must return `Outcome::Cached` and the response bytes' txn
-    /// id must match the client's query id.
-    #[tokio::test]
-    async fn cache_hit_returns_cached_with_patched_txn_id() {
-        let (_dir, db) = open_temp_db().await;
-        let state = ResolverState::hydrate(&db).await.expect("hydrate");
-
-        // Pre-insert a response into the cache.
-        let domain = "cached.example.com";
-        let cached_id: u16 = 0xAAAA;
-        let response_bytes = build_a_response(cached_id, domain, 300);
-        let ttl_scan = TtlScan::scan(&response_bytes).expect("scan");
-
-        let question = Question {
-            name: name(domain),
-            qtype: Qtype::A,
-            qclass: Qclass::In,
-        };
-        state
-            .cache()
-            .insert(question, response_bytes, ttl_scan.ttl_offsets, 300)
-            .await;
-
-        // Query with a different txn id — the cache must patch it.
-        let client_id: u16 = 0xBEEF;
-        let raw = build_a_query(client_id, domain);
-        let req = make_request(raw);
-
-        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
-        let resp = stack.oneshot(req).await.unwrap();
-
-        assert_eq!(resp.outcome, Outcome::Cached, "must be a cache hit");
-
-        // The returned bytes' transaction id must equal the client's query id.
-        let hdr = parse_header(&resp.bytes);
-        assert_eq!(hdr.id, client_id, "cache must patch txn-id to client's id");
     }
 
     /// Verify synthesized block response properties for a blocklist hit in
