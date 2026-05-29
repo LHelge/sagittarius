@@ -1,34 +1,40 @@
-//! Forward-and-cache-store inner service: SPEC §5 steps 8–9, §8.
+//! Forward inner service: SPEC §5 steps 8–9, §8.
 //!
 //! [`ForwardService`] is the **leaf** of the DNS pipeline — the innermost
-//! [`tower::Service`] that the [`super::layers::DecisionStack`] delegates to on
-//! a cache miss.  It:
+//! [`tower::Service`], reached on a cache miss (the [`CacheService`] sits
+//! directly above it).  It:
 //!
 //! 1. Forwards the query to an upstream resolver via [`SharedUpstreamPool`].
-//! 2. Applies the cache-store TTL policy (positive vs. negative vs. not-cached).
+//! 2. Decides the cache-store policy (positive vs. negative vs. not-cached) and
+//!    emits it as a [`CacheDirective`] — the [`CacheService`] executes the store.
 //! 3. Patches the transaction ID in the reply back to the client's query ID.
 //! 4. Returns [`Outcome::Forwarded`] on success or [`Outcome::Servfail`] when
-//!    all upstreams have failed.
+//!    all upstreams have failed, bundled with the directive in a [`ForwardOutput`].
 //!
 //! # Cache-store policy (SPEC §8)
 //!
-//! | Response type | Cache key TTL | Stored? |
+//! | Response type | Directive | Expiry |
 //! |---|---|---|
-//! | Positive (has real RRs) | `scan.min_ttl` | Yes, when `Some` and scan OK |
-//! | Negative with SOA | `min(negative_ttl, cap)` | Yes, when SOA present |
-//! | Negative without SOA | — | No |
-//! | Scan error | — | No |
+//! | Positive (has real RRs) | `Store` | `scan.min_ttl` |
+//! | Positive (no real TTL RRs) | `Skip` | — |
+//! | Negative with SOA | `Store` | `min(negative_ttl, cap)` |
+//! | Negative without SOA | `Skip` | — |
+//! | Scan error | `Skip` | — |
 //!
-//! The [`DnsCache`] clamps the supplied expiry to `[cache_min_ttl, cache_max_ttl]`
-//! internally.
+//! The policy lives here because the upstream metadata (TTL-field offsets, the
+//! positive min TTL, the RFC 2308 negative TTL) is only available at this leaf.
+//! The [`CacheService`] owns the mechanism and clamps the expiry to
+//! `[cache_min_ttl, cache_max_ttl]` on insert.
 //!
 //! # Transaction-ID patching
 //!
 //! The upstream bytes carry hickory's internal transaction ID, not the client's.
 //! [`patch_txn_id`] copies the bytes and overwrites the first two bytes with the
-//! client's query ID before returning the reply.  The cache stores the
-//! **un-patched** upstream bytes; patching (and TTL decrement) happens at serve
-//! time in [`DnsCache::get`].
+//! client's query ID for the reply.  The directive caches the **un-patched**
+//! upstream bytes; patching (and TTL decrement) happens at serve time in
+//! [`DnsCache::get`](crate::resolver::cache::DnsCache::get).
+//!
+//! [`CacheService`]: crate::resolver::pipeline::cache_layer::CacheService
 
 use std::{
     future::Future,
@@ -47,7 +53,10 @@ use crate::{
         ttl::TtlScan,
     },
     resolver::{
-        pipeline::{BoxError, DnsRequest, Outcome, PipelineResponse},
+        pipeline::{
+            BoxError, DnsRequest, Outcome, PipelineResponse,
+            cache_layer::{CacheDirective, ForwardOutput},
+        },
         state::ResolverState,
         upstream::SharedUpstreamPool,
     },
@@ -57,13 +66,13 @@ use crate::{
 
 /// The innermost leaf [`tower::Service`] of the DNS pipeline.
 ///
-/// Forwards the query to the upstream pool, stores the result in the cache
-/// under the correct TTL policy, patches the transaction ID, and returns a
-/// [`PipelineResponse`].
+/// Forwards the query to the upstream pool, decides the cache-store policy
+/// (emitted as a [`CacheDirective`] for the cache layer to execute), patches
+/// the transaction ID for the client reply, and returns a [`ForwardOutput`].
 ///
 /// Both fields are [`Arc`]-wrapped so the service is cheaply [`Clone`]able —
-/// a requirement because [`super::layers::DecisionStack`] wraps a `Clone` inner
-/// service.
+/// a requirement because the [`CacheService`](super::cache_layer::CacheService)
+/// that wraps it must be `Clone`.
 #[derive(Clone)]
 pub struct ForwardService {
     pool: Arc<SharedUpstreamPool>,
@@ -80,9 +89,9 @@ impl ForwardService {
 // ── tower::Service impl ───────────────────────────────────────────────────────
 
 impl Service<DnsRequest> for ForwardService {
-    type Response = PipelineResponse;
+    type Response = ForwardOutput;
     type Error = BoxError;
-    type Future = Pin<Box<dyn Future<Output = Result<PipelineResponse, BoxError>> + Send>>;
+    type Future = Pin<Box<dyn Future<Output = Result<ForwardOutput, BoxError>> + Send>>;
 
     /// The leaf service is always ready — it has no inner service to poll.
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -104,44 +113,51 @@ impl Service<DnsRequest> for ForwardService {
 
             match pool.forward(&question).await {
                 Ok(fr) => {
-                    // ── Cache-store TTL policy (SPEC §5 step 9, §8) ──────────
-
-                    // `settings_full()` returns an owned Arc; safe across awaits.
+                    // ── Cache-store policy (SPEC §5 step 9, §8) ───────────────
+                    //
+                    // We decide *whether and for how long* to cache here — the
+                    // upstream metadata (TTL-field offsets, positive min TTL,
+                    // RFC 2308 negative TTL) lives only at this leaf — and hand
+                    // the decision to the cache layer as a `CacheDirective`,
+                    // which executes the store. `settings_full()` returns an
+                    // owned Arc, safe across awaits.
                     let settings = state.settings_full();
-                    // Scan the upstream bytes for TTL field offsets.
-                    // OPT pseudo-RRs are already excluded by TtlScan.
+                    // Scan the upstream bytes for the TTL-field offsets and the
+                    // positive min TTL (OPT pseudo-RRs already excluded).
                     let scan = TtlScan::scan(&fr.bytes);
 
-                    let expiry: Option<u32> = if fr.is_negative {
-                        // Negatives: RFC 2308 negative TTL from the SOA record,
-                        // capped at the configured cap.  None (no SOA) → do NOT cache.
-                        fr.negative_ttl.map(|t| t.min(settings.negative_ttl_cap))
+                    let directive = if let Ok(s) = scan.as_ref() {
+                        let expiry = if fr.is_negative {
+                            // Negatives: RFC 2308 negative TTL, capped at the
+                            // configured cap. None (no SOA) → do NOT cache.
+                            fr.negative_ttl.map(|t| t.min(settings.negative_ttl_cap))
+                        } else {
+                            // Positives: the scan's min non-OPT RR TTL.
+                            // None (no TTL-bearing RRs) → do NOT cache.
+                            s.min_ttl
+                        };
+                        match expiry {
+                            Some(expiry) => CacheDirective::Store {
+                                bytes: fr.bytes.clone(),
+                                ttl_offsets: s.ttl_offsets.clone(),
+                                expiry,
+                            },
+                            None => CacheDirective::Skip,
+                        }
                     } else {
-                        // Positives: the scan's minimum non-OPT RR TTL.
-                        // None (no TTL-bearing RRs, or scan failed) → do NOT cache.
-                        scan.as_ref().ok().and_then(|s| s.min_ttl)
+                        // Unscannable upstream response — reply but do not cache.
+                        CacheDirective::Skip
                     };
 
-                    // Cache only when we have both a valid expiry and a
-                    // successful scan (needed for the TTL-field offsets).
-                    // The cache stores upstream bytes unchanged; it patches the
-                    // txn-id and decrements TTLs at serve time (DnsCache::get).
-                    if let (Some(exp), Ok(s)) = (expiry, scan.as_ref()) {
-                        state
-                            .cache()
-                            .insert(
-                                question.clone(),
-                                fr.bytes.clone(),
-                                s.ttl_offsets.clone(),
-                                exp,
-                            )
-                            .await;
-                    }
-
-                    // Patch the transaction ID: the upstream bytes carry
-                    // hickory's internal txn-id, not the client's.
+                    // Patch the transaction ID for the client reply: the upstream
+                    // bytes carry hickory's internal txn-id, not the client's.
+                    // (The cache stores the un-patched bytes; DnsCache::get
+                    // re-patches per requesting client on serve.)
                     let reply = patch_txn_id(&fr.bytes, client_id);
-                    Ok(PipelineResponse::new(reply, Outcome::Forwarded))
+                    Ok(ForwardOutput::new(
+                        PipelineResponse::new(reply, Outcome::Forwarded),
+                        directive,
+                    ))
                 }
                 Err(e) => {
                     // All upstreams failed (or the pool is empty) → SERVFAIL.
@@ -153,7 +169,10 @@ impl Service<DnsRequest> for ForwardService {
                     );
                     let bytes =
                         Response::error_response(req.query(), Rcode::ServFail, edns.as_ref());
-                    Ok(PipelineResponse::new(bytes, Outcome::Servfail))
+                    Ok(ForwardOutput::new(
+                        PipelineResponse::new(bytes, Outcome::Servfail),
+                        CacheDirective::Skip,
+                    ))
                 }
             }
         })
@@ -195,11 +214,7 @@ mod tests {
     use super::*;
     use crate::{
         codec::{
-            header::Header,
-            message::{Qclass, Qtype, Query, Question},
-            name::Name as DnsName,
-            reader::Reader,
-            writer::Writer,
+            header::Header, message::Query, name::Name as DnsName, reader::Reader, writer::Writer,
         },
         resolver::{
             state::ResolverState,
@@ -279,15 +294,6 @@ mod tests {
         addr
     }
 
-    /// Build a Question for `example.com. A IN`.
-    fn stock_question() -> Question {
-        Question {
-            name: "example.com".parse().unwrap(),
-            qtype: Qtype::A,
-            qclass: Qclass::In,
-        }
-    }
-
     /// Parse the DNS header from raw bytes.
     fn parse_header(bytes: &Bytes) -> Header {
         let mut r = Reader::new(bytes.clone());
@@ -335,29 +341,30 @@ mod tests {
         let raw = build_a_query(client_query_id, "example.com");
         let req = make_request(raw);
 
-        let resp = timeout(Duration::from_secs(5), svc.oneshot(req))
+        let out = timeout(Duration::from_secs(5), svc.oneshot(req))
             .await
             .expect("safety timeout")
             .expect("service must not error");
 
         assert_eq!(
-            resp.outcome,
+            out.reply.outcome,
             Outcome::Forwarded,
             "outcome must be Forwarded"
         );
 
         // The reply's transaction ID must equal the client's query id.
-        let hdr = parse_header(&resp.bytes);
+        let hdr = parse_header(&out.reply.bytes);
         assert_eq!(
             hdr.id, client_query_id,
             "reply txn-id must be patched to the client's query id"
         );
     }
 
-    /// A positive A-record answer must be stored in the cache under the min-TTL
-    /// policy.  After the call `cache.get(&question, any_id)` must return `Some`.
+    /// A positive A-record answer must yield a `Store` directive carrying the
+    /// min-TTL (the cache layer executes the actual insert — see
+    /// `cache_layer` tests).
     #[tokio::test]
-    async fn positive_answer_cached_with_min_ttl() {
+    async fn positive_answer_directive_stores_min_ttl() {
         let addr = spawn_mock_udp(|req| {
             let mut resp = req.clone();
             resp.metadata.message_type = MessageType::Response;
@@ -383,30 +390,29 @@ mod tests {
         let (_dir, db) = open_temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
-        let svc = ForwardService::new(pool, state.clone());
+        let svc = ForwardService::new(pool, state);
 
         let raw = build_a_query(0x1234, "example.com");
         let req = make_request(raw);
 
-        timeout(Duration::from_secs(5), svc.oneshot(req))
+        let out = timeout(Duration::from_secs(5), svc.oneshot(req))
             .await
             .expect("safety timeout")
             .expect("service must not error");
 
-        // The cache must now contain an entry for `example.com. A IN`.
-        let question = stock_question();
-        let cached = state.cache().get(&question, 0xABCD).await;
+        assert_eq!(out.reply.outcome, Outcome::Forwarded);
         assert!(
-            cached.is_some(),
-            "positive answer must be stored in the cache"
+            matches!(out.directive, CacheDirective::Store { expiry: 300, .. }),
+            "positive answer → Store with min TTL 300, got {:?}",
+            out.directive
         );
     }
 
-    /// NXDOMAIN with a SOA (so `negative_ttl` is `Some`) must be cached.
-    /// Outcome must be `Forwarded` (the inner service does not distinguish —
-    /// it forwards and stores regardless of sign).
+    /// NXDOMAIN with a SOA (so `negative_ttl` is `Some`) must yield a `Store`
+    /// directive with the RFC 2308 negative TTL.  Outcome is `Forwarded` (the
+    /// leaf does not distinguish sign — it forwards and emits a directive).
     #[tokio::test]
-    async fn negative_with_soa_cached() {
+    async fn negative_with_soa_directive_stores() {
         let addr = spawn_mock_udp(|req| {
             let mut resp = req.clone();
             resp.metadata.message_type = MessageType::Response;
@@ -435,34 +441,32 @@ mod tests {
         let (_dir, db) = open_temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
-        let svc = ForwardService::new(pool, state.clone());
+        let svc = ForwardService::new(pool, state);
 
         let raw = build_a_query(0x5678, "example.com");
         let req = make_request(raw);
 
-        let resp = timeout(Duration::from_secs(5), svc.oneshot(req))
+        let out = timeout(Duration::from_secs(5), svc.oneshot(req))
             .await
             .expect("safety timeout")
             .expect("service must not error");
 
         assert_eq!(
-            resp.outcome,
+            out.reply.outcome,
             Outcome::Forwarded,
             "NXDOMAIN with SOA must still return Forwarded"
         );
-
-        // The negative response must be cached under the negative-TTL policy.
-        let question = stock_question();
-        let cached = state.cache().get(&question, 0xABCD).await;
+        // RFC 2308: min(soa_ttl=120, soa_minimum=60) = 60, under the cap.
         assert!(
-            cached.is_some(),
-            "NXDOMAIN with SOA must be stored in the cache"
+            matches!(out.directive, CacheDirective::Store { expiry: 60, .. }),
+            "NXDOMAIN with SOA → Store with negative TTL 60, got {:?}",
+            out.directive
         );
     }
 
-    /// NXDOMAIN with **no** SOA (`negative_ttl == None`) must NOT be cached.
+    /// NXDOMAIN with **no** SOA (`negative_ttl == None`) must yield `Skip`.
     #[tokio::test]
-    async fn negative_without_soa_not_cached() {
+    async fn negative_without_soa_directive_skips() {
         let addr = spawn_mock_udp(|req| {
             let mut resp = req.clone();
             resp.metadata.message_type = MessageType::Response;
@@ -486,22 +490,20 @@ mod tests {
         let (_dir, db) = open_temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
-        let svc = ForwardService::new(pool, state.clone());
+        let svc = ForwardService::new(pool, state);
 
         let raw = build_a_query(0x9ABC, "example.com");
         let req = make_request(raw);
 
-        timeout(Duration::from_secs(5), svc.oneshot(req))
+        let out = timeout(Duration::from_secs(5), svc.oneshot(req))
             .await
             .expect("safety timeout")
             .expect("service must not error");
 
-        // The cache must NOT contain the response (no SOA → no negative caching).
-        let question = stock_question();
-        let cached = state.cache().get(&question, 0xABCD).await;
         assert!(
-            cached.is_none(),
-            "NXDOMAIN without SOA must NOT be stored in the cache"
+            matches!(out.directive, CacheDirective::Skip),
+            "NXDOMAIN without SOA → Skip (not cacheable), got {:?}",
+            out.directive
         );
     }
 
@@ -531,14 +533,22 @@ mod tests {
         let raw = build_a_query(client_id, "example.com");
         let req = make_request(raw);
 
-        let resp = timeout(Duration::from_secs(5), svc.oneshot(req))
+        let out = timeout(Duration::from_secs(5), svc.oneshot(req))
             .await
             .expect("safety timeout")
             .expect("service must not error");
 
-        assert_eq!(resp.outcome, Outcome::Servfail, "outcome must be Servfail");
+        assert_eq!(
+            out.reply.outcome,
+            Outcome::Servfail,
+            "outcome must be Servfail"
+        );
+        assert!(
+            matches!(out.directive, CacheDirective::Skip),
+            "SERVFAIL must not be cached"
+        );
 
-        let hdr = parse_header(&resp.bytes);
+        let hdr = parse_header(&out.reply.bytes);
         assert_eq!(
             hdr.id, client_id,
             "SERVFAIL reply must echo the client's query id"
