@@ -200,6 +200,8 @@ impl App {
             cookie_policy: self.config.session_cookie_secure,
             csrf_key: crate::web::random_csrf_key(),
             setup_done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            upstream_pool: Arc::clone(&pool),
+            tracker: self.tracker.clone(),
         };
 
         let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());

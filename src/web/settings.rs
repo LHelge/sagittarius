@@ -1,0 +1,286 @@
+//! Global settings management (SPEC §9, §7, §4).
+//!
+//! Edits the typed `settings` row (cache bounds, blocking mode + custom sinkhole
+//! IPs, blocklist refresh interval, UI theme), writes through to E3.4, and then
+//! updates the live [`RuntimeSettings`] snapshot so changes apply where the
+//! subsystem supports it:
+//!
+//! - **min/max TTL, negative-TTL cap, blocking mode/custom IP** apply
+//!   immediately (read from the snapshot at synthesis / cache-store time).
+//! - **blocklist refresh interval** is re-read by the scheduler at the next
+//!   cycle boundary (E7.4).
+//! - **cache capacity** is fixed when the moka cache is built, so a change is
+//!   persisted but only takes effect after a restart — surfaced in the UI.
+//!
+//! The session-cookie `Secure` policy is intentionally **not** here: it is an
+//! operational CLI/env setting (E1.2) because it depends on deployment topology.
+
+use std::net::{Ipv4Addr, Ipv6Addr};
+
+use askama::Template;
+use askama_web::WebTemplate;
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use serde::Deserialize;
+
+use crate::{
+    resolver::state::RuntimeSettings,
+    storage::settings::{BlockingMode, Settings, SettingsRepository, SqliteSettingsRepo},
+    web::{AppState, Chrome, auth::CurrentUser, render::WebError},
+};
+
+impl AppState {
+    async fn render_settings(
+        &self,
+        user: &CurrentUser,
+        error: Option<String>,
+        saved: bool,
+    ) -> Result<SettingsPageTemplate, WebError> {
+        let s = SqliteSettingsRepo::new(self.db.pool().clone())
+            .get()
+            .await?;
+        Ok(SettingsPageTemplate {
+            chrome: self.chrome("settings", user).await,
+            cache_min_ttl: s.cache_min_ttl,
+            cache_max_ttl: s.cache_max_ttl,
+            cache_negative_ttl_cap: s.cache_negative_ttl_cap,
+            cache_capacity: s.cache_capacity,
+            blocking_mode: s.blocking_mode.as_str(),
+            custom_block_ipv4: s
+                .custom_block_ipv4
+                .map(|i| i.to_string())
+                .unwrap_or_default(),
+            custom_block_ipv6: s
+                .custom_block_ipv6
+                .map(|i| i.to_string())
+                .unwrap_or_default(),
+            blocklist_refresh_interval: s.blocklist_refresh_interval,
+            ui_theme: s.ui_theme,
+            error,
+            saved,
+        })
+    }
+
+    /// `GET /settings`.
+    pub async fn settings_page(user: CurrentUser, State(state): State<AppState>) -> Response {
+        match state.render_settings(&user, None, false).await {
+            Ok(t) => t.into_response(),
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// `POST /settings`.
+    pub async fn settings_save(
+        user: CurrentUser,
+        State(state): State<AppState>,
+        axum::Form(form): axum::Form<SettingsForm>,
+    ) -> Response {
+        match state.apply_settings(form).await {
+            Ok(()) => match state.render_settings(&user, None, true).await {
+                Ok(t) => t.into_response(),
+                Err(e) => e.into_response(),
+            },
+            Err(WebError::BadRequest(msg)) => {
+                match state.render_settings(&user, Some(msg), false).await {
+                    Ok(t) => (StatusCode::BAD_REQUEST, t).into_response(),
+                    Err(e) => e.into_response(),
+                }
+            }
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// Validate and persist a settings form, then refresh the live snapshot.
+    async fn apply_settings(&self, form: SettingsForm) -> Result<(), WebError> {
+        let settings = form.into_settings()?;
+        SqliteSettingsRepo::new(self.db.pool().clone())
+            .update(&settings)
+            .await?;
+        // Apply to the live snapshot (capacity needs a restart; see module doc).
+        self.resolver
+            .store_settings(RuntimeSettings::from(&settings));
+        Ok(())
+    }
+}
+
+/// Settings form payload.
+#[derive(Debug, Deserialize)]
+pub struct SettingsForm {
+    cache_min_ttl: u32,
+    cache_max_ttl: u32,
+    cache_negative_ttl_cap: u32,
+    cache_capacity: u64,
+    blocking_mode: String,
+    #[serde(default)]
+    custom_block_ipv4: String,
+    #[serde(default)]
+    custom_block_ipv6: String,
+    blocklist_refresh_interval: u32,
+    ui_theme: String,
+}
+
+impl SettingsForm {
+    /// Validate the raw form into a typed [`Settings`].
+    fn into_settings(self) -> Result<Settings, WebError> {
+        if self.cache_min_ttl > self.cache_max_ttl {
+            return Err(WebError::bad_request(
+                "Minimum cache TTL must not exceed the maximum.",
+            ));
+        }
+        if self.cache_capacity == 0 {
+            return Err(WebError::bad_request("Cache capacity must be at least 1."));
+        }
+        let blocking_mode: BlockingMode = self
+            .blocking_mode
+            .parse()
+            .map_err(|_| WebError::bad_request("Invalid blocking mode."))?;
+
+        let custom_block_ipv4 = parse_opt_ip::<Ipv4Addr>(&self.custom_block_ipv4, "IPv4")?;
+        let custom_block_ipv6 = parse_opt_ip::<Ipv6Addr>(&self.custom_block_ipv6, "IPv6")?;
+
+        if !matches!(self.ui_theme.as_str(), "auto" | "light" | "dark") {
+            return Err(WebError::bad_request("Theme must be auto, light, or dark."));
+        }
+
+        Ok(Settings {
+            cache_min_ttl: self.cache_min_ttl,
+            cache_max_ttl: self.cache_max_ttl,
+            cache_negative_ttl_cap: self.cache_negative_ttl_cap,
+            cache_capacity: self.cache_capacity,
+            blocking_mode,
+            custom_block_ipv4,
+            custom_block_ipv6,
+            blocklist_refresh_interval: self.blocklist_refresh_interval,
+            ui_theme: self.ui_theme,
+        })
+    }
+}
+
+/// Parse an optional IP string (empty → `None`).
+fn parse_opt_ip<T: std::str::FromStr>(s: &str, label: &str) -> Result<Option<T>, WebError> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    s.parse::<T>()
+        .map(Some)
+        .map_err(|_| WebError::bad_request(format!("'{s}' is not a valid {label} address.")))
+}
+
+/// The settings page.
+#[derive(Template, WebTemplate)]
+#[template(path = "settings.html")]
+struct SettingsPageTemplate {
+    chrome: Chrome,
+    cache_min_ttl: u32,
+    cache_max_ttl: u32,
+    cache_negative_ttl_cap: u32,
+    cache_capacity: u64,
+    blocking_mode: &'static str,
+    custom_block_ipv4: String,
+    custom_block_ipv6: String,
+    blocklist_refresh_interval: u32,
+    ui_theme: String,
+    error: Option<String>,
+    saved: bool,
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{codec::synth::BlockMode, storage::Db};
+    use tempfile::TempDir;
+
+    async fn state() -> (TempDir, AppState) {
+        let dir = TempDir::new().unwrap();
+        let db = Db::connect(dir.path().join("t.db")).await.unwrap();
+        (dir, AppState::for_test(db).await)
+    }
+
+    fn base_form() -> SettingsForm {
+        SettingsForm {
+            cache_min_ttl: 10,
+            cache_max_ttl: 3600,
+            cache_negative_ttl_cap: 300,
+            cache_capacity: 50_000,
+            blocking_mode: "nxdomain".to_owned(),
+            custom_block_ipv4: String::new(),
+            custom_block_ipv6: String::new(),
+            blocklist_refresh_interval: 7200,
+            ui_theme: "dark".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_settings_persists_and_updates_snapshot() {
+        let (_d, st) = state().await;
+        st.apply_settings(base_form()).await.expect("apply");
+
+        // Persisted.
+        let s = SqliteSettingsRepo::new(st.db.pool().clone())
+            .get()
+            .await
+            .unwrap();
+        assert_eq!(s.cache_max_ttl, 3600);
+        assert_eq!(s.blocking_mode, BlockingMode::NxDomain);
+        assert_eq!(s.ui_theme, "dark");
+
+        // Live snapshot updated (blocking mode applies immediately).
+        assert_eq!(st.resolver.settings().block_mode, BlockMode::NxDomain);
+        assert_eq!(st.resolver.settings().cache_max_ttl, 3600);
+    }
+
+    #[tokio::test]
+    async fn min_greater_than_max_is_rejected() {
+        let (_d, st) = state().await;
+        let mut f = base_form();
+        f.cache_min_ttl = 5000;
+        f.cache_max_ttl = 100;
+        assert!(matches!(
+            st.apply_settings(f).await,
+            Err(WebError::BadRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn custom_mode_with_ips_round_trips() {
+        let (_d, st) = state().await;
+        let mut f = base_form();
+        f.blocking_mode = "custom".to_owned();
+        f.custom_block_ipv4 = "203.0.113.1".to_owned();
+        st.apply_settings(f).await.expect("apply custom");
+        let s = SqliteSettingsRepo::new(st.db.pool().clone())
+            .get()
+            .await
+            .unwrap();
+        assert_eq!(s.blocking_mode, BlockingMode::Custom);
+        assert_eq!(s.custom_block_ipv4, Some("203.0.113.1".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn invalid_custom_ip_is_rejected() {
+        let (_d, st) = state().await;
+        let mut f = base_form();
+        f.custom_block_ipv4 = "not-an-ip".to_owned();
+        assert!(matches!(
+            st.apply_settings(f).await,
+            Err(WebError::BadRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_theme_is_rejected() {
+        let (_d, st) = state().await;
+        let mut f = base_form();
+        f.ui_theme = "neon".to_owned();
+        assert!(matches!(
+            st.apply_settings(f).await,
+            Err(WebError::BadRequest(_))
+        ));
+    }
+}
