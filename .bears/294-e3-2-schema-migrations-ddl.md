@@ -1,10 +1,10 @@
 ---
 id: '294'
 title: E3.2 · Schema migrations (DDL)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:55:13.476610921Z
-updated: 2026-05-29T08:18:26.128468697Z
+updated: 2026-05-29T12:29:32.393198666Z
 tags:
 - storage
 depends_on:
