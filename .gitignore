@@ -5,3 +5,10 @@
 /fuzz/corpus
 /fuzz/artifacts
 /fuzz/Cargo.lock
+
+# Local dev database for sqlx compile-time query checking + its env file.
+# Builds use the committed .sqlx/ offline cache (SQLX_OFFLINE) instead.
+/.env
+/dev.db
+/dev.db-wal
+/dev.db-shm

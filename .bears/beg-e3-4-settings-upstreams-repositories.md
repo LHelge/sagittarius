@@ -1,10 +1,10 @@
 ---
 id: beg
 title: E3.4 · Settings & upstreams repositories
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:55:28.445738242Z
-updated: 2026-05-29T06:55:28.445738242Z
+updated: 2026-05-29T12:46:53.021691170Z
 tags:
 - storage
 depends_on:
