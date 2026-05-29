@@ -22,6 +22,7 @@
 //! | [`framing`] | UDP/TCP message framing (length-prefix encode/decode) |
 //! | [`header`] | 12-byte DNS header, [`header::Opcode`], [`header::Rcode`] |
 //! | [`name`] | [`Name`] type, QNAME reader/writer, RR name-skip helper |
+//! | [`ttl`] | Bounded TTL scan — min-TTL and per-RR TTL field offsets for in-place patching |
 //!
 //! All submodules share this single [`Error`] type; the crate-level
 //! [`crate::error::Error`] wraps it via `#[from]`.
@@ -31,6 +32,7 @@ pub mod header;
 pub mod message;
 pub mod name;
 pub mod reader;
+pub mod ttl;
 pub mod writer;
 
 /// Errors that can occur while parsing or serializing DNS wire format.
