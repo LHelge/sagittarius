@@ -198,6 +198,7 @@ impl App {
             telemetry: Arc::clone(&telemetry),
             refresh: scheduler.trigger(),
             cookie_policy: self.config.session_cookie_secure,
+            csrf_key: crate::web::random_csrf_key(),
         };
 
         let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());

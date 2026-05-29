@@ -19,6 +19,8 @@
 
 pub mod assets;
 pub mod auth;
+pub mod csrf;
+pub mod origin;
 pub mod render;
 
 use std::{net::SocketAddr, sync::Arc};
@@ -28,6 +30,7 @@ use askama_web::WebTemplate;
 use axum::{
     Router,
     extract::State,
+    middleware,
     response::IntoResponse,
     routing::{get, post},
 };
@@ -108,6 +111,21 @@ pub struct AppState {
     pub refresh: RefreshTrigger,
     /// Operational session-cookie `Secure` policy (SPEC §9, §10).
     pub cookie_policy: SessionCookieSecurePolicy,
+    /// Per-process key for deriving session-bound CSRF tokens (E8.3).
+    ///
+    /// Random at startup; outstanding page tokens are invalidated on restart
+    /// (the user simply reloads to obtain a fresh one).
+    pub csrf_key: Arc<[u8; 32]>,
+}
+
+/// Generate a fresh random key for signing session-bound CSRF tokens.
+///
+/// Called once at startup; see [`AppState::csrf_key`].
+pub fn random_csrf_key() -> Arc<[u8; 32]> {
+    use rand::Rng;
+    let mut key = [0u8; 32];
+    rand::rng().fill_bytes(&mut key);
+    Arc::new(key)
 }
 
 impl AppState {
@@ -126,15 +144,16 @@ impl AppState {
     /// Build the page [`Chrome`] for an authenticated, full-navigation page.
     ///
     /// Only reached from handlers gated by the [`CurrentUser`] extractor, so
-    /// `authenticated` is always `true` here.
-    async fn chrome(&self, active: &'static str) -> Chrome {
+    /// `authenticated` is always `true`.  The session-bound CSRF token is
+    /// embedded so forms and Datastar actions on the page can authorise their
+    /// mutations (E8.3).
+    async fn chrome(&self, active: &'static str, user: &CurrentUser) -> Chrome {
         Chrome {
             theme: self.ui_theme().await,
             active,
             show_nav: true,
             authenticated: true,
-            // Populated by the CSRF layer in E8.3.
-            csrf_token: String::new(),
+            csrf_token: self.csrf_token(&user.session_id),
         }
     }
 
@@ -162,6 +181,9 @@ impl AppState {
             .route("/assets/app.css", get(Assets::app_css))
             .route("/assets/icon.png", get(Assets::icon_png))
             .route("/favicon.ico", get(Assets::icon_png))
+            // CSRF protection wraps every route; it self-skips safe methods and
+            // pre-auth (no-session) mutations (E8.3).
+            .layer(middleware::from_fn_with_state(self.clone(), csrf::guard))
             .with_state(self)
     }
 
@@ -169,9 +191,9 @@ impl AppState {
     ///
     /// Gated by [`CurrentUser`]: unauthenticated requests are redirected to
     /// `/login`.
-    async fn index(_user: CurrentUser, State(state): State<AppState>) -> impl IntoResponse {
+    async fn index(user: CurrentUser, State(state): State<AppState>) -> impl IntoResponse {
         IndexTemplate {
-            chrome: state.chrome("dashboard").await,
+            chrome: state.chrome("dashboard", &user).await,
         }
     }
 }
@@ -273,6 +295,7 @@ mod tests {
             telemetry,
             refresh: scheduler.trigger(),
             cookie_policy: SessionCookieSecurePolicy::Never,
+            csrf_key: random_csrf_key(),
         };
         (dir, state)
     }
@@ -280,7 +303,11 @@ mod tests {
     #[tokio::test]
     async fn index_page_renders_with_pico_and_datastar() {
         let (_dir, state) = test_state().await;
-        let chrome = state.chrome("dashboard").await;
+        let user = CurrentUser {
+            user_id: 1,
+            session_id: "sess".to_owned(),
+        };
+        let chrome = state.chrome("dashboard", &user).await;
         let html = IndexTemplate { chrome }.render().expect("render index");
 
         // Base layout wired the vendored assets and the brand.
@@ -289,6 +316,8 @@ mod tests {
         assert!(html.contains("sagittarius"));
         // Dashboard nav item is marked current.
         assert!(html.contains("aria-current=\"page\""));
+        // The session-bound CSRF token is embedded for forms/Datastar.
+        assert!(html.contains(&state.csrf_token("sess")));
     }
 
     #[tokio::test]
@@ -308,6 +337,8 @@ mod tests {
             .await
             .expect("create admin");
 
+        // Keep a clone to derive CSRF tokens for mutating requests in the test.
+        let app = state.clone();
         let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
             .await
             .expect("bind");
@@ -408,9 +439,49 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
+
+        // The logout mutation requires the session-bound CSRF token. Derive it
+        // from the session id (the cookie's `id` component).
+        let session_id = cookie
+            .split_once('=')
+            .unwrap()
+            .1
+            .split_once('.')
+            .unwrap()
+            .0
+            .to_owned();
+        let csrf = app.csrf_token(&session_id);
+
+        // Without the token the mutation is rejected.
         let r = client
             .post(format!("{base}/logout"))
             .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            403,
+            "logout without CSRF token must be rejected"
+        );
+
+        // A cross-origin request (mismatched Origin) is rejected even with a
+        // valid token.
+        let r = client
+            .post(format!("{base}/logout"))
+            .header("cookie", &cookie)
+            .header("x-csrf-token", &csrf)
+            .header("origin", "http://evil.example.com")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403, "cross-origin mutation must be rejected");
+
+        // With the token (via the X-CSRF-Token header) it succeeds.
+        let r = client
+            .post(format!("{base}/logout"))
+            .header("cookie", &cookie)
+            .header("x-csrf-token", &csrf)
             .send()
             .await
             .unwrap();
