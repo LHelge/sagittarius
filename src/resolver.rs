@@ -22,9 +22,11 @@
 //!
 //! | Submodule | Responsibility |
 //! |---|---|
+//! | [`cache`] | Raw-bytes moka cache with per-entry TTL expiry and in-place serve-from-cache patching |
 //! | [`local`] | Authoritative local-record matcher (exact + wildcard suffix-probe, most-specific wins) |
 //! | [`matchset`] | Lock-free, hot-swappable domain name set primitive (admin blacklist, allowlist, blocklist) |
 
+pub mod cache;
 pub mod local;
 pub mod matchset;
 
