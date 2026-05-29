@@ -19,6 +19,7 @@
 
 pub mod assets;
 pub mod auth;
+pub mod blocklists;
 pub mod csrf;
 pub mod dashboard;
 pub mod lists;
@@ -212,6 +213,12 @@ impl AppState {
                 "/settings",
                 get(Self::settings_page).post(Self::settings_save),
             )
+            // Blocklist source management + manual refresh (E8.10).
+            .route("/blocklists", get(Self::blocklists_page))
+            .route("/blocklists/add", post(Self::blocklist_add))
+            .route("/blocklists/remove", post(Self::blocklist_remove))
+            .route("/blocklists/toggle", post(Self::blocklist_toggle))
+            .route("/blocklists/refresh", post(Self::blocklist_refresh))
             // First-run wizard (public; gated by the wizard layer below).
             .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
             // Authentication (public).
@@ -1039,6 +1046,101 @@ mod tests {
         // The live runtime snapshot reflects the change immediately.
         assert_eq!(app.resolver.settings().block_mode, BlockMode::NxDomain);
         assert_eq!(app.resolver.settings().cache_max_ttl, 3600);
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn blocklist_sources_manage_over_http() {
+        use crate::storage::{
+            admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+            blocklists::{BlocklistRepository, SqliteBlocklistRepo},
+        };
+        use crate::web::auth::hash_password;
+        use reqwest::redirect::Policy;
+
+        let (_dir, state) = test_state().await;
+        SqliteAdminUserRepo::new(state.db.pool().clone())
+            .create("admin", &hash_password("s3cret").unwrap())
+            .await
+            .unwrap();
+        let app = state.clone();
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { server.serve(c2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let csrf = app.csrf_token(&session_id_of(&cookie));
+
+        // Add a source via the form.
+        let r = client
+            .post(format!("{base}/blocklists/add"))
+            .header("cookie", &cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!(
+                "csrf_token={csrf}&url=https://example.com/hosts.txt&format=hosts"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        let sources = SqliteBlocklistRepo::new(app.db.pool().clone())
+            .list()
+            .await
+            .unwrap();
+        assert_eq!(sources.len(), 1);
+
+        // The page lists it.
+        let page = client
+            .get(format!("{base}/blocklists"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains("https://example.com/hosts.txt"));
+
+        // The "Refresh now" button fires the trigger and reports it.
+        let r = client
+            .post(format!("{base}/blocklists/refresh"))
+            .header("cookie", &cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("csrf_token={csrf}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(r.text().await.unwrap().contains("Refresh started"));
 
         cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)

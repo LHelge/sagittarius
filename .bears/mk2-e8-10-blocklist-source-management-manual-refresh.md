@@ -1,10 +1,10 @@
 ---
 id: mk2
 title: E8.10 · Blocklist source management + manual refresh
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:57:59.493022497Z
-updated: 2026-05-29T07:57:59.493022497Z
+updated: 2026-05-29T21:57:50.424339370Z
 tags:
 - web
 depends_on:
