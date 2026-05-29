@@ -1,0 +1,178 @@
+/* Sagittarius admin — thin custom layer on top of Pico CSS.
+ *
+ * Pico styles the semantic HTML automatically; this file only adds the few
+ * bespoke widgets the admin UI needs: the top navigation bar, the dashboard
+ * stat cards, outcome badges for the live query log, and a handful of layout
+ * utilities. Keep it small — prefer Pico's classless defaults wherever they
+ * already look good. */
+
+:root {
+  /* Inherit Pico's "pumpkin" preset primary (a warm orange that echoes the
+   * accretion-disc of the logo) so the accent stays in sync with the theme
+   * across light/dark modes instead of being hardcoded here. */
+  --sgt-accent: var(--pico-primary);
+}
+
+/* ── Top navigation bar ─────────────────────────────────────────────────── */
+
+.sgt-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--pico-card-background-color);
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  box-shadow: var(--pico-card-box-shadow);
+}
+
+.sgt-topbar nav {
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.sgt-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-decoration: none;
+  color: var(--pico-color);
+}
+
+.sgt-brand img {
+  display: block;
+}
+
+.sgt-brand strong {
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+}
+
+/* The link row in the middle of the navbar. Wraps gracefully on narrow
+ * viewports rather than overflowing. */
+.sgt-nav {
+  flex-wrap: wrap;
+  justify-content: center;
+  flex: 1 1 auto;
+}
+
+.sgt-nav a {
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--pico-border-radius);
+  text-decoration: none;
+}
+
+.sgt-nav a[aria-current="page"] {
+  background: color-mix(in srgb, var(--sgt-accent) 18%, transparent);
+  color: var(--sgt-accent);
+  font-weight: 600;
+}
+
+/* ── Dashboard stat cards ────────────────────────────────────────────────── */
+
+.sgt-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.sgt-card {
+  margin: 0;
+  padding: 1rem 1.25rem;
+  text-align: center;
+}
+
+.sgt-card .sgt-figure {
+  display: block;
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.sgt-card .sgt-label {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--pico-muted-color);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Two side-by-side panels (e.g. top domains / top clients). */
+.sgt-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1rem;
+}
+
+/* ── Outcome badges (live query log) ─────────────────────────────────────── */
+
+.sgt-badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 1rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sgt-badge--blocked { background: #d9342233; color: #e5533d; }
+.sgt-badge--cached  { background: #2a9d8f33; color: #2a9d8f; }
+.sgt-badge--forwarded { background: #4a7fd933; color: #6ea0ee; }
+.sgt-badge--local   { background: #9b59b633; color: #b07cd0; }
+.sgt-badge--other   { background: var(--pico-muted-border-color); color: var(--pico-muted-color); }
+
+/* ── Misc utilities ──────────────────────────────────────────────────────── */
+
+/* Compact, monospace cell for domain/client columns in dense tables. */
+.sgt-mono {
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.9em;
+}
+
+/* Right-align action buttons inside a flex row. */
+.sgt-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.sgt-inline-form {
+  display: inline;
+}
+
+/* Small, dense buttons used inside table rows. */
+.sgt-btn-sm {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.8rem;
+  margin: 0;
+  width: auto;
+}
+
+/* A centered, narrow card used by the login screen and first-run wizard. */
+.sgt-centered {
+  max-width: 26rem;
+  margin: 4rem auto;
+}
+
+.sgt-centered .sgt-brand {
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+/* Inline error / notice banners. */
+.sgt-notice {
+  padding: 0.6rem 0.9rem;
+  border-radius: var(--pico-border-radius);
+  margin-bottom: 1rem;
+}
+
+.sgt-notice--error { background: #d9342222; color: #e5533d; }
+.sgt-notice--ok    { background: #2a9d8f22; color: #2a9d8f; }
+
+/* Muted helper text. */
+.sgt-muted { color: var(--pico-muted-color); font-size: 0.88rem; }
+
+/* Let dense management tables scroll horizontally on small screens. */
+.sgt-table-wrap { overflow-x: auto; }

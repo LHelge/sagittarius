@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="{{ chrome.theme }}">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>{% block title %}sagittarius{% endblock %}</title>
+    <link rel="icon" type="image/png" href="/assets/icon.png" />
+    <link rel="stylesheet" href="/assets/pico.pumpkin.min.css" />
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script type="module" src="/assets/datastar.js"></script>
+  </head>
+  <body>
+    {% if chrome.show_nav %}
+    <header class="sgt-topbar">
+      <nav class="container-fluid">
+        <ul>
+          <li>
+            <a href="/" class="sgt-brand">
+              <img src="/assets/icon.png" alt="" width="28" height="28" />
+              <strong>sagittarius</strong>
+            </a>
+          </li>
+        </ul>
+        <ul class="sgt-nav">
+          <li><a href="/"{% if chrome.active == "dashboard" %} aria-current="page"{% endif %}>Dashboard</a></li>
+          <li><a href="/log"{% if chrome.active == "log" %} aria-current="page"{% endif %}>Query log</a></li>
+          <li><a href="/blacklist"{% if chrome.active == "blacklist" %} aria-current="page"{% endif %}>Blacklist</a></li>
+          <li><a href="/allowlist"{% if chrome.active == "allowlist" %} aria-current="page"{% endif %}>Allowlist</a></li>
+          <li><a href="/local"{% if chrome.active == "local" %} aria-current="page"{% endif %}>Local DNS</a></li>
+          <li><a href="/blocklists"{% if chrome.active == "blocklists" %} aria-current="page"{% endif %}>Blocklists</a></li>
+          <li><a href="/upstreams"{% if chrome.active == "upstreams" %} aria-current="page"{% endif %}>Upstreams</a></li>
+          <li><a href="/settings"{% if chrome.active == "settings" %} aria-current="page"{% endif %}>Settings</a></li>
+        </ul>
+        <ul>
+          {% if chrome.authenticated %}
+          <li>
+            <form method="post" action="/logout" class="sgt-inline-form">
+              <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+              <button type="submit" class="secondary outline sgt-btn-sm">Logout</button>
+            </form>
+          </li>
+          {% endif %}
+        </ul>
+      </nav>
+    </header>
+    {% endif %}
+    <main class="container">{% block content %}{% endblock %}</main>
+  </body>
+</html>

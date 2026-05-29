@@ -42,6 +42,7 @@ use crate::{
         upstreams::{SqliteUpstreamRepo, UpstreamRepository},
     },
     telemetry::{LiveLog, Stats, TelemetrySink},
+    web::{AdminServer, AppState},
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -187,6 +188,18 @@ impl App {
             Arc::new(Stats::new()),
         ));
 
+        // ── Web admin shared state ────────────────────────────────────────────
+        // Built from clones before the originals are moved into the engine, so
+        // the DNS engine and the admin UI share the same `ResolverState`,
+        // telemetry sink, and blocklist refresh trigger.
+        let app_state = AppState {
+            db: db.clone(),
+            resolver: Arc::clone(&state),
+            telemetry: Arc::clone(&telemetry),
+            refresh: scheduler.trigger(),
+            cookie_policy: self.config.session_cookie_secure,
+        };
+
         let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());
 
         let udp_sockets_per_addr = std::thread::available_parallelism()
@@ -195,9 +208,14 @@ impl App {
         let listeners = DnsListeners::bind(&self.config.dns_addrs, udp_sockets_per_addr)?;
         listeners.serve(engine, self.shutdown_token.clone(), &self.tracker);
 
+        // ── Web admin server ──────────────────────────────────────────────────
+        // Bind here (not inside the spawned task) so a bad --admin-addr fails
+        // startup, mirroring the DNS listener's bind → serve split.
+        let admin = AdminServer::bind(self.config.admin_addr, app_state).await?;
+
         // ── Subsystem tasks ───────────────────────────────────────────────────
-        self.spawn_subsystem("web-admin", |token| async move {
-            token.cancelled().await;
+        self.spawn_subsystem("web-admin", move |token| async move {
+            admin.serve(token).await;
         });
 
         self.spawn_subsystem("blocklist-refresh", move |token| async move {
