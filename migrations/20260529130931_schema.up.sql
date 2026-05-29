@@ -1,8 +1,5 @@
--- Migration 0001: initial schema (DDL only — no seed data).
---
--- Seed data (default settings row, default upstreams) is inserted in
--- migration 0002 so that DDL and DML changes stay in separate, independently
--- reviewable files.
+-- Initial schema (DDL only — no seed data; seed lives in the seed_defaults
+-- migration).
 --
 -- Conventions used throughout:
 --   * Timestamps are stored as INTEGER unix-epoch seconds via DEFAULT (unixepoch()).

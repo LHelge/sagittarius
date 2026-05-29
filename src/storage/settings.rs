@@ -2,8 +2,8 @@
 //!
 //! Provides the [`SettingsRepository`] trait and its [`SqliteSettingsRepo`]
 //! implementation.  All DB interaction uses compile-time-checked `sqlx::query_as!`
-//! / `sqlx::query!` macros against the `settings` table defined in migration
-//! `0001_schema.sql`.
+//! / `sqlx::query!` macros against the `settings` table defined in the schema
+//! migration.
 
 use std::{
     fmt,

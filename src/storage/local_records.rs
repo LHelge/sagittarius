@@ -3,7 +3,7 @@
 //! Provides the [`LocalRecordRepository`] trait and its
 //! [`SqliteLocalRecordRepo`] implementation.  All DB interaction uses
 //! compile-time-checked `sqlx` macros against the `local_records` table
-//! defined in migration `0001_schema.sql`.
+//! defined in the schema migration.
 //!
 //! # Name normalization
 //!

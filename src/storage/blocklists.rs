@@ -2,7 +2,7 @@
 //!
 //! Provides the [`BlocklistRepository`] trait and its [`SqliteBlocklistRepo`]
 //! implementation.  All DB interaction uses compile-time-checked `sqlx` macros
-//! against the tables defined in migration `0001_schema.sql`.
+//! against the tables defined in the schema migration.
 //!
 //! # Responsibilities
 //!

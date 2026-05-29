@@ -2,7 +2,7 @@
 //!
 //! Provides the [`UpstreamRepository`] trait and its [`SqliteUpstreamRepo`]
 //! implementation.  All DB interaction uses compile-time-checked `sqlx` macros
-//! against the `upstreams` table defined in migration `0001_schema.sql`.
+//! against the `upstreams` table defined in the schema migration.
 
 use std::{fmt, str::FromStr};
 

@@ -1,17 +1,17 @@
--- Migration 0002: seed working defaults (DML only — DDL lives in 0001).
+-- Seed working defaults (DML only — DDL lives in the schema migration).
 --
 -- Every statement uses ON CONFLICT … DO NOTHING so that:
 --   * a fresh database gets sensible defaults immediately (no first-run logic),
 --   * re-running this SQL against an already-seeded database is a complete no-op
 --     and never clobbers admin-changed values.
 --
--- sqlx runs each numbered migration exactly once; the idempotency guard here is
+-- sqlx runs each migration exactly once; the idempotency guard here is
 -- defence-in-depth and enables the test that verifies "re-apply preserves edits".
 
 -- ── settings ──────────────────────────────────────────────────────────────────
 -- The singleton row (id = 1 enforced by the schema CHECK).
--- ui_theme relies on the column DEFAULT ('auto') defined in 0001; we set it
--- explicitly here for clarity and consistency.
+-- ui_theme relies on the column DEFAULT ('auto') defined in the schema; we set
+-- it explicitly here for clarity and consistency.
 
 INSERT INTO settings (
     id,
@@ -40,7 +40,7 @@ INSERT INTO settings (
 -- ── upstreams ─────────────────────────────────────────────────────────────────
 -- Cloudflare public resolvers as default upstreams.
 -- Explicit ids (1, 2) give ON CONFLICT(id) a stable target without requiring a
--- UNIQUE constraint on address — the 0001 schema is not modified.
+-- UNIQUE constraint on address — the schema is not modified.
 
 INSERT INTO upstreams (
     id,
