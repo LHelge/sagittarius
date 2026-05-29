@@ -46,5 +46,8 @@
     </header>
     {% endif %}
     <main class="container">{% block content %}{% endblock %}</main>
+    {% if chrome.authenticated %}
+    <div id="sgt-toast" class="sgt-toast" aria-live="polite"></div>
+    {% endif %}
   </body>
 </html>

@@ -21,6 +21,7 @@ pub mod assets;
 pub mod auth;
 pub mod csrf;
 pub mod dashboard;
+pub mod lists;
 pub mod live_log;
 pub mod origin;
 pub mod render;
@@ -179,6 +180,9 @@ impl AppState {
             // Live query log + the shared SSE stream (log + dashboard counters).
             .route("/log", get(Self::query_log))
             .route("/events", get(Self::events))
+            // One-click list actions from the live log.
+            .route("/log/whitelist", post(Self::log_whitelist))
+            .route("/log/blacklist", post(Self::log_blacklist))
             // First-run wizard (public; gated by the wizard layer below).
             .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
             // Authentication (public).
@@ -712,6 +716,95 @@ mod tests {
         assert!(body.contains("sgt-badge--blocked"));
 
         drop(resp);
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn one_click_whitelist_persists_and_swaps() {
+        use crate::{
+            codec::name::Name,
+            storage::{
+                admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+                lists::{AllowlistRepository, SqliteAllowlistRepo},
+            },
+            web::auth::hash_password,
+        };
+        use reqwest::redirect::Policy;
+
+        let (_dir, state) = test_state().await;
+        SqliteAdminUserRepo::new(state.db.pool().clone())
+            .create("admin", &hash_password("s3cret").unwrap())
+            .await
+            .unwrap();
+        let app = state.clone();
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { server.serve(c2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let csrf = app.csrf_token(&session_id_of(&cookie));
+
+        let dom: Name = "ads.example.com".parse().unwrap();
+        assert!(!app.resolver.allowlist().contains(&dom));
+
+        // Without the CSRF token the mutation is rejected.
+        let r = client
+            .post(format!("{base}/log/whitelist?domain=ads.example.com"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403);
+
+        // With the token it succeeds and returns a Datastar toast patch.
+        let r = client
+            .post(format!("{base}/log/whitelist?domain=ads.example.com"))
+            .header("cookie", &cookie)
+            .header("x-csrf-token", &csrf)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let body = r.text().await.unwrap();
+        assert!(body.contains("datastar-patch-elements"));
+        assert!(body.contains("allowlist"));
+
+        // Persisted to the DB and swapped into the live set.
+        assert!(app.resolver.allowlist().contains(&dom));
+        let names = SqliteAllowlistRepo::new(app.db.pool().clone())
+            .load_all()
+            .await
+            .unwrap();
+        assert!(names.contains(&dom));
+
         cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)
             .await

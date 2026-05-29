@@ -135,6 +135,10 @@ struct LogRowView {
     latency_ms: u64,
     /// Lowercased "qname client" haystack for the client-side text filter.
     search: String,
+    /// One-click action offered for this row: `"allow"` (whitelist a
+    /// blocklist-blocked row), `"deny"` (blacklist a resolved row), or `""`
+    /// when no action would be effective (E8.7).
+    action_kind: &'static str,
 }
 
 impl LogRowView {
@@ -143,6 +147,13 @@ impl LogRowView {
         let qname = ev.qname.to_string();
         let client = ev.client.ip().to_string();
         let search = format!("{} {}", qname.to_lowercase(), client);
+        let action_kind = if ev.outcome.offers_whitelist() {
+            "allow"
+        } else if ev.outcome.offers_blacklist() {
+            "deny"
+        } else {
+            ""
+        };
         Self {
             client,
             qname,
@@ -152,6 +163,7 @@ impl LogRowView {
             outcome_cat: cat,
             latency_ms: ev.latency.as_millis() as u64,
             search,
+            action_kind,
         }
     }
 }
@@ -200,6 +212,38 @@ mod tests {
         assert!(html.contains("blocked"));
         assert!(html.contains("data-show"));
         assert!(html.contains("7 ms"));
+        // A blocklist-blocked row offers the one-click Whitelist action.
+        assert!(html.contains("Whitelist"));
+        assert!(html.contains("/log/whitelist?domain=ads.example.com."));
+    }
+
+    #[test]
+    fn row_action_varies_by_outcome() {
+        // Resolved rows offer Blacklist.
+        let cached = LogRowView::from_event(&event("good.example.com", Outcome::Cached))
+            .render()
+            .unwrap();
+        assert!(cached.contains("Blacklist"));
+        assert!(cached.contains("/log/blacklist?domain=good.example.com."));
+
+        // Admin-blocked and local rows offer no one-click action.
+        for o in [
+            Outcome::BlockedByAdmin,
+            Outcome::Local,
+            Outcome::LocalNoData,
+        ] {
+            let html = LogRowView::from_event(&event("x.example.com", o))
+                .render()
+                .unwrap();
+            assert!(
+                !html.contains("Whitelist"),
+                "{o:?} must not offer whitelist"
+            );
+            assert!(
+                !html.contains("Blacklist"),
+                "{o:?} must not offer blacklist"
+            );
+        }
     }
 
     #[test]
