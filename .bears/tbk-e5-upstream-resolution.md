@@ -2,10 +2,10 @@
 id: tbk
 title: E5 · Upstream resolution
 type: epic
-status: open
+status: done
 priority: P1
 created: 2026-05-28T22:38:16.375074671Z
-updated: 2026-05-28T22:44:10.227532173Z
+updated: 2026-05-29T16:08:24.908280803Z
 tags:
 - upstream
 - dns
