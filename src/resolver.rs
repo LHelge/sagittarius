@@ -25,10 +25,15 @@
 //! | [`cache`] | Raw-bytes moka cache with per-entry TTL expiry and in-place serve-from-cache patching |
 //! | [`local`] | Authoritative local-record matcher (exact + wildcard suffix-probe, most-specific wins) |
 //! | [`matchset`] | Lock-free, hot-swappable domain name set primitive (admin blacklist, allowlist, blocklist) |
+//! | [`state`] | [`state::ResolverState`] bundle + startup hydration (SPEC §3.1, §3.2) |
 
 pub mod cache;
 pub mod local;
 pub mod matchset;
+pub mod state;
+
+/// A type alias for `Result<T, Error>` in the resolver module.
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors that can occur during DNS resolution.
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +45,16 @@ pub enum Error {
     /// The upstream resolver returned a response that could not be used.
     #[error("upstream error: {0}")]
     Upstream(String),
+
+    /// A storage error occurred during resolver state hydration.
+    #[error("storage error during hydration: {0}")]
+    Storage(#[from] crate::storage::Error),
+
+    /// A local record row in the database contains an invalid value (e.g. a
+    /// malformed IP address string, or a name that cannot be accepted by the
+    /// local-record builder).
+    #[error("invalid local record: {0}")]
+    InvalidLocalRecord(String),
 }
 
 #[cfg(test)]
@@ -53,6 +68,11 @@ mod tests {
             Error::Upstream("timeout".into())
                 .to_string()
                 .contains("timeout")
+        );
+        assert!(
+            Error::InvalidLocalRecord("bad ip".into())
+                .to_string()
+                .contains("bad ip")
         );
     }
 }
