@@ -722,7 +722,8 @@ mod tests {
             .unwrap();
         assert!(log.contains("Query log"));
         assert!(log.contains("id=\"log-body\""));
-        assert!(log.contains("@get('/events')"));
+        // The page opens the SSE stream on load via Datastar's data-init.
+        assert!(log.contains("data-init=\"@get('/events')\""));
 
         // Open the SSE stream.
         let mut resp = client
