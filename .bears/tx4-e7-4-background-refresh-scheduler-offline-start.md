@@ -1,10 +1,10 @@
 ---
 id: tx4
 title: E7.4 · Background refresh scheduler + offline start
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:47:31.151603769Z
-updated: 2026-05-29T08:20:48.675910895Z
+updated: 2026-05-29T19:56:27.875626734Z
 tags:
 - blocklist
 depends_on:

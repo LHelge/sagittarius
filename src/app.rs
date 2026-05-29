@@ -21,6 +21,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{info, warn};
 
 use crate::{
+    blocklist::{fetch::Fetcher, scheduler::BlocklistScheduler},
     config::Config,
     error::Result,
     resolver::{
@@ -37,6 +38,7 @@ use crate::{
     },
     storage::{
         Db,
+        blocklists::SqliteBlocklistRepo,
         upstreams::{SqliteUpstreamRepo, UpstreamRepository},
     },
     telemetry::{LiveLog, Stats, TelemetrySink},
@@ -142,6 +144,18 @@ impl App {
         let db = Db::connect(&self.config.db_path).await?;
         let state = ResolverState::hydrate(&db).await?;
 
+        // ── Blocklist offline start ───────────────────────────────────────────
+        // Build the scheduler *before* cloning `state` into the engine so both
+        // share the same `Arc<ResolverState>`.  `load_from_cache` is awaited
+        // here (synchronously within run_until_shutdown) so that blocklist
+        // domains are active before the DNS listener starts serving.
+        let scheduler = BlocklistScheduler::new(
+            SqliteBlocklistRepo::new(db.pool().clone()),
+            Arc::clone(&state),
+            Fetcher::new(),
+        );
+        scheduler.load_from_cache().await;
+
         let rows = SqliteUpstreamRepo::new(db.pool().clone())
             .list_enabled()
             .await?;
@@ -181,13 +195,13 @@ impl App {
         let listeners = DnsListeners::bind(&self.config.dns_addrs, udp_sockets_per_addr)?;
         listeners.serve(engine, self.shutdown_token.clone(), &self.tracker);
 
-        // ── Placeholder subsystem tasks ───────────────────────────────────────
+        // ── Subsystem tasks ───────────────────────────────────────────────────
         self.spawn_subsystem("web-admin", |token| async move {
             token.cancelled().await;
         });
 
-        self.spawn_subsystem("background", |token| async move {
-            token.cancelled().await;
+        self.spawn_subsystem("blocklist-refresh", move |token| async move {
+            scheduler.run(token).await;
         });
 
         // Close the tracker so `wait()` knows the spawn set is complete once
