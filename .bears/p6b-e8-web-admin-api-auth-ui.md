@@ -2,10 +2,10 @@
 id: p6b
 title: E8 · Web admin (API, auth, UI)
 type: epic
-status: open
+status: done
 priority: P1
 created: 2026-05-28T22:38:36.964929565Z
-updated: 2026-05-28T22:44:39.217163910Z
+updated: 2026-05-29T21:57:50.424493372Z
 tags:
 - web
 depends_on:
