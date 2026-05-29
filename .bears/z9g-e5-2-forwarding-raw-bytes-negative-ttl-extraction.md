@@ -1,10 +1,10 @@
 ---
 id: z9g
 title: E5.2 · Forwarding + raw-bytes & negative-TTL extraction
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:23:17.950014255Z
-updated: 2026-05-29T14:16:22.196152282Z
+updated: 2026-05-29T15:35:30.668961179Z
 tags:
 - upstream
 - dns

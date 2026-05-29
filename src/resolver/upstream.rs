@@ -12,8 +12,10 @@
 use std::fmt;
 
 pub mod client;
+pub mod forward;
 
 pub use client::{UpstreamBackground, UpstreamClient};
+pub use forward::{DEFAULT_QUERY_TIMEOUT, ForwardResult};
 
 // ── Transport enum ────────────────────────────────────────────────────────────
 
@@ -81,6 +83,18 @@ pub enum Error {
     /// A generic transport-level error not covered by the variants above.
     #[error("upstream transport error: {0}")]
     Transport(String),
+
+    /// The per-attempt query timeout elapsed before the upstream responded.
+    #[error("upstream {transport} query timed out")]
+    Timeout { transport: UpstreamTransport },
+
+    /// Hickory reported a send/receive failure during the DNS exchange.
+    #[error("upstream {transport} exchange failed: {source}")]
+    Exchange {
+        transport: UpstreamTransport,
+        #[source]
+        source: hickory_net::NetError,
+    },
 }
 
 /// Convenience alias for `Result<T, upstream::Error>`.
