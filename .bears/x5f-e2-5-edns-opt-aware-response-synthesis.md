@@ -1,10 +1,10 @@
 ---
 id: x5f
 title: E2.5 · EDNS/OPT-aware response synthesis
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:24:48.638459658Z
-updated: 2026-05-29T08:17:16.057345016Z
+updated: 2026-05-29T11:45:59.547296648Z
 tags:
 - codec
 - dns
