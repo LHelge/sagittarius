@@ -1,10 +1,10 @@
 ---
 id: zkb
 title: E8.4 · First-run wizard
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:57:32.552844071Z
-updated: 2026-05-29T08:20:57.949455881Z
+updated: 2026-05-29T21:26:40.433718848Z
 tags:
 - web
 - auth
