@@ -1,9 +1,9 @@
-//! Telemetry module — structured logging initialisation.
+//! Telemetry module — structured logging initialisation and runtime diagnostics.
 //!
 //! This module owns the one-time setup of the [`tracing`] global subscriber
-//! (an `fmt` layer writing to stdout filtered by [`EnvFilter`]). All other
-//! telemetry concerns (per-query structured events, live-log ring buffer,
-//! broadcast channel) belong to the E6 milestone and are **not** built here.
+//! (an `fmt` layer writing to stdout filtered by [`EnvFilter`]) as well as the
+//! per-query event type, live-log ring buffer, and runtime statistics added in
+//! E6.6.
 //!
 //! # Usage
 //!
@@ -24,6 +24,20 @@
 //! process, and the global subscriber can only be set once per process. Using
 //! `try_init` instead of `init` lets every test call [`Telemetry::init`]
 //! safely without coordinating who goes first.
+
+// ── Submodules ────────────────────────────────────────────────────────────────
+
+pub mod event;
+pub mod live_log;
+pub mod stats;
+
+// ── Re-exports ────────────────────────────────────────────────────────────────
+
+pub use event::{QueryEvent, TelemetrySink};
+pub use live_log::LiveLog;
+pub use stats::{Stats, StatsSnapshot};
+
+// ── Imports ───────────────────────────────────────────────────────────────────
 
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, registry, util::SubscriberInitExt};

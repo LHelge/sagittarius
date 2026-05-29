@@ -1,10 +1,10 @@
 ---
 id: 5jx
 title: E6.6 · Telemetry primitives (tracing event, live-log buffer, stats)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:41:51.347781272Z
-updated: 2026-05-29T07:41:51.347781272Z
+updated: 2026-05-29T17:32:29.262845882Z
 tags:
 - pipeline
 - dns
