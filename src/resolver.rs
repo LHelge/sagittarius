@@ -25,12 +25,14 @@
 //! | [`cache`] | Raw-bytes moka cache with per-entry TTL expiry and in-place serve-from-cache patching |
 //! | [`local`] | Authoritative local-record matcher (exact + wildcard suffix-probe, most-specific wins) |
 //! | [`matchset`] | Lock-free, hot-swappable domain name set primitive (admin blacklist, allowlist, blocklist) |
+//! | [`pipeline`] | Request/response model ([`pipeline::DnsRequest`], [`pipeline::PipelineResponse`], [`pipeline::Outcome`]) and tower service shape |
 //! | [`state`] | [`state::ResolverState`] bundle + startup hydration (SPEC §3.1, §3.2) |
 //! | [`upstream`] | Hickory-backed upstream transport clients (UDP/TCP/DoT/DoH) (SPEC §7) |
 
 pub mod cache;
 pub mod local;
 pub mod matchset;
+pub mod pipeline;
 pub mod state;
 pub mod upstream;
 
