@@ -20,11 +20,13 @@
 //! | [`reader`] | Bounds-checked cursor over `bytes::Bytes` for parsing |
 //! | [`writer`] | Append-only output buffer over `bytes::BytesMut` for synthesis |
 //! | [`framing`] | UDP/TCP message framing (length-prefix encode/decode) |
+//! | [`name`] | [`Name`] type, QNAME reader/writer, RR name-skip helper |
 //!
 //! All submodules share this single [`Error`] type; the crate-level
 //! [`crate::error::Error`] wraps it via `#[from]`.
 
 pub mod framing;
+pub mod name;
 pub mod reader;
 pub mod writer;
 
@@ -63,6 +65,46 @@ pub enum Error {
     /// received.
     #[error("TCP length prefix is truncated: need 2 bytes, got {0}")]
     TruncatedLengthPrefix(usize),
+
+    /// A DNS name label exceeded the 63-byte maximum (RFC 1035 §2.3.4).
+    ///
+    /// Returned when constructing a [`name::Name`] from a string or from the
+    /// wire if a label length byte exceeds 63.
+    #[error("label too long: {0} bytes (maximum is 63)")]
+    LabelTooLong(usize),
+
+    /// A DNS name exceeded the 255-byte total wire-format length limit
+    /// (RFC 1035 §2.3.4).
+    ///
+    /// Returned when constructing a [`name::Name`] from a string or from the
+    /// wire if the cumulative encoded length would exceed 255 bytes.
+    #[error("name too long: {0} bytes (maximum is 255)")]
+    NameTooLong(usize),
+
+    /// The name-skip helper in the RR section exceeded the hop or byte cap
+    /// while following compression pointers.
+    ///
+    /// This indicates either a pointer loop or a pathologically deep chain
+    /// crafted to exhaust resources.  The skip is aborted with this error
+    /// rather than looping indefinitely.
+    #[error("name skip limit exceeded while following compression pointers")]
+    NameSkipLimitExceeded,
+
+    /// A compression pointer in the RR section pointed to an offset that is
+    /// not strictly before the current position (i.e. forward or out-of-range
+    /// pointer).  Such pointers are rejected defensively.
+    #[error("compression pointer target {target} is invalid (message length {msg_len})")]
+    InvalidPointerTarget {
+        /// The pointer offset that was rejected.
+        target: u16,
+        /// Total length of the message buffer used to validate the range.
+        msg_len: usize,
+    },
+
+    /// A domain name string could not be parsed because it contained an
+    /// empty label in a non-root position (e.g. `"foo..bar"`).
+    #[error("invalid domain name: empty label")]
+    EmptyLabel,
 }
 
 #[cfg(test)]

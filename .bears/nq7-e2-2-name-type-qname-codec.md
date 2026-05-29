@@ -1,10 +1,10 @@
 ---
 id: nq7
 title: E2.2 · Name type & QNAME codec
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:24:14.784643923Z
-updated: 2026-05-29T06:24:14.784643923Z
+updated: 2026-05-29T11:20:48.232964051Z
 tags:
 - codec
 - dns
