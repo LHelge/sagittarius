@@ -9,6 +9,7 @@ readme = "README.md"
 
 [dependencies]
 anyhow = "1.0.102"
+arc-swap = "1.9.1"
 bytes = "1.11.1"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 sqlx = { version = "~0.8", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }

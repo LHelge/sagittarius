@@ -1,4 +1,4 @@
-//! DNS resolution pipeline.
+//! DNS resolution pipeline and resolver state.
 //!
 //! Implements the query lifecycle described in SPEC §5.  The resolution path
 //! is expressed as a [`tower`] service stack.  Each layer routes on the
@@ -17,6 +17,14 @@
 //! 8. Upstream forwarding (inner service)
 //!
 //! The upstream client uses [`hickory`] for DoT/DoH transport.
+//!
+//! # Module layout
+//!
+//! | Submodule | Responsibility |
+//! |---|---|
+//! | [`matchset`] | Lock-free, hot-swappable domain name set primitive (admin blacklist, allowlist, blocklist) |
+
+pub mod matchset;
 
 /// Errors that can occur during DNS resolution.
 #[derive(Debug, thiserror::Error)]
