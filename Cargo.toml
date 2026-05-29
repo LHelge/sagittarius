@@ -21,6 +21,7 @@ sqlx = { version = "~0.8", features = ["runtime-tokio", "sqlite", "macros", "mig
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync"] }
 tokio-util = { version = "0.7.18", features = ["rt"] }
+tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 

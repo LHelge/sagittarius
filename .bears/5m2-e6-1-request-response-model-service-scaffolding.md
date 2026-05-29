@@ -1,10 +1,10 @@
 ---
 id: 5m2
 title: E6.1 · Request/response model + service scaffolding
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:41:24.825291276Z
-updated: 2026-05-29T07:41:24.825291276Z
+updated: 2026-05-29T16:35:28.944388641Z
 tags:
 - pipeline
 - dns
