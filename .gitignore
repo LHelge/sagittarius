@@ -1,1 +1,7 @@
 /target
+
+# cargo-fuzz build artifacts and runtime output (fuzz/ itself is committed)
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/Cargo.lock

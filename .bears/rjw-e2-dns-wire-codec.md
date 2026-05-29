@@ -2,10 +2,10 @@
 id: rjw
 title: E2 · DNS wire codec
 type: epic
-status: open
+status: done
 priority: P1
 created: 2026-05-28T22:38:00.597942343Z
-updated: 2026-05-28T22:43:40.349682360Z
+updated: 2026-05-29T12:02:18.758972057Z
 tags:
 - codec
 - dns

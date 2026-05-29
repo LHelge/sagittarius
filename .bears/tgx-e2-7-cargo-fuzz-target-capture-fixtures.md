@@ -1,10 +1,10 @@
 ---
 id: tgx
 title: E2.7 · cargo-fuzz target & capture fixtures
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:24:59.550225823Z
-updated: 2026-05-29T06:24:59.550225823Z
+updated: 2026-05-29T12:02:18.758807384Z
 tags:
 - codec
 - dns
