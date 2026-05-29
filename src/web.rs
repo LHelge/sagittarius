@@ -22,8 +22,12 @@ pub mod auth;
 pub mod csrf;
 pub mod origin;
 pub mod render;
+pub mod wizard;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use askama::Template;
 use askama_web::WebTemplate;
@@ -116,6 +120,9 @@ pub struct AppState {
     /// Random at startup; outstanding page tokens are invalidated on restart
     /// (the user simply reloads to obtain a fresh one).
     pub csrf_key: Arc<[u8; 32]>,
+    /// Fast-path flag for the first-run wizard (E8.4): set once an admin user
+    /// is observed, after which the wizard is permanently closed.
+    pub setup_done: Arc<AtomicBool>,
 }
 
 /// Generate a fresh random key for signing session-bound CSRF tokens.
@@ -172,6 +179,8 @@ impl AppState {
     fn router(self) -> Router {
         Router::new()
             .route("/", get(Self::index))
+            // First-run wizard (public; gated by the wizard layer below).
+            .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
             // Authentication (public).
             .route("/login", get(auth::login_form).post(auth::login_submit))
             .route("/logout", post(auth::logout))
@@ -184,6 +193,9 @@ impl AppState {
             // CSRF protection wraps every route; it self-skips safe methods and
             // pre-auth (no-session) mutations (E8.3).
             .layer(middleware::from_fn_with_state(self.clone(), csrf::guard))
+            // The wizard gate is outermost (E8.4): until the first admin exists
+            // it forces all UI traffic to /setup; afterwards it closes /setup.
+            .layer(middleware::from_fn_with_state(self.clone(), wizard::guard))
             .with_state(self)
     }
 
@@ -296,6 +308,7 @@ mod tests {
             refresh: scheduler.trigger(),
             cookie_policy: SessionCookieSecurePolicy::Never,
             csrf_key: random_csrf_key(),
+            setup_done: Arc::new(AtomicBool::new(false)),
         };
         (dir, state)
     }
@@ -504,6 +517,101 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 303);
+
+        token.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn first_run_wizard_flow() {
+        use crate::storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo};
+        use reqwest::redirect::Policy;
+
+        // Fresh state: no admin user exists yet.
+        let (_dir, state) = test_state().await;
+        let pool = state.db.pool().clone();
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .expect("bind");
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let token = CancellationToken::new();
+        let token2 = token.clone();
+        let handle = tokio::spawn(async move { server.serve(token2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+
+        // Any UI route redirects to the wizard while admin_users is empty.
+        let r = client.get(format!("{base}/")).send().await.unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/setup");
+
+        // Even /login bounces to /setup before an admin exists.
+        let r = client.get(format!("{base}/login")).send().await.unwrap();
+        assert_eq!(r.headers().get("location").unwrap(), "/setup");
+
+        // The wizard renders.
+        let r = client.get(format!("{base}/setup")).send().await.unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(r.text().await.unwrap().contains("Welcome"));
+
+        // Mismatched passwords are rejected.
+        let r = client
+            .post(format!("{base}/setup"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=longenough&confirm=different")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(r.text().await.unwrap().contains("do not match"));
+        assert_eq!(
+            SqliteAdminUserRepo::new(pool.clone())
+                .count()
+                .await
+                .unwrap(),
+            0,
+            "no admin created on validation failure"
+        );
+
+        // A valid submission creates the admin and unlocks the UI.
+        let r = client
+            .post(format!("{base}/setup"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=longenough&confirm=longenough")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/login");
+        assert_eq!(
+            SqliteAdminUserRepo::new(pool.clone())
+                .count()
+                .await
+                .unwrap(),
+            1
+        );
+
+        // The wizard is now closed.
+        let r = client.get(format!("{base}/setup")).send().await.unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/login");
+
+        // And the freshly created admin can log in.
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=longenough")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/");
 
         token.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)

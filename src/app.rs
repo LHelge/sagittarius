@@ -199,6 +199,7 @@ impl App {
             refresh: scheduler.trigger(),
             cookie_policy: self.config.session_cookie_secure,
             csrf_key: crate::web::random_csrf_key(),
+            setup_done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
 
         let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());

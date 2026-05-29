@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}First-run setup · sagittarius{% endblock %}
+{% block content %}
+<article class="sgt-centered">
+  <a href="/" class="sgt-brand">
+    <img src="/assets/icon.png" alt="" width="36" height="36" />
+    <strong>sagittarius</strong>
+  </a>
+  <hgroup>
+    <h1>Welcome</h1>
+    <p>Create the administrator account to unlock the web interface. DNS is already being served with the default configuration.</p>
+  </hgroup>
+  {% if let Some(error) = error %}
+  <p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
+  {% endif %}
+  <form method="post" action="/setup">
+    <label>
+      Username
+      <input type="text" name="username" autocomplete="username" required autofocus />
+    </label>
+    <label>
+      Password
+      <input type="password" name="password" autocomplete="new-password" required />
+      <small>At least 8 characters.</small>
+    </label>
+    <label>
+      Confirm password
+      <input type="password" name="confirm" autocomplete="new-password" required />
+    </label>
+    <button type="submit">Create account</button>
+  </form>
+</article>
+{% endblock %}
