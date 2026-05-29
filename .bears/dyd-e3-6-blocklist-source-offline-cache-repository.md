@@ -1,10 +1,10 @@
 ---
 id: dyd
 title: E3.6 · Blocklist-source & offline-cache repository
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:55:39.511423935Z
-updated: 2026-05-29T06:55:39.511423935Z
+updated: 2026-05-29T12:57:33.542820138Z
 tags:
 - storage
 depends_on:
