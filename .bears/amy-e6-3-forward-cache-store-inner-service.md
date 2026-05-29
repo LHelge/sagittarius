@@ -1,10 +1,10 @@
 ---
 id: amy
 title: E6.3 · Forward + cache-store inner service
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:41:44.518141902Z
-updated: 2026-05-29T09:29:29.674599424Z
+updated: 2026-05-29T16:52:49.896129303Z
 tags:
 - pipeline
 - dns
