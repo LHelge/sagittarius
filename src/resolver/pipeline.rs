@@ -32,6 +32,8 @@
 //! - `pipeline/layers.rs` — decision layers (E6.2)
 //! - `pipeline/forward.rs` — upstream forwarding inner service (E6.3)
 
+pub mod layers;
+
 use std::net::SocketAddr;
 
 use bytes::Bytes;

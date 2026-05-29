@@ -1,10 +1,10 @@
 ---
 id: h3u
 title: E6.2 · Decision layers (precedence stack)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:41:36.542631618Z
-updated: 2026-05-29T07:41:36.542631618Z
+updated: 2026-05-29T16:46:45.982341349Z
 tags:
 - pipeline
 - dns
