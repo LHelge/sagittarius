@@ -1,0 +1,42 @@
+# This is an isolated workspace root — the empty [workspace] table below is the
+# key isolation mechanism.  It makes `fuzz/` its own workspace root so the
+# parent package never compiles this crate, and stable `cargo build`/`cargo test`
+# from the repo root are never affected by the nightly/libfuzzer-sys dependency.
+[workspace]
+
+[package]
+name = "sagittarius-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# libfuzzer-sys requires nightly + LLVM/clang sanitizers; only used by `cargo fuzz`.
+libfuzzer-sys = "0.4"
+# arbitrary is used by the structured fuzz target.
+arbitrary = { version = "1", features = ["derive"] }
+# bytes matches the version used by the parent crate.
+bytes = "1"
+# The parent crate — path dep so the fuzz targets share the exact same code.
+sagittarius = { path = ".." }
+
+[profile.release]
+# Keep minimal debug info for symbolicated crash reports.
+debug = 1
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_structured"
+path = "fuzz_targets/parse_structured.rs"
+test = false
+doc = false
+bench = false
