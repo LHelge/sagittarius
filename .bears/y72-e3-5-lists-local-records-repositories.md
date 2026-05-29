@@ -1,10 +1,10 @@
 ---
 id: y72
 title: E3.5 · Lists & local-records repositories
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:55:34.120047211Z
-updated: 2026-05-29T06:55:34.120047211Z
+updated: 2026-05-29T12:53:06.901418811Z
 tags:
 - storage
 depends_on:

@@ -16,9 +16,13 @@
 //!
 //! | Sub-module | Responsibility |
 //! |---|---|
+//! | [`lists`] | Blacklist + allowlist repos: [`lists::BlacklistRepository`] + [`lists::AllowlistRepository`] |
+//! | [`local_records`] | Local DNS record rows: [`local_records::LocalRecordRepository`] + [`local_records::SqliteLocalRecordRepo`] |
 //! | [`settings`] | Singleton settings row: [`settings::SettingsRepository`] + [`settings::SqliteSettingsRepo`] |
 //! | [`upstreams`] | Upstream resolver rows: [`upstreams::UpstreamRepository`] + [`upstreams::SqliteUpstreamRepo`] |
 
+pub mod lists;
+pub mod local_records;
 pub mod settings;
 pub mod upstreams;
 
@@ -48,6 +52,12 @@ pub enum Error {
     /// address string).
     #[error("decode error: {0}")]
     Decode(String),
+
+    /// A domain name string supplied to a repository method could not be
+    /// parsed as a valid DNS name (e.g. an empty label, a label longer than 63
+    /// bytes, or a name exceeding 255 wire-format bytes).
+    #[error("invalid domain name: {0}")]
+    InvalidDomain(String),
 }
 
 // ── Db ─────────────────────────────────────────────────────────────────────
