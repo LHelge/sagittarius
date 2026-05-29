@@ -1,10 +1,10 @@
 ---
 id: 7nu
 title: E1.2 · CLI arguments & config resolution
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:00:09.165746932Z
-updated: 2026-05-29T08:17:00.297231317Z
+updated: 2026-05-29T10:09:00.298482544Z
 tags:
 - foundation
 - cli
