@@ -18,12 +18,21 @@
 //! Fields are added as later subtasks wire them in.
 
 pub mod assets;
+pub mod auth;
+pub mod render;
 
 use std::{net::SocketAddr, sync::Arc};
 
 use askama::Template;
 use askama_web::WebTemplate;
-use axum::{Router, extract::State, response::IntoResponse, routing::get};
+use axum::{
+    Router,
+    extract::State,
+    response::IntoResponse,
+    routing::{get, post},
+};
+
+use crate::web::auth::CurrentUser;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -115,12 +124,26 @@ impl AppState {
     }
 
     /// Build the page [`Chrome`] for an authenticated, full-navigation page.
+    ///
+    /// Only reached from handlers gated by the [`CurrentUser`] extractor, so
+    /// `authenticated` is always `true` here.
     async fn chrome(&self, active: &'static str) -> Chrome {
         Chrome {
             theme: self.ui_theme().await,
             active,
             show_nav: true,
-            // Auth lands in E8.2; until then the UI renders unauthenticated.
+            authenticated: true,
+            // Populated by the CSRF layer in E8.3.
+            csrf_token: String::new(),
+        }
+    }
+
+    /// Build a bare [`Chrome`] (no navigation) for the login page and wizard.
+    async fn bare_chrome(&self) -> Chrome {
+        Chrome {
+            theme: self.ui_theme().await,
+            active: "",
+            show_nav: false,
             authenticated: false,
             csrf_token: String::new(),
         }
@@ -130,6 +153,9 @@ impl AppState {
     fn router(self) -> Router {
         Router::new()
             .route("/", get(Self::index))
+            // Authentication (public).
+            .route("/login", get(auth::login_form).post(auth::login_submit))
+            .route("/logout", post(auth::logout))
             // Embedded static assets (no CDN, no Node build).
             .route("/assets/datastar.js", get(Assets::datastar_js))
             .route("/assets/pico.pumpkin.min.css", get(Assets::pico_css))
@@ -140,7 +166,10 @@ impl AppState {
     }
 
     /// `GET /` — placeholder landing page (the real dashboard arrives in E8.5).
-    async fn index(State(state): State<AppState>) -> impl IntoResponse {
+    ///
+    /// Gated by [`CurrentUser`]: unauthenticated requests are redirected to
+    /// `/login`.
+    async fn index(_user: CurrentUser, State(state): State<AppState>) -> impl IntoResponse {
         IndexTemplate {
             chrome: state.chrome("dashboard").await,
         }
@@ -175,6 +204,7 @@ impl AdminServer {
     ///
     /// Returns [`Error::Bind`] if the address cannot be bound.
     pub async fn bind(addr: SocketAddr, state: AppState) -> Result<Self, Error> {
+        auth::warn_if_insecure(state.cookie_policy, addr);
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|source| Error::Bind { addr, source })?;
@@ -259,6 +289,156 @@ mod tests {
         assert!(html.contains("sagittarius"));
         // Dashboard nav item is marked current.
         assert!(html.contains("aria-current=\"page\""));
+    }
+
+    #[tokio::test]
+    async fn auth_flow_end_to_end() {
+        use crate::{
+            storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+            web::auth::hash_password,
+        };
+        use reqwest::redirect::Policy;
+
+        let (_dir, state) = test_state().await;
+        let pool = state.db.pool().clone();
+
+        // Seed an admin account.
+        SqliteAdminUserRepo::new(pool.clone())
+            .create("admin", &hash_password("s3cret").expect("hash"))
+            .await
+            .expect("create admin");
+
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .expect("bind");
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let token = CancellationToken::new();
+        let token2 = token.clone();
+        let handle = tokio::spawn(async move { server.serve(token2).await });
+
+        // A client that does NOT auto-follow redirects, so we can inspect them.
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+
+        // Unauthenticated access to a protected route redirects to /login.
+        let r = client.get(format!("{base}/")).send().await.unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/login");
+
+        // Wrong password is rejected (re-renders the form with an error).
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(
+            r.text()
+                .await
+                .unwrap()
+                .contains("Invalid username or password")
+        );
+
+        // Correct credentials establish a session and set the cookie.
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/");
+        let set_cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(set_cookie.contains("sgt_session="));
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Strict"));
+        // The cookie value to echo back on subsequent requests.
+        let cookie = set_cookie.split(';').next().unwrap().to_owned();
+
+        // The session authorizes the protected route.
+        let r = client
+            .get(format!("{base}/"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(r.text().await.unwrap().contains("aria-current=\"page\""));
+
+        // Expire the session server-side: the same cookie no longer authorizes.
+        sqlx::query("UPDATE sessions SET expires_at = 0")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let r = client
+            .get(format!("{base}/"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303, "expired session must redirect to login");
+        assert_eq!(r.headers().get("location").unwrap(), "/login");
+
+        // Re-login, then logout: the cookie is cleared and the session deleted.
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let r = client
+            .post(format!("{base}/logout"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/login");
+        assert!(
+            r.headers()
+                .get("set-cookie")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("Max-Age=0"),
+            "logout must clear the cookie"
+        );
+        // The invalidated session no longer authorizes.
+        let r = client
+            .get(format!("{base}/"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+
+        token.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
     }
 
     #[tokio::test]

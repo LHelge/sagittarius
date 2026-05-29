@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                id          AS \"id!\",\n                token_hash  AS \"token_hash!\",\n                user_id     AS \"user_id!\",\n                created_at  AS \"created_at!\",\n                expires_at  AS \"expires_at!\"\n            FROM sessions\n            WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "token_hash!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "user_id!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "expires_at!",
+        "ordinal": 4,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6871303e425c839434c78108f5802f6d459566d2de7d57ac0b9a95c6a79034a4"
+}

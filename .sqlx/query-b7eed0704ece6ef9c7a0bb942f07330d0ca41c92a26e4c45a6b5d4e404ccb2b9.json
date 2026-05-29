@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO admin_users (username, password_hash)\n            VALUES (?, ?)\n            RETURNING\n                id            AS \"id!\",\n                created_at    AS \"created_at!\",\n                updated_at    AS \"updated_at!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "updated_at!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b7eed0704ece6ef9c7a0bb942f07330d0ca41c92a26e4c45a6b5d4e404ccb2b9"
+}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Sign in · sagittarius{% endblock %}
+{% block content %}
+<article class="sgt-centered">
+  <a href="/" class="sgt-brand">
+    <img src="/assets/icon.png" alt="" width="36" height="36" />
+    <strong>sagittarius</strong>
+  </a>
+  {% if let Some(error) = error %}
+  <p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
+  {% endif %}
+  <form method="post" action="/login">
+    <label>
+      Username
+      <input type="text" name="username" autocomplete="username" required autofocus />
+    </label>
+    <label>
+      Password
+      <input type="password" name="password" autocomplete="current-password" required />
+    </label>
+    <button type="submit">Sign in</button>
+  </form>
+</article>
+{% endblock %}
