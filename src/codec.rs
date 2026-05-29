@@ -28,6 +28,7 @@
 
 pub mod framing;
 pub mod header;
+pub mod message;
 pub mod name;
 pub mod reader;
 pub mod writer;
@@ -107,6 +108,14 @@ pub enum Error {
     /// empty label in a non-root position (e.g. `"foo..bar"`).
     #[error("invalid domain name: empty label")]
     EmptyLabel,
+
+    /// A DNS message exceeded the 65535-byte maximum wire-format length.
+    ///
+    /// DNS over TCP uses a 2-byte length prefix (u16), so no message can
+    /// exceed 65535 bytes.  Inputs larger than this are rejected defensively
+    /// before any other parsing work.
+    #[error("message too long: {0} bytes (maximum is 65535)")]
+    MessageTooLong(usize),
 }
 
 #[cfg(test)]
@@ -130,5 +139,6 @@ mod tests {
         assert!(s.contains('2'), "available should appear in message: {s}");
 
         assert!(Error::TruncatedLengthPrefix(1).to_string().contains('1'));
+        assert!(Error::MessageTooLong(70000).to_string().contains("70000"));
     }
 }
