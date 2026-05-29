@@ -276,22 +276,14 @@ mod tests {
     }
 
     /// A second settings row (even with id = 1) must be rejected by PRIMARY KEY.
+    /// After migration 0002 the seed row (id = 1) already exists, so a direct
+    /// INSERT — without ON CONFLICT DO NOTHING — must fail.
     #[tokio::test]
     async fn settings_check_id_rejects_second_row() {
         let (_dir, db) = open_temp_db().await;
 
-        // Insert the first (valid) row.
-        sqlx::query(
-            "INSERT INTO settings \
-             (id, cache_min_ttl, cache_max_ttl, cache_negative_ttl_cap, cache_capacity, \
-              blocking_mode, blocklist_refresh_interval) \
-             VALUES (1, 60, 86400, 300, 10000, 'nxdomain', 3600)",
-        )
-        .execute(db.pool())
-        .await
-        .expect("first settings row must insert");
-
-        // A second attempt with id = 1 must fail (PRIMARY KEY violation).
+        // The seed migration inserted id = 1; a plain INSERT must therefore
+        // fail with a PRIMARY KEY (and CHECK) violation.
         let result = sqlx::query(
             "INSERT INTO settings \
              (id, cache_min_ttl, cache_max_ttl, cache_negative_ttl_cap, cache_capacity, \
@@ -504,5 +496,201 @@ mod tests {
         );
         let msg = result.unwrap_err().to_string();
         assert!(!msg.is_empty(), "error message must be non-empty: {msg:?}");
+    }
+
+    // ── Seed-defaults (migration 0002) ────────────────────────────────────────
+
+    /// After a fresh connect the upstreams table must contain exactly the two
+    /// Cloudflare default resolvers seeded by migration 0002.
+    #[tokio::test]
+    async fn seed_upstreams_count_and_addresses() {
+        let (_dir, db) = open_temp_db().await;
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstreams")
+            .fetch_one(db.pool())
+            .await
+            .expect("count upstreams");
+        assert_eq!(count, 2, "exactly 2 default upstreams must be seeded");
+
+        // Both Cloudflare addresses must be present.
+        for addr in &["1.1.1.1", "1.0.0.1"] {
+            let found: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstreams WHERE address = ?")
+                .bind(addr)
+                .fetch_one(db.pool())
+                .await
+                .unwrap_or_else(|e| panic!("query for upstream {addr}: {e}"));
+            assert_eq!(found, 1, "upstream {addr} must exist");
+        }
+    }
+
+    /// Both seeded upstreams must use UDP transport and be enabled.
+    #[tokio::test]
+    async fn seed_upstreams_transport_and_enabled() {
+        let (_dir, db) = open_temp_db().await;
+
+        // Use runtime (non-macro) query to stay offline-compilable.
+        let rows: Vec<(String, String, i64)> =
+            sqlx::query_as("SELECT address, transport, enabled FROM upstreams ORDER BY sort_order")
+                .fetch_all(db.pool())
+                .await
+                .expect("fetch upstreams");
+
+        assert_eq!(rows.len(), 2, "must be exactly 2 seeded upstreams");
+        for (address, transport, enabled) in &rows {
+            assert_eq!(
+                transport, "udp",
+                "upstream {address} must use udp transport"
+            );
+            assert_eq!(enabled, &1i64, "upstream {address} must be enabled");
+        }
+    }
+
+    /// After a fresh connect the settings table must contain exactly one row
+    /// (id = 1) with all the pinned seed values.
+    #[tokio::test]
+    async fn seed_settings_defaults() {
+        let (_dir, db) = open_temp_db().await;
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings")
+            .fetch_one(db.pool())
+            .await
+            .expect("count settings");
+        assert_eq!(count, 1, "exactly one settings row must exist");
+
+        // Verify each pinned default individually using runtime queries
+        // (no compile-time query! macros so offline builds stay green).
+
+        let cache_min_ttl: i64 =
+            sqlx::query_scalar("SELECT cache_min_ttl FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("cache_min_ttl");
+        assert_eq!(cache_min_ttl, 1, "cache_min_ttl must be 1");
+
+        let cache_max_ttl: i64 =
+            sqlx::query_scalar("SELECT cache_max_ttl FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("cache_max_ttl");
+        assert_eq!(cache_max_ttl, 86400, "cache_max_ttl must be 86400");
+
+        let cache_negative_ttl_cap: i64 =
+            sqlx::query_scalar("SELECT cache_negative_ttl_cap FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("cache_negative_ttl_cap");
+        assert_eq!(
+            cache_negative_ttl_cap, 3600,
+            "cache_negative_ttl_cap must be 3600"
+        );
+
+        let cache_capacity: i64 =
+            sqlx::query_scalar("SELECT cache_capacity FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("cache_capacity");
+        assert_eq!(cache_capacity, 100000, "cache_capacity must be 100000");
+
+        let blocking_mode: String =
+            sqlx::query_scalar("SELECT blocking_mode FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("blocking_mode");
+        assert_eq!(blocking_mode, "null-ip", "blocking_mode must be 'null-ip'");
+
+        let custom_block_ipv4: Option<String> =
+            sqlx::query_scalar("SELECT custom_block_ipv4 FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("custom_block_ipv4");
+        assert!(
+            custom_block_ipv4.is_none(),
+            "custom_block_ipv4 must be NULL by default"
+        );
+
+        let custom_block_ipv6: Option<String> =
+            sqlx::query_scalar("SELECT custom_block_ipv6 FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("custom_block_ipv6");
+        assert!(
+            custom_block_ipv6.is_none(),
+            "custom_block_ipv6 must be NULL by default"
+        );
+
+        let blocklist_refresh_interval: i64 =
+            sqlx::query_scalar("SELECT blocklist_refresh_interval FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("blocklist_refresh_interval");
+        assert_eq!(
+            blocklist_refresh_interval, 86400,
+            "blocklist_refresh_interval must be 86400"
+        );
+    }
+
+    /// Re-applying the seed SQL directly must be a no-op: admin-changed values
+    /// are preserved and no duplicate rows are created.
+    #[tokio::test]
+    async fn seed_idempotency_preserves_admin_edits() {
+        let (_dir, db) = open_temp_db().await;
+
+        // Simulate admin changes: different cache_max_ttl and disable one upstream.
+        sqlx::query("UPDATE settings SET cache_max_ttl = 7200 WHERE id = 1")
+            .execute(db.pool())
+            .await
+            .expect("update settings");
+        sqlx::query("UPDATE upstreams SET enabled = 0 WHERE address = '1.0.0.1'")
+            .execute(db.pool())
+            .await
+            .expect("disable upstream");
+
+        // Re-apply the seed SQL directly (as if 0002 were executed a second time).
+        let seed_sql = include_str!("../migrations/0002_seed_defaults.sql");
+        sqlx::raw_sql(seed_sql)
+            .execute(db.pool())
+            .await
+            .expect("re-apply seed SQL");
+
+        // The edited cache_max_ttl must be preserved (ON CONFLICT DO NOTHING held).
+        let cache_max_ttl: i64 =
+            sqlx::query_scalar("SELECT cache_max_ttl FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("cache_max_ttl after re-seed");
+        assert_eq!(
+            cache_max_ttl, 7200,
+            "admin-changed cache_max_ttl must not be overwritten by re-seeding"
+        );
+
+        // The disabled upstream must still be disabled.
+        let enabled: i64 =
+            sqlx::query_scalar("SELECT enabled FROM upstreams WHERE address = '1.0.0.1'")
+                .fetch_one(db.pool())
+                .await
+                .expect("enabled flag after re-seed");
+        assert_eq!(
+            enabled, 0,
+            "admin-disabled upstream must not be re-enabled by re-seeding"
+        );
+
+        // No duplicate rows must have been created.
+        let settings_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings")
+            .fetch_one(db.pool())
+            .await
+            .expect("count settings after re-seed");
+        assert_eq!(
+            settings_count, 1,
+            "still exactly one settings row after re-seeding"
+        );
+
+        let upstream_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstreams")
+            .fetch_one(db.pool())
+            .await
+            .expect("count upstreams after re-seed");
+        assert_eq!(
+            upstream_count, 2,
+            "still exactly 2 upstream rows after re-seeding"
+        );
     }
 }
