@@ -1,10 +1,10 @@
 ---
 id: zc5
 title: E2.1 · Wire reader/writer primitives & framing
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:24:05.182142111Z
-updated: 2026-05-29T06:24:05.182142111Z
+updated: 2026-05-29T11:13:16.104822900Z
 tags:
 - codec
 - dns
