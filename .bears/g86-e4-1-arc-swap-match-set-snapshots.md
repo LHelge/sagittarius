@@ -1,10 +1,10 @@
 ---
 id: g86
 title: E4.1 · arc-swap match-set snapshots
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:11:05.108512506Z
-updated: 2026-05-29T07:11:05.108512506Z
+updated: 2026-05-29T13:27:44.747270891Z
 tags:
 - dns
 - cache
