@@ -100,8 +100,14 @@ Notes:
 ## Contributing
 
 Sagittarius is in early development and contributions, ideas, and feedback are
-welcome. Please open an issue to discuss substantial changes before submitting a
-pull request.
+welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) for the quality gate,
+branch/PR workflow, and how to set up the local git hooks.
+
+Enable the hooks with a single command after cloning:
+
+```sh
+git config core.hooksPath .githooks
+```
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
