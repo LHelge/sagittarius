@@ -1,10 +1,10 @@
 ---
 id: '783'
 title: E1.1 · Crate scaffolding, module layout & error strategy
-status: open
+status: done
 priority: P0
 created: 2026-05-29T05:59:59.079930525Z
-updated: 2026-05-29T05:59:59.079930525Z
+updated: 2026-05-29T10:04:12.757831544Z
 tags:
 - foundation
 parent: p3k
