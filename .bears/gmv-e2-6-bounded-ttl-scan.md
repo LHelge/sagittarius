@@ -1,10 +1,10 @@
 ---
 id: gmv
 title: E2.6 · Bounded TTL scan
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:24:37.654347868Z
-updated: 2026-05-29T08:17:09.164281092Z
+updated: 2026-05-29T11:36:22.960794506Z
 tags:
 - codec
 - dns
