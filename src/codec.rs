@@ -20,12 +20,14 @@
 //! | [`reader`] | Bounds-checked cursor over `bytes::Bytes` for parsing |
 //! | [`writer`] | Append-only output buffer over `bytes::BytesMut` for synthesis |
 //! | [`framing`] | UDP/TCP message framing (length-prefix encode/decode) |
+//! | [`header`] | 12-byte DNS header, [`header::Opcode`], [`header::Rcode`] |
 //! | [`name`] | [`Name`] type, QNAME reader/writer, RR name-skip helper |
 //!
 //! All submodules share this single [`Error`] type; the crate-level
 //! [`crate::error::Error`] wraps it via `#[from]`.
 
 pub mod framing;
+pub mod header;
 pub mod name;
 pub mod reader;
 pub mod writer;
