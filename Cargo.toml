@@ -13,6 +13,7 @@ arc-swap = "1.9.1"
 argon2 = "0.5.3"
 askama = "0.16.0"
 askama_web = { version = "0.16.0", features = ["axum-0.8"] }
+async-stream = "0.3.6"
 axum = "0.8.9"
 bytes = "1.11.1"
 clap = { version = "4.6.1", features = ["derive", "env"] }

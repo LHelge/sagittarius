@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Query log · sagittarius{% endblock %}
+{% block content %}
+<hgroup>
+  <h1>Query log</h1>
+  <p class="sgt-muted">Live stream of resolved queries. Newest first; history is kept in memory only.</p>
+</hgroup>
+
+<div
+  class="sgt-actions"
+  data-signals="{f_outcome: '', f_text: '', queries: 0, blocked: 0, cached: 0, forwarded: 0}"
+  data-on-load="@get('/events')"
+>
+  <select data-bind="f_outcome" aria-label="Filter by outcome">
+    <option value="">All outcomes</option>
+    <option value="blocked">Blocked</option>
+    <option value="forwarded">Forwarded</option>
+    <option value="cached">Cached</option>
+    <option value="local">Local</option>
+    <option value="other">Other</option>
+  </select>
+  <input type="search" data-bind="f_text" placeholder="Filter by domain or client" aria-label="Filter by domain or client" />
+</div>
+
+<div class="sgt-table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Client</th>
+        <th>Domain</th>
+        <th>Type</th>
+        <th>Outcome</th>
+        <th class="sgt-num">Latency</th>
+      </tr>
+    </thead>
+    <tbody id="log-body">
+      {% for row in rows %}{{ row|safe }}{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

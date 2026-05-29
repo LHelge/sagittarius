@@ -1,0 +1,7 @@
+<tr data-show="($f_outcome === '' || $f_outcome === '{{ outcome_cat }}') && ($f_text === '' || '{{ search }}'.includes($f_text.toLowerCase()))">
+  <td class="sgt-mono">{{ client }}</td>
+  <td class="sgt-mono">{{ qname }}</td>
+  <td>{{ qtype }}</td>
+  <td><span class="sgt-badge {{ outcome_class }}">{{ outcome_label }}</span></td>
+  <td class="sgt-num">{{ latency_ms }} ms</td>
+</tr>

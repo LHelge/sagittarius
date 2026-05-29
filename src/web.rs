@@ -21,6 +21,7 @@ pub mod assets;
 pub mod auth;
 pub mod csrf;
 pub mod dashboard;
+pub mod live_log;
 pub mod origin;
 pub mod render;
 pub mod wizard;
@@ -175,6 +176,9 @@ impl AppState {
     fn router(self) -> Router {
         Router::new()
             .route("/", get(Self::dashboard))
+            // Live query log + the shared SSE stream (log + dashboard counters).
+            .route("/log", get(Self::query_log))
+            .route("/events", get(Self::events))
             // First-run wizard (public; gated by the wizard layer below).
             .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
             // Authentication (public).
@@ -581,6 +585,134 @@ mod tests {
         assert_eq!(r.headers().get("location").unwrap(), "/");
 
         token.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn live_query_log_streams_over_sse() {
+        use crate::{
+            codec::{message::Qtype, name::Name},
+            resolver::pipeline::Outcome,
+            storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+            telemetry::QueryEvent,
+            web::auth::hash_password,
+        };
+        use reqwest::redirect::Policy;
+        use std::time::Duration;
+
+        let (_dir, state) = test_state().await;
+        SqliteAdminUserRepo::new(state.db.pool().clone())
+            .create("admin", &hash_password("s3cret").unwrap())
+            .await
+            .unwrap();
+        let app = state.clone();
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { server.serve(c2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+
+        // Log in and capture the session cookie.
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        // The log page renders, seeded and wired for the SSE stream.
+        let log = client
+            .get(format!("{base}/log"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(log.contains("Query log"));
+        assert!(log.contains("id=\"log-body\""));
+        assert!(log.contains("@get('/events')"));
+
+        // Open the SSE stream.
+        let mut resp = client
+            .get(format!("{base}/events"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        assert!(
+            resp.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("text/event-stream")
+        );
+
+        // Helper: read chunks until `needle` appears (bounded by a timeout).
+        async fn read_until(resp: &mut reqwest::Response, needle: &str) -> String {
+            let mut buf = String::new();
+            loop {
+                let chunk = tokio::time::timeout(Duration::from_secs(5), resp.chunk())
+                    .await
+                    .expect("sse read timed out")
+                    .expect("chunk error");
+                match chunk {
+                    Some(bytes) => {
+                        buf.push_str(&String::from_utf8_lossy(&bytes));
+                        if buf.contains(needle) {
+                            return buf;
+                        }
+                    }
+                    None => return buf,
+                }
+            }
+        }
+
+        // The stream opens with the dashboard counter signals.
+        let head = read_until(&mut resp, "queries").await;
+        assert!(head.contains("datastar-patch-signals"));
+
+        // Publish a live query; it must arrive as a prepended log row.
+        app.telemetry.record(
+            QueryEvent::new(
+                "10.1.2.3:4000".parse().unwrap(),
+                "sse-row.example.com".parse::<Name>().unwrap(),
+                Qtype::A,
+                Outcome::BlockedByBlocklist,
+            )
+            .with_latency(Duration::from_millis(3)),
+        );
+        let body = read_until(&mut resp, "sse-row.example.com").await;
+        assert!(body.contains("datastar-patch-elements"));
+        assert!(body.contains("log-body"));
+        assert!(body.contains("sgt-badge--blocked"));
+
+        drop(resp);
+        cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)
             .await
             .expect("shutdown")

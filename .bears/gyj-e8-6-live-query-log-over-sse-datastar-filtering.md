@@ -1,10 +1,10 @@
 ---
 id: gyj
 title: E8.6 · Live query log over SSE (Datastar) + filtering
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:57:38.577137943Z
-updated: 2026-05-29T07:57:38.577137943Z
+updated: 2026-05-29T21:37:13.707136453Z
 tags:
 - web
 depends_on:
