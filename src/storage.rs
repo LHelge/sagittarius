@@ -11,6 +11,16 @@
 //! At startup the relevant tables are read into the in-memory data structures
 //! held by the `app` module.  Subsequent writes go to SQLite first, then
 //! refresh the live in-memory snapshot.
+//!
+//! # Sub-modules
+//!
+//! | Sub-module | Responsibility |
+//! |---|---|
+//! | [`settings`] | Singleton settings row: [`settings::SettingsRepository`] + [`settings::SqliteSettingsRepo`] |
+//! | [`upstreams`] | Upstream resolver rows: [`upstreams::UpstreamRepository`] + [`upstreams::SqliteUpstreamRepo`] |
+
+pub mod settings;
+pub mod upstreams;
 
 use std::{path::Path, time::Duration};
 
@@ -32,6 +42,12 @@ pub enum Error {
     /// A schema migration failed.
     #[error("migration failed: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
+
+    /// A value stored in the database could not be decoded into the expected
+    /// domain type (e.g. an unrecognised enum discriminant or an invalid IP
+    /// address string).
+    #[error("decode error: {0}")]
+    Decode(String),
 }
 
 // ── Db ─────────────────────────────────────────────────────────────────────
