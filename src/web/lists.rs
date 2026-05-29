@@ -21,9 +21,11 @@
 
 use std::convert::Infallible;
 
+use askama::Template;
+use askama_web::WebTemplate;
 use axum::{
     extract::{Query, State},
-    response::{IntoResponse, Response, Sse, sse::Event},
+    response::{IntoResponse, Redirect, Response, Sse, sse::Event},
 };
 use datastar::prelude::PatchElements;
 use serde::Deserialize;
@@ -64,10 +66,26 @@ impl AppState {
         self.reload_blacklist().await
     }
 
+    /// Remove `domain` from the admin blacklist (write-through, then swap).
+    pub(crate) async fn remove_from_blacklist(&self, domain: &str) -> Result<(), WebError> {
+        SqliteBlacklistRepo::new(self.db.pool().clone())
+            .remove(domain)
+            .await?;
+        self.reload_blacklist().await
+    }
+
     /// Add `domain` to the allowlist (write-through, then swap).
     pub(crate) async fn add_to_allowlist(&self, domain: &str) -> Result<(), WebError> {
         SqliteAllowlistRepo::new(self.db.pool().clone())
             .add(domain)
+            .await?;
+        self.reload_allowlist().await
+    }
+
+    /// Remove `domain` from the allowlist (write-through, then swap).
+    pub(crate) async fn remove_from_allowlist(&self, domain: &str) -> Result<(), WebError> {
+        SqliteAllowlistRepo::new(self.db.pool().clone())
+            .remove(domain)
             .await?;
         self.reload_allowlist().await
     }
@@ -103,6 +121,192 @@ impl AppState {
             Err(e) => e.into_response(),
         }
     }
+}
+
+// ── Management screens (E8.8) ─────────────────────────────────────────────────
+
+/// Which explicit list a management page operates on.
+#[derive(Debug, Clone, Copy)]
+enum ListKind {
+    Blacklist,
+    Allowlist,
+}
+
+impl ListKind {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Blacklist => "Blacklist",
+            Self::Allowlist => "Allowlist",
+        }
+    }
+    fn active(self) -> &'static str {
+        match self {
+            Self::Blacklist => "blacklist",
+            Self::Allowlist => "allowlist",
+        }
+    }
+    fn base_path(self) -> &'static str {
+        match self {
+            Self::Blacklist => "/blacklist",
+            Self::Allowlist => "/allowlist",
+        }
+    }
+    fn description(self) -> &'static str {
+        match self {
+            Self::Blacklist => {
+                "Domains you explicitly block. Highest precedence — wins over the allowlist and blocklists."
+            }
+            Self::Allowlist => {
+                "Domains you explicitly allow. An exception that suppresses blocklist matches (but not the blacklist)."
+            }
+        }
+    }
+}
+
+impl AppState {
+    async fn list_entries(&self, kind: ListKind) -> Result<Vec<String>, WebError> {
+        let entries = match kind {
+            ListKind::Blacklist => {
+                SqliteBlacklistRepo::new(self.db.pool().clone())
+                    .list()
+                    .await?
+            }
+            ListKind::Allowlist => {
+                SqliteAllowlistRepo::new(self.db.pool().clone())
+                    .list()
+                    .await?
+            }
+        };
+        Ok(entries.into_iter().map(|e| e.domain).collect())
+    }
+
+    async fn list_add(&self, kind: ListKind, domain: &str) -> Result<(), WebError> {
+        match kind {
+            ListKind::Blacklist => self.add_to_blacklist(domain).await,
+            ListKind::Allowlist => self.add_to_allowlist(domain).await,
+        }
+    }
+
+    async fn list_remove(&self, kind: ListKind, domain: &str) -> Result<(), WebError> {
+        match kind {
+            ListKind::Blacklist => self.remove_from_blacklist(domain).await,
+            ListKind::Allowlist => self.remove_from_allowlist(domain).await,
+        }
+    }
+
+    /// Render a list management page, optionally with an inline error banner.
+    async fn render_list(
+        &self,
+        user: &CurrentUser,
+        kind: ListKind,
+        error: Option<String>,
+    ) -> Result<ListPageTemplate, WebError> {
+        Ok(ListPageTemplate {
+            chrome: self.chrome(kind.active(), user).await,
+            title: kind.title(),
+            description: kind.description(),
+            base_path: kind.base_path(),
+            entries: self.list_entries(kind).await?,
+            error,
+        })
+    }
+
+    /// Shared GET handler body for a list page.
+    async fn list_page(&self, user: &CurrentUser, kind: ListKind) -> Response {
+        match self.render_list(user, kind, None).await {
+            Ok(t) => t.into_response(),
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// Shared POST-add body: write through, then PRG-redirect on success or
+    /// re-render with an inline error on a bad domain.
+    async fn list_add_handler(&self, user: &CurrentUser, kind: ListKind, domain: &str) -> Response {
+        match self.list_add(kind, domain).await {
+            Ok(()) => Redirect::to(kind.base_path()).into_response(),
+            Err(WebError::BadRequest(msg)) => match self.render_list(user, kind, Some(msg)).await {
+                Ok(t) => (axum::http::StatusCode::BAD_REQUEST, t).into_response(),
+                Err(e) => e.into_response(),
+            },
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// Shared POST-remove body: write through, then PRG-redirect.
+    async fn list_remove_handler(&self, kind: ListKind, domain: &str) -> Response {
+        match self.list_remove(kind, domain).await {
+            Ok(()) => Redirect::to(kind.base_path()).into_response(),
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// `GET /blacklist`.
+    pub async fn blacklist_page(user: CurrentUser, State(state): State<AppState>) -> Response {
+        state.list_page(&user, ListKind::Blacklist).await
+    }
+    /// `POST /blacklist/add`.
+    pub async fn blacklist_add(
+        user: CurrentUser,
+        State(state): State<AppState>,
+        axum::Form(form): axum::Form<DomainForm>,
+    ) -> Response {
+        state
+            .list_add_handler(&user, ListKind::Blacklist, &form.domain)
+            .await
+    }
+    /// `POST /blacklist/remove`.
+    pub async fn blacklist_remove(
+        _user: CurrentUser,
+        State(state): State<AppState>,
+        axum::Form(form): axum::Form<DomainForm>,
+    ) -> Response {
+        state
+            .list_remove_handler(ListKind::Blacklist, &form.domain)
+            .await
+    }
+    /// `GET /allowlist`.
+    pub async fn allowlist_page(user: CurrentUser, State(state): State<AppState>) -> Response {
+        state.list_page(&user, ListKind::Allowlist).await
+    }
+    /// `POST /allowlist/add`.
+    pub async fn allowlist_add(
+        user: CurrentUser,
+        State(state): State<AppState>,
+        axum::Form(form): axum::Form<DomainForm>,
+    ) -> Response {
+        state
+            .list_add_handler(&user, ListKind::Allowlist, &form.domain)
+            .await
+    }
+    /// `POST /allowlist/remove`.
+    pub async fn allowlist_remove(
+        _user: CurrentUser,
+        State(state): State<AppState>,
+        axum::Form(form): axum::Form<DomainForm>,
+    ) -> Response {
+        state
+            .list_remove_handler(ListKind::Allowlist, &form.domain)
+            .await
+    }
+}
+
+/// `domain` form field (the `csrf_token` field is consumed by the CSRF layer
+/// and ignored here).
+#[derive(Debug, Deserialize)]
+pub struct DomainForm {
+    pub domain: String,
+}
+
+/// Shared management page for the blacklist and allowlist.
+#[derive(Template, WebTemplate)]
+#[template(path = "list_page.html")]
+struct ListPageTemplate {
+    chrome: crate::web::Chrome,
+    title: &'static str,
+    description: &'static str,
+    base_path: &'static str,
+    entries: Vec<String>,
+    error: Option<String>,
 }
 
 /// `?domain=` query parameter for the one-click actions.

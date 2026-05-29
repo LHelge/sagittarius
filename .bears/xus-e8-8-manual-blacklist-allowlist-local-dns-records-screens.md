@@ -1,10 +1,10 @@
 ---
 id: xus
 title: E8.8 · Manual blacklist/allowlist + local DNS records screens
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:57:48.436239324Z
-updated: 2026-05-29T07:57:48.436239324Z
+updated: 2026-05-29T21:48:19.526493992Z
 tags:
 - web
 depends_on:

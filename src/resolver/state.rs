@@ -285,40 +285,7 @@ impl ResolverState {
             .await
             .map_err(resolver::Error::Storage)?;
 
-        let mut builder = LocalRecords::builder();
-        for row in local_rows {
-            let data = match row.record_type {
-                RecordType::A => {
-                    let addr: Ipv4Addr = row.value.parse().map_err(|e| {
-                        resolver::Error::InvalidLocalRecord(format!(
-                            "record {:?} has invalid A value {:?}: {e}",
-                            row.name, row.value
-                        ))
-                    })?;
-                    RecordData::A(addr)
-                }
-                RecordType::Aaaa => {
-                    let addr: Ipv6Addr = row.value.parse().map_err(|e| {
-                        resolver::Error::InvalidLocalRecord(format!(
-                            "record {:?} has invalid AAAA value {:?}: {e}",
-                            row.name, row.value
-                        ))
-                    })?;
-                    RecordData::Aaaa(addr)
-                }
-            };
-
-            // Strip trailing dot for the builder (which normalizes internally).
-            let name = row.name.trim_end_matches('.');
-            builder.add(name, data, row.ttl).map_err(|e| {
-                resolver::Error::InvalidLocalRecord(format!(
-                    "could not add local record {:?}: {e}",
-                    row.name
-                ))
-            })?;
-        }
-
-        let local = LocalMatcher::new(builder.build());
+        let local = LocalMatcher::new(build_local_records(local_rows)?);
 
         Ok(Arc::new(Self {
             blacklist,
@@ -329,6 +296,54 @@ impl ResolverState {
             settings: ArcSwap::from_pointee(runtime_settings),
         }))
     }
+}
+
+/// Build an immutable [`LocalRecords`] snapshot from persisted rows.
+///
+/// Shared by [`ResolverState::hydrate`] and the web admin's local-record edits
+/// (E8.8), which rebuilds the snapshot after a change and swaps it via
+/// [`LocalMatcher::store`](crate::resolver::local::LocalMatcher::store).
+///
+/// # Errors
+///
+/// Returns [`resolver::Error::InvalidLocalRecord`] if a stored value is not a
+/// valid IP for its record type or the builder rejects the name.
+pub fn build_local_records(
+    rows: Vec<crate::storage::local_records::LocalRecord>,
+) -> resolver::Result<LocalRecords> {
+    let mut builder = LocalRecords::builder();
+    for row in rows {
+        let data = match row.record_type {
+            RecordType::A => {
+                let addr: Ipv4Addr = row.value.parse().map_err(|e| {
+                    resolver::Error::InvalidLocalRecord(format!(
+                        "record {:?} has invalid A value {:?}: {e}",
+                        row.name, row.value
+                    ))
+                })?;
+                RecordData::A(addr)
+            }
+            RecordType::Aaaa => {
+                let addr: Ipv6Addr = row.value.parse().map_err(|e| {
+                    resolver::Error::InvalidLocalRecord(format!(
+                        "record {:?} has invalid AAAA value {:?}: {e}",
+                        row.name, row.value
+                    ))
+                })?;
+                RecordData::Aaaa(addr)
+            }
+        };
+
+        // Strip trailing dot for the builder (which normalizes internally).
+        let name = row.name.trim_end_matches('.');
+        builder.add(name, data, row.ttl).map_err(|e| {
+            resolver::Error::InvalidLocalRecord(format!(
+                "could not add local record {:?}: {e}",
+                row.name
+            ))
+        })?;
+    }
+    Ok(builder.build())
 }
 
 impl std::fmt::Debug for ResolverState {
