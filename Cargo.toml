@@ -10,8 +10,12 @@ readme = "README.md"
 [dependencies]
 anyhow = "1.0.102"
 arc-swap = "1.9.1"
+askama = "0.16.0"
+askama_web = { version = "0.16.0", features = ["axum-0.8"] }
+axum = "0.8.9"
 bytes = "1.11.1"
 clap = { version = "4.6.1", features = ["derive", "env"] }
+datastar = { version = "0.3.1", features = ["axum"] }
 governor = "0.10.4"
 hickory-net = { version = "0.26", features = ["tls-ring", "https-ring", "webpki-roots"] }
 hickory-proto = "0.26"

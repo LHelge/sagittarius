@@ -1,10 +1,10 @@
 ---
 id: vhe
 title: E8.1 · axum skeleton, AppState, embedded assets & base layout
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:56:54.067798159Z
-updated: 2026-05-29T07:56:54.067798159Z
+updated: 2026-05-29T21:00:16.626226676Z
 tags:
 - web
 depends_on:
