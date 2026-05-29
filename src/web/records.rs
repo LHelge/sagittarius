@@ -213,35 +213,13 @@ mod tests {
         codec::{message::Qtype, name::Name},
         resolver::local::LocalMatch,
         storage::Db,
-        telemetry::TelemetrySink,
     };
-    use std::sync::Arc;
     use tempfile::TempDir;
 
     async fn state() -> (TempDir, AppState) {
         let dir = TempDir::new().unwrap();
         let db = Db::connect(dir.path().join("t.db")).await.unwrap();
-        let resolver = crate::resolver::state::ResolverState::hydrate(&db)
-            .await
-            .unwrap();
-        let telemetry = Arc::new(TelemetrySink::new(
-            Arc::new(crate::telemetry::LiveLog::default()),
-            Arc::new(crate::telemetry::Stats::new()),
-        ));
-        let scheduler = crate::blocklist::scheduler::BlocklistScheduler::new(
-            crate::storage::blocklists::SqliteBlocklistRepo::new(db.pool().clone()),
-            Arc::clone(&resolver),
-            crate::blocklist::fetch::Fetcher::new(),
-        );
-        let st = AppState {
-            db,
-            resolver,
-            telemetry,
-            refresh: scheduler.trigger(),
-            cookie_policy: crate::config::SessionCookieSecurePolicy::Never,
-            csrf_key: crate::web::random_csrf_key(),
-            setup_done: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        };
+        let st = AppState::for_test(db).await;
         (dir, st)
     }
 

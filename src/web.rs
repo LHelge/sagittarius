@@ -26,6 +26,8 @@ pub mod live_log;
 pub mod origin;
 pub mod records;
 pub mod render;
+pub mod settings;
+pub mod upstreams;
 pub mod wizard;
 
 use std::{
@@ -46,7 +48,7 @@ use tracing::warn;
 use crate::{
     blocklist::scheduler::RefreshTrigger,
     config::SessionCookieSecurePolicy,
-    resolver::state::ResolverState,
+    resolver::{state::ResolverState, upstream::SharedUpstreamPool},
     storage::{
         Db,
         settings::{SettingsRepository, SqliteSettingsRepo},
@@ -54,6 +56,7 @@ use crate::{
     telemetry::TelemetrySink,
     web::assets::Assets,
 };
+use tokio_util::task::TaskTracker;
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -122,6 +125,12 @@ pub struct AppState {
     /// Fast-path flag for the first-run wizard (E8.4): set once an admin user
     /// is observed, after which the wizard is permanently closed.
     pub setup_done: Arc<AtomicBool>,
+    /// Hot-swappable upstream pool shared with the DNS engine (E5); rebuilt and
+    /// swapped when the operator edits upstreams (E8.9).
+    pub upstream_pool: Arc<SharedUpstreamPool>,
+    /// The app task tracker, used to register the background drivers of a
+    /// rebuilt upstream pool (E8.9).
+    pub tracker: TaskTracker,
 }
 
 /// Generate a fresh random key for signing session-bound CSRF tokens.
@@ -194,6 +203,15 @@ impl AppState {
             .route("/local", get(Self::local_page))
             .route("/local/add", post(Self::local_add))
             .route("/local/remove", post(Self::local_remove))
+            // Upstream resolvers + settings (E8.9).
+            .route("/upstreams", get(Self::upstreams_page))
+            .route("/upstreams/add", post(Self::upstream_add))
+            .route("/upstreams/remove", post(Self::upstream_remove))
+            .route("/upstreams/toggle", post(Self::upstream_toggle))
+            .route(
+                "/settings",
+                get(Self::settings_page).post(Self::settings_save),
+            )
             // First-run wizard (public; gated by the wizard layer below).
             .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
             // Authentication (public).
@@ -263,16 +281,63 @@ impl AdminServer {
     }
 }
 
+// ── Test support ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+impl AppState {
+    /// Build an [`AppState`] over `db` with defaults suitable for tests: an
+    /// empty upstream pool, fresh telemetry, loopback cookie policy, and the
+    /// wizard gate left to the live `admin_users` count.
+    pub(crate) async fn for_test(db: Db) -> AppState {
+        use crate::{
+            blocklist::{fetch::Fetcher, scheduler::BlocklistScheduler},
+            resolver::upstream::{
+                DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, UpstreamPool,
+            },
+            storage::blocklists::SqliteBlocklistRepo,
+            telemetry::{LiveLog, Stats},
+        };
+
+        let resolver = ResolverState::hydrate(&db).await.expect("hydrate");
+        let telemetry = Arc::new(TelemetrySink::new(
+            Arc::new(LiveLog::default()),
+            Arc::new(Stats::new()),
+        ));
+        let tracker = TaskTracker::new();
+        let upstream_pool = Arc::new(SharedUpstreamPool::new(
+            UpstreamPool::connect(
+                &[],
+                &tracker,
+                Arc::new(RandomSelector),
+                DEFAULT_FAILOVER_BUDGET,
+                DEFAULT_QUERY_TIMEOUT,
+            )
+            .await,
+        ));
+        let scheduler = BlocklistScheduler::new(
+            SqliteBlocklistRepo::new(db.pool().clone()),
+            Arc::clone(&resolver),
+            Fetcher::new(),
+        );
+        AppState {
+            db,
+            resolver,
+            telemetry,
+            refresh: scheduler.trigger(),
+            cookie_policy: SessionCookieSecurePolicy::Never,
+            csrf_key: random_csrf_key(),
+            setup_done: Arc::new(AtomicBool::new(false)),
+            upstream_pool,
+            tracker,
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        blocklist::{fetch::Fetcher, scheduler::BlocklistScheduler},
-        storage::blocklists::SqliteBlocklistRepo,
-        telemetry::{LiveLog, Stats},
-    };
     use tempfile::TempDir;
 
     #[test]
@@ -287,25 +352,7 @@ mod tests {
         let db = Db::connect(dir.path().join("test.db"))
             .await
             .expect("connect db");
-        let resolver = ResolverState::hydrate(&db).await.expect("hydrate");
-        let telemetry = Arc::new(TelemetrySink::new(
-            Arc::new(LiveLog::default()),
-            Arc::new(Stats::new()),
-        ));
-        let scheduler = BlocklistScheduler::new(
-            SqliteBlocklistRepo::new(db.pool().clone()),
-            Arc::clone(&resolver),
-            Fetcher::new(),
-        );
-        let state = AppState {
-            db,
-            resolver,
-            telemetry,
-            refresh: scheduler.trigger(),
-            cookie_policy: SessionCookieSecurePolicy::Never,
-            csrf_key: random_csrf_key(),
-            setup_done: Arc::new(AtomicBool::new(false)),
-        };
+        let state = AppState::for_test(db).await;
         (dir, state)
     }
 
@@ -917,6 +964,81 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 303);
         assert!(!app.resolver.blacklist().contains(&dom));
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn settings_form_saves_over_http() {
+        use crate::{
+            codec::synth::BlockMode,
+            storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+            web::auth::hash_password,
+        };
+        use reqwest::redirect::Policy;
+
+        let (_dir, state) = test_state().await;
+        SqliteAdminUserRepo::new(state.db.pool().clone())
+            .create("admin", &hash_password("s3cret").unwrap())
+            .await
+            .unwrap();
+        let app = state.clone();
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { server.serve(c2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let csrf = app.csrf_token(&session_id_of(&cookie));
+
+        // Seed defaults use null-ip; switch to nxdomain over the form.
+        assert_eq!(app.resolver.settings().block_mode, BlockMode::null_ip());
+        let body = format!(
+            "csrf_token={csrf}&cache_min_ttl=10&cache_max_ttl=3600&cache_negative_ttl_cap=300\
+             &cache_capacity=50000&blocking_mode=nxdomain&custom_block_ipv4=&custom_block_ipv6=\
+             &blocklist_refresh_interval=7200&ui_theme=dark"
+        );
+        let r = client
+            .post(format!("{base}/settings"))
+            .header("cookie", &cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(r.text().await.unwrap().contains("Settings saved"));
+
+        // The live runtime snapshot reflects the change immediately.
+        assert_eq!(app.resolver.settings().block_mode, BlockMode::NxDomain);
+        assert_eq!(app.resolver.settings().cache_max_ttl, 3600);
 
         cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)

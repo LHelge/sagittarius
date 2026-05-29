@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Settings · sagittarius{% endblock %}
+{% block content %}
+<hgroup>
+  <h1>Settings</h1>
+  <p class="sgt-muted">Global configuration. Most changes apply immediately; exceptions are noted.</p>
+</hgroup>
+
+{% if saved %}
+<p class="sgt-notice sgt-notice--ok" role="status">Settings saved.</p>
+{% endif %}
+{% if let Some(error) = error %}
+<p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
+{% endif %}
+
+<form method="post" action="/settings">
+  <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+
+  <fieldset>
+    <legend><strong>Cache</strong></legend>
+    <div class="grid">
+      <label>Min TTL (s)
+        <input type="number" name="cache_min_ttl" value="{{ cache_min_ttl }}" min="0" required />
+      </label>
+      <label>Max TTL (s)
+        <input type="number" name="cache_max_ttl" value="{{ cache_max_ttl }}" min="0" required />
+      </label>
+    </div>
+    <div class="grid">
+      <label>Negative-TTL cap (s)
+        <input type="number" name="cache_negative_ttl_cap" value="{{ cache_negative_ttl_cap }}" min="0" required />
+      </label>
+      <label>Capacity (entries)
+        <input type="number" name="cache_capacity" value="{{ cache_capacity }}" min="1" required />
+        <small>Applies after restart.</small>
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend><strong>Blocking</strong></legend>
+    <label>Mode
+      <select name="blocking_mode">
+        <option value="nxdomain"{% if blocking_mode == "nxdomain" %} selected{% endif %}>NXDOMAIN</option>
+        <option value="null-ip"{% if blocking_mode == "null-ip" %} selected{% endif %}>Null IP (0.0.0.0 / ::)</option>
+        <option value="custom"{% if blocking_mode == "custom" %} selected{% endif %}>Custom IP</option>
+      </select>
+    </label>
+    <div class="grid">
+      <label>Custom IPv4
+        <input type="text" name="custom_block_ipv4" value="{{ custom_block_ipv4 }}" placeholder="(optional)" />
+      </label>
+      <label>Custom IPv6
+        <input type="text" name="custom_block_ipv6" value="{{ custom_block_ipv6 }}" placeholder="(optional)" />
+      </label>
+    </div>
+    <small class="sgt-muted">Custom IPs are used only when mode is “Custom IP”.</small>
+  </fieldset>
+
+  <fieldset>
+    <legend><strong>Blocklists</strong></legend>
+    <label>Refresh interval (s)
+      <input type="number" name="blocklist_refresh_interval" value="{{ blocklist_refresh_interval }}" min="0" required />
+      <small>Takes effect at the next refresh cycle (minimum 60 s is enforced).</small>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend><strong>Interface</strong></legend>
+    <label>Theme
+      <select name="ui_theme">
+        <option value="auto"{% if ui_theme == "auto" %} selected{% endif %}>Auto</option>
+        <option value="light"{% if ui_theme == "light" %} selected{% endif %}>Light</option>
+        <option value="dark"{% if ui_theme == "dark" %} selected{% endif %}>Dark</option>
+      </select>
+    </label>
+  </fieldset>
+
+  <button type="submit">Save settings</button>
+</form>
+{% endblock %}

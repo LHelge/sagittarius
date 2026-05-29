@@ -1,10 +1,10 @@
 ---
 id: 8vm
 title: E8.9 · Upstream resolvers + settings screens
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:57:54.513005805Z
-updated: 2026-05-29T08:21:02.166278843Z
+updated: 2026-05-29T21:54:42.896016591Z
 tags:
 - web
 depends_on:
