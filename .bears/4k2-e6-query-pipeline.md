@@ -2,10 +2,10 @@
 id: 4k2
 title: E6 · Query pipeline
 type: epic
-status: open
+status: done
 priority: P1
 created: 2026-05-28T22:38:25.003394094Z
-updated: 2026-05-29T07:23:00.365311325Z
+updated: 2026-05-29T18:01:57.284645172Z
 tags:
 - pipeline
 - dns

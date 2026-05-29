@@ -37,6 +37,10 @@ pub enum Error {
     /// Errors originating from the [`web`] module.
     #[error(transparent)]
     Web(#[from] web::Error),
+
+    /// An I/O error (e.g. binding the DNS listener sockets).
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Crate-wide [`Result`](std::result::Result) alias that defaults the error

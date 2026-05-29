@@ -14,13 +14,33 @@
 //!
 //! See SPEC §3, §10 for the architecture overview and deployment model.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use tokio::time::timeout;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{info, warn};
 
-use crate::{config::Config, error::Result};
+use crate::{
+    config::Config,
+    error::Result,
+    resolver::{
+        pipeline::{
+            engine::{build_engine, upstream_config_from_row},
+            listener::DnsListeners,
+            middleware::ProtectiveConfig,
+        },
+        state::ResolverState,
+        upstream::{
+            DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, SharedUpstreamPool,
+            UpstreamPool,
+        },
+    },
+    storage::{
+        Db,
+        upstreams::{SqliteUpstreamRepo, UpstreamRepository},
+    },
+    telemetry::{LiveLog, Stats, TelemetrySink},
+};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -118,12 +138,50 @@ impl App {
     /// In production [`run`](Self::run) passes the real OS-signal future; in
     /// tests a simple `token.cancelled()` or `async {}` is used instead.
     async fn run_until_shutdown(self, shutdown: impl Future<Output = ()>) -> Result<()> {
-        // Spawn placeholder subsystem tasks.  Each one loops on the
-        // cancellation token; replace these bodies in later epics.
-        self.spawn_subsystem("dns-listener", |token| async move {
-            token.cancelled().await;
-        });
+        // ── Real DNS engine startup ────────────────────────────────────────────
+        let db = Db::connect(&self.config.db_path).await?;
+        let state = ResolverState::hydrate(&db).await?;
 
+        let rows = SqliteUpstreamRepo::new(db.pool().clone())
+            .list_enabled()
+            .await?;
+
+        let configs: Vec<_> = rows
+            .iter()
+            .filter_map(|r| {
+                let c = upstream_config_from_row(r);
+                if c.is_none() {
+                    tracing::warn!(addr = %r.address, "skipping unmappable upstream");
+                }
+                c
+            })
+            .collect();
+
+        let pool = Arc::new(SharedUpstreamPool::new(
+            UpstreamPool::connect(
+                &configs,
+                &self.tracker,
+                Arc::new(RandomSelector),
+                DEFAULT_FAILOVER_BUDGET,
+                DEFAULT_QUERY_TIMEOUT,
+            )
+            .await,
+        ));
+
+        let telemetry = Arc::new(TelemetrySink::new(
+            Arc::new(LiveLog::default()),
+            Arc::new(Stats::new()),
+        ));
+
+        let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());
+
+        let udp_sockets_per_addr = std::thread::available_parallelism()
+            .map(NonZeroUsize::get)
+            .unwrap_or(1);
+        let listeners = DnsListeners::bind(&self.config.dns_addrs, udp_sockets_per_addr)?;
+        listeners.serve(engine, self.shutdown_token.clone(), &self.tracker);
+
+        // ── Placeholder subsystem tasks ───────────────────────────────────────
         self.spawn_subsystem("web-admin", |token| async move {
             token.cancelled().await;
         });
@@ -222,10 +280,31 @@ async fn make_shutdown_signal() {
 mod tests {
     use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
+    use tempfile::TempDir;
+
     use super::*;
     use crate::config::{Config, SessionCookieSecurePolicy};
 
-    /// Build a minimal [`Config`] suitable for tests (no real sockets opened).
+    /// Build a minimal [`Config`] for tests that calls `run_until_shutdown`.
+    ///
+    /// Uses a real temp-file DB (so sqlx migrations run correctly) and binds
+    /// the DNS listener on an ephemeral port (`:0`) to avoid port conflicts.
+    async fn run_config() -> (TempDir, Config) {
+        let dir = TempDir::new().expect("temp dir");
+        let db_path = dir.path().join("test.db");
+        // Pre-create the database so startup is fast.
+        let _ = Db::connect(&db_path).await.expect("create test db");
+        let config = Config {
+            dns_addrs: vec!["127.0.0.1:0".parse::<SocketAddr>().unwrap()],
+            admin_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            db_path,
+            session_cookie_secure: SessionCookieSecurePolicy::Never,
+        };
+        (dir, config)
+    }
+
+    /// Build a minimal [`Config`] suitable for tests that do NOT call
+    /// `run_until_shutdown` (constructor/accessor tests).
     fn test_config() -> Config {
         Config {
             dns_addrs: vec!["127.0.0.1:5353".parse::<SocketAddr>().unwrap()],
@@ -270,16 +349,17 @@ mod tests {
 
     #[tokio::test]
     async fn run_with_immediate_shutdown_returns_ok() {
-        let app = App::new(test_config()).with_drain_timeout(Duration::from_millis(200));
-        // Trigger shutdown immediately — all placeholder tasks just await
-        // cancellation, so they exit right away.
+        let (_dir, config) = run_config().await;
+        let app = App::new(config).with_drain_timeout(Duration::from_millis(500));
+        // Trigger shutdown immediately — all tasks just await cancellation.
         let result = app.run_until_shutdown(async {}).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn run_with_token_shutdown_returns_ok() {
-        let app = App::new(test_config()).with_drain_timeout(Duration::from_millis(200));
+        let (_dir, config) = run_config().await;
+        let app = App::new(config).with_drain_timeout(Duration::from_millis(500));
         let token = app.cancellation_token();
 
         // Trigger shutdown via the programmatic token after a short yield.
@@ -304,12 +384,12 @@ mod tests {
     async fn run_returns_ok_even_when_drain_times_out() {
         use std::time::Instant;
 
+        let (_dir, config) = run_config().await;
+
         // Inject a misbehaving subsystem into the App's *own* tracker via the
-        // (module-private) `spawn_subsystem` seam: it ignores the cancellation
-        // token and sleeps far longer than the drain timeout. This drives the
-        // real timeout branch inside `run_until_shutdown` end-to-end.
+        // (module-private) `spawn_subsystem` seam.
         let drain_timeout = Duration::from_millis(80);
-        let app = App::new(test_config()).with_drain_timeout(drain_timeout);
+        let app = App::new(config).with_drain_timeout(drain_timeout);
         app.spawn_subsystem("rogue", |_token| async {
             tokio::time::sleep(Duration::from_secs(60)).await;
         });
