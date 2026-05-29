@@ -9,6 +9,7 @@
 <section
   class="sgt-cards"
   data-signals="{queries: {{ total }}, blocked: {{ blocked }}, cached: {{ cached }}, forwarded: {{ forwarded }}}"
+  data-on-load="@get('/events')"
 >
   <article class="sgt-card">
     <span class="sgt-figure" data-text="$queries.toLocaleString()">{{ total }}</span>
