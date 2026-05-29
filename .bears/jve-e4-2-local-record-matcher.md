@@ -1,10 +1,10 @@
 ---
 id: jve
 title: E4.2 · Local-record matcher
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:11:11.233024344Z
-updated: 2026-05-29T07:11:11.233024344Z
+updated: 2026-05-29T13:36:20.919079672Z
 tags:
 - dns
 depends_on:
