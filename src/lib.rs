@@ -8,17 +8,19 @@
 //!
 //! | Module | Responsibility |
 //! |---|---|
+//! | [`app`] | Runtime that owns shared state and wires subsystems |
+//! | [`blocklist`] | Blocklist ingestion subsystem (fetch → parse → aggregate → schedule) |
 //! | [`cli`] | clap argument surface; parses args/env into a [`config::Config`] |
-//! | [`config`] | Operational configuration domain types |
 //! | [`codec`] | Custom lazy DNS wire-format parser/serializer |
+//! | [`config`] | Operational configuration domain types |
+//! | [`error`] | Crate-wide error types and `Result` alias |
 //! | [`resolver`] | DNS query pipeline (tower service stack) |
 //! | [`storage`] | SQLite persistence (config, lists, credentials) |
 //! | [`telemetry`] | Logging initialisation (tracing subscriber setup) |
 //! | [`web`] | axum-based admin HTTP server with askama/Datastar UI |
-//! | [`app`] | Runtime that owns shared state and wires subsystems |
-//! | [`error`] | Crate-wide error types and `Result` alias |
 
 pub mod app;
+pub mod blocklist;
 pub mod cli;
 pub mod codec;
 pub mod config;
