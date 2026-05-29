@@ -1,10 +1,10 @@
 ---
 id: wus
 title: E3.3 · Seed-defaults migration (idempotent)
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:55:22.270896024Z
-updated: 2026-05-29T08:18:26.146982518Z
+updated: 2026-05-29T12:34:13.521913427Z
 tags:
 - storage
 depends_on:
