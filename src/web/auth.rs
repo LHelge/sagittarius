@@ -54,7 +54,7 @@ use crate::{
         admin_users::{AdminUserRepository, SqliteAdminUserRepo},
         sessions::{NewSession, SessionRepository, SqliteSessionRepo},
     },
-    web::{AppState, Chrome, render::WebError},
+    web::{AppState, Chrome, origin, render::WebError},
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ fn sha256_hex(input: &str) -> String {
 /// Constant-time string equality (length-independent only in the equal-length
 /// case; differing lengths short-circuit, which is acceptable for fixed-width
 /// hashes).
-fn ct_eq(a: &str, b: &str) -> bool {
+pub(crate) fn ct_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;
@@ -168,16 +168,11 @@ fn now_epoch() -> i64 {
 // ── Cookie policy ─────────────────────────────────────────────────────────────
 
 /// Decide whether the session cookie should carry `Secure` for this request.
+///
+/// Shares the browser-facing scheme decision with the CSRF origin check via
+/// [`origin::is_https`] so the two always agree behind a reverse proxy.
 fn cookie_secure(policy: SessionCookieSecurePolicy, headers: &HeaderMap) -> bool {
-    match policy {
-        SessionCookieSecurePolicy::Always => true,
-        SessionCookieSecurePolicy::Never => false,
-        // Trust X-Forwarded-Proto only — direct plain HTTP has no TLS in v0.1.
-        SessionCookieSecurePolicy::Auto => headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|s| s.eq_ignore_ascii_case("https")),
-    }
+    origin::is_https(policy, headers)
 }
 
 /// The cookie name to use for a given `Secure` decision.
@@ -204,7 +199,7 @@ fn clear_cookie(name: &str, secure: bool) -> String {
 }
 
 /// Extract the `(id, token)` pair from the session cookie, if present.
-fn read_cookie(headers: &HeaderMap) -> Option<(String, String)> {
+pub(crate) fn read_cookie(headers: &HeaderMap) -> Option<(String, String)> {
     for raw in headers.get_all(header::COOKIE) {
         let Ok(s) = raw.to_str() else { continue };
         for pair in s.split(';') {
@@ -231,6 +226,8 @@ fn read_cookie(headers: &HeaderMap) -> Option<(String, String)> {
 pub struct CurrentUser {
     /// The owning admin user id.
     pub user_id: i64,
+    /// The opaque session id (used to derive the session-bound CSRF token).
+    pub session_id: String,
 }
 
 /// Resolve the current user from the request cookies, applying idle/absolute
@@ -260,6 +257,7 @@ pub(crate) async fn current_user(state: &AppState, headers: &HeaderMap) -> Optio
 
     Some(CurrentUser {
         user_id: session.user_id,
+        session_id: id,
     })
 }
 

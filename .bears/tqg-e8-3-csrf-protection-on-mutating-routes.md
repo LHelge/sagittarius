@@ -1,10 +1,10 @@
 ---
 id: tqg
 title: E8.3 · CSRF protection on mutating routes
-status: open
+status: done
 priority: P1
 created: 2026-05-29T07:57:13.540873330Z
-updated: 2026-05-29T07:57:13.540873330Z
+updated: 2026-05-29T21:21:36.126475250Z
 tags:
 - web
 - auth
