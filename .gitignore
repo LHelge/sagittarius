@@ -12,3 +12,8 @@
 /dev.db
 /dev.db-wal
 /dev.db-shm
+
+# Runtime database created by running the binary (default --db-path, SPEC §10).
+/sagittarius.db
+/sagittarius.db-wal
+/sagittarius.db-shm
