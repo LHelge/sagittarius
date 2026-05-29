@@ -384,7 +384,50 @@ impl Response {
         w.finish()
     }
 
+    /// Synthesize a minimal truncated (TC=1) response.
+    ///
+    /// Echoes the question, sets QR=1, TC=1, RA=1, RCODE=NOERROR, zero RRs.
+    /// Signals the client to retry the query over TCP.
+    ///
+    /// `edns` is the EDNS info from [`EdnsInfo::scan`]; when `Some`, an OPT
+    /// record is appended and ARCOUNT is set to 1.
+    #[must_use]
+    pub fn truncated(query: &Query, edns: Option<&EdnsInfo>) -> Bytes {
+        Self::build_tc(query, edns)
+    }
+
     // ── Internal builders ─────────────────────────────────────────────────────
+
+    /// Build a truncated (TC=1) response with no answer RRs.
+    ///
+    /// Sets QR=1, TC=1, RA=1, RCODE=NOERROR, QDCOUNT=1, ANCOUNT=0.
+    /// Echoes the question section verbatim and optionally appends an OPT.
+    fn build_tc(query: &Query, edns: Option<&EdnsInfo>) -> Bytes {
+        let arcount = if edns.is_some() { 1u16 } else { 0u16 };
+
+        let mut w = Writer::with_capacity(512);
+
+        // Header: QR=1, TC=1, RD copied, RA=1, RCODE=NOERROR
+        Header::new(query.header().id)
+            .with_qr(true)
+            .with_tc(true)
+            .with_rd(query.header().rd())
+            .with_ra(true)
+            .with_rcode(Rcode::NoError)
+            .with_qdcount(1)
+            .with_arcount(arcount)
+            .write(&mut w);
+
+        // Question section — raw-copied from the original query bytes.
+        w.write_slice(&query.question_wire());
+
+        // OPT record (if the query carried EDNS).
+        if let Some(edns) = edns {
+            Self::write_opt(&mut w, edns);
+        }
+
+        w.finish()
+    }
 
     /// Build a response with optional answer RRs.
     ///
@@ -1214,6 +1257,56 @@ mod tests {
         assert_eq!(hdr.id, 0x4321);
         assert_eq!(hdr.qdcount, 1);
         assert_eq!(hdr.ancount, 1);
+    }
+
+    // ── Truncated response ────────────────────────────────────────────────────
+
+    #[test]
+    fn truncated_sets_tc_qr_ra_and_no_answers() {
+        let raw = build_query(0xBEEF, true, "example.com", 1);
+        let query = Query::try_from(raw).unwrap();
+        let resp = Response::truncated(&query, None);
+
+        let hdr = parse_response_header(&resp);
+        assert!(hdr.qr(), "QR must be set");
+        assert!(hdr.tc(), "TC must be set");
+        assert!(hdr.ra(), "RA must be set");
+        assert!(hdr.rd(), "RD must be copied from query");
+        assert_eq!(hdr.id, 0xBEEF, "ID must match");
+        assert_eq!(hdr.rcode(), Rcode::NoError, "RCODE must be NOERROR");
+        assert_eq!(hdr.qdcount, 1, "QDCOUNT must be 1");
+        assert_eq!(hdr.ancount, 0, "ANCOUNT must be 0");
+        assert_eq!(hdr.arcount, 0, "ARCOUNT must be 0 (no EDNS)");
+    }
+
+    #[test]
+    fn truncated_echoes_question() {
+        let raw = build_query(0x1234, false, "truncate.test", 1);
+        let query = Query::try_from(raw.clone()).unwrap();
+        let resp = Response::truncated(&query, None);
+
+        // Question bytes should be at offset 12 and match the original.
+        let question_start = 12usize;
+        let question_end = query.question_end();
+        assert_eq!(
+            &resp[question_start..question_end],
+            &raw[question_start..question_end],
+            "question section must be echoed verbatim"
+        );
+    }
+
+    #[test]
+    fn truncated_with_edns_includes_opt() {
+        let raw = build_query_with_opt(0xCAFE, true, "large.example.com", 1, 4096, None);
+        let query = Query::try_from(raw).unwrap();
+        let edns = EdnsInfo::scan(&query).expect("OPT must be found");
+
+        let resp = Response::truncated(&query, Some(&edns));
+
+        let hdr = parse_response_header(&resp);
+        assert!(hdr.tc(), "TC must be set");
+        assert_eq!(hdr.arcount, 1, "ARCOUNT must be 1 with EDNS");
+        assert!(read_opt_rr(&resp).is_some(), "OPT must be present");
     }
 
     // ── BlockMode::null_ip constructor ────────────────────────────────────────
