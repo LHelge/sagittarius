@@ -304,7 +304,7 @@ mod tests {
     }
 
     /// A second settings row (even with id = 1) must be rejected by PRIMARY KEY.
-    /// After migration 0002 the seed row (id = 1) already exists, so a direct
+    /// After the seed migration the row (id = 1) already exists, so a direct
     /// INSERT — without ON CONFLICT DO NOTHING — must fail.
     #[tokio::test]
     async fn settings_check_id_rejects_second_row() {
@@ -526,10 +526,10 @@ mod tests {
         assert!(!msg.is_empty(), "error message must be non-empty: {msg:?}");
     }
 
-    // ── Seed-defaults (migration 0002) ────────────────────────────────────────
+    // ── Seed-defaults migration ───────────────────────────────────────────────
 
     /// After a fresh connect the upstreams table must contain exactly the two
-    /// Cloudflare default resolvers seeded by migration 0002.
+    /// Cloudflare default resolvers seeded by the seed-defaults migration.
     #[tokio::test]
     async fn seed_upstreams_count_and_addresses() {
         let (_dir, db) = open_temp_db().await;
@@ -673,8 +673,8 @@ mod tests {
             .await
             .expect("disable upstream");
 
-        // Re-apply the seed SQL directly (as if 0002 were executed a second time).
-        let seed_sql = include_str!("../migrations/0002_seed_defaults.sql");
+        // Re-apply the seed SQL directly (as if the migration ran a second time).
+        let seed_sql = include_str!("../migrations/20260529130932_seed_defaults.up.sql");
         sqlx::raw_sql(seed_sql)
             .execute(db.pool())
             .await

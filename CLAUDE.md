@@ -73,6 +73,19 @@ that is actually unblocked.
 - Add/upgrade crates with **`cargo add`** (not by hand-editing `Cargo.toml`) so
   versions resolve fresh and no stale versions creep in.
 
+## Database migrations
+
+- Create migrations with **`sqlx migrate add -r <name>`** (not by hand-creating
+  files). The `-r` makes them **reversible** — it generates a paired
+  `<timestamp>_<name>.up.sql` and `<timestamp>_<name>.down.sql` — and the
+  timestamp prefix keeps versions monotonic without manual numbering.
+- Always write the **`.down.sql`** as the true inverse of the `.up.sql` (drop
+  what it created, in reverse FK order; delete what it inserted).
+- Migrations are **additive and never edited once merged** — fix mistakes with a
+  new migration.
+- After adding or changing a migration (or any compile-time query), run
+  `cargo sqlx prepare` and commit the updated `.sqlx/` (see *Before committing*).
+
 ## Git workflow
 
 - **Develop on feature branches**, never directly on `main`. Open a **pull
