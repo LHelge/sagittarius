@@ -1,10 +1,10 @@
 ---
 id: rf6
 title: E2.3 · Header codec & flags
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:24:20.203451061Z
-updated: 2026-05-29T06:24:20.203451061Z
+updated: 2026-05-29T11:25:18.167631725Z
 tags:
 - codec
 - dns
