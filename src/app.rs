@@ -14,43 +14,321 @@
 //!
 //! See SPEC §3, §10 for the architecture overview and deployment model.
 
-use crate::error::Result;
+use std::{future::Future, time::Duration};
+
+use tokio::time::timeout;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tracing::{info, warn};
+
+use crate::{config::Config, error::Result};
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/// Default amount of time to wait for in-flight tasks to drain before giving
+/// up and returning anyway.
+pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+// ── App ───────────────────────────────────────────────────────────────────────
 
 /// The top-level application handle.
 ///
 /// Created once in `main`, holds all shared state, and drives the entire
 /// service lifetime.
-pub struct App;
+///
+/// # Lifecycle
+///
+/// ```text
+/// App::new(config) → run() → [signal] → cancel → drain → return Ok(())
+/// ```
+///
+/// Subsystems (DNS listener, web admin, background scheduler) are spawned via
+/// the [`TaskTracker`] and receive a clone of the [`CancellationToken`]. When
+/// a shutdown signal arrives the token is cancelled and all well-behaved tasks
+/// exit; the tracker drains them within [`drain_timeout`](App::drain_timeout).
+pub struct App {
+    /// Resolved operational configuration.
+    config: Config,
+    /// Broadcast cancellation signal to all spawned tasks.
+    shutdown_token: CancellationToken,
+    /// Tracks all spawned tasks so we can wait for them to finish.
+    tracker: TaskTracker,
+    /// Maximum time to wait for tasks to drain after cancellation.
+    drain_timeout: Duration,
+}
 
 impl App {
-    /// Construct a new, uninitialised [`App`].
+    /// Construct a new [`App`] from the given [`Config`].
     ///
-    /// Real initialisation (database open, migration, listener bind) will be
-    /// added in subsequent tasks.
-    pub fn new() -> Self {
-        Self
+    /// No I/O or spawning happens here — call [`run`](Self::run) to start.
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            shutdown_token: CancellationToken::new(),
+            tracker: TaskTracker::new(),
+            drain_timeout: DEFAULT_DRAIN_TIMEOUT,
+        }
     }
 
-    /// Run the application to completion, returning when the process receives
-    /// a shutdown signal or a fatal error occurs.
-    pub async fn run(&self) -> Result<()> {
+    /// Override the drain timeout (useful for tests).
+    ///
+    /// The default is [`DEFAULT_DRAIN_TIMEOUT`] (10 seconds).
+    pub fn with_drain_timeout(mut self, timeout: Duration) -> Self {
+        self.drain_timeout = timeout;
+        self
+    }
+
+    /// Return the configured drain timeout.
+    pub fn drain_timeout(&self) -> Duration {
+        self.drain_timeout
+    }
+
+    /// Return a clone of the [`CancellationToken`].
+    ///
+    /// Callers (subsystems or tests) can cancel this token to initiate
+    /// shutdown programmatically without sending an OS signal.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.shutdown_token.clone()
+    }
+
+    /// Spawn a named subsystem task via the [`TaskTracker`].
+    ///
+    /// The task receives a clone of the shutdown token. This is the seam that
+    /// later epics (E5, E6, E7, E8) use to plug real subsystems in without
+    /// changing the harness.
+    ///
+    /// The closure receives a [`CancellationToken`] and must return a
+    /// [`Future`] whose output is `()`.
+    fn spawn_subsystem<F, Fut>(&self, name: &'static str, f: F)
+    where
+        F: FnOnce(CancellationToken) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let token = self.shutdown_token.clone();
+        self.tracker.spawn(async move {
+            tracing::debug!(subsystem = name, "subsystem started");
+            f(token).await;
+            tracing::debug!(subsystem = name, "subsystem stopped");
+        });
+    }
+
+    /// Run the application to completion, blocking until a shutdown signal is
+    /// received (or `shutdown` resolves), then draining all tasks.
+    ///
+    /// The `shutdown` future is how the caller injects the shutdown trigger.
+    /// In production [`run`](Self::run) passes the real OS-signal future; in
+    /// tests a simple `token.cancelled()` or `async {}` is used instead.
+    async fn run_until_shutdown(self, shutdown: impl Future<Output = ()>) -> Result<()> {
+        // Spawn placeholder subsystem tasks.  Each one loops on the
+        // cancellation token; replace these bodies in later epics.
+        self.spawn_subsystem("dns-listener", |token| async move {
+            token.cancelled().await;
+        });
+
+        self.spawn_subsystem("web-admin", |token| async move {
+            token.cancelled().await;
+        });
+
+        self.spawn_subsystem("background", |token| async move {
+            token.cancelled().await;
+        });
+
+        // Close the tracker so `wait()` knows the spawn set is complete once
+        // existing tasks finish.  New tasks cannot be spawned after this point.
+        self.tracker.close();
+
+        // Wait for the shutdown trigger.
+        info!(
+            dns_addrs = ?self.config.dns_addrs,
+            admin_addr = %self.config.admin_addr,
+            "runtime ready, awaiting shutdown signal",
+        );
+        shutdown.await;
+
+        // Signal all subsystems to stop.
+        info!("shutdown signal received, draining…");
+        self.shutdown_token.cancel();
+
+        // Wait for all tasks to finish, bounded by the drain timeout.
+        match timeout(self.drain_timeout, self.tracker.wait()).await {
+            Ok(()) => {
+                info!("all tasks drained cleanly");
+            }
+            Err(_elapsed) => {
+                warn!(
+                    drain_timeout = ?self.drain_timeout,
+                    "drain timeout elapsed; some tasks may still be running — forcing exit",
+                );
+            }
+        }
+
         Ok(())
     }
-}
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
+    /// Run the application to completion.
+    ///
+    /// Spawns subsystem tasks, then blocks until `SIGTERM` or `SIGINT` is
+    /// received, then cancels the shutdown token and drains tasks within
+    /// [`drain_timeout`](Self::drain_timeout).
+    ///
+    /// Returns `Ok(())` whether the drain completed cleanly or timed out —
+    /// the process should always exit 0.
+    pub async fn run(self) -> Result<()> {
+        let signal = make_shutdown_signal();
+        self.run_until_shutdown(signal).await
     }
 }
+
+impl From<Config> for App {
+    fn from(config: Config) -> Self {
+        Self::new(config)
+    }
+}
+
+// ── OS signal helpers ─────────────────────────────────────────────────────────
+
+/// Build a future that resolves when `SIGTERM` or `SIGINT` arrives.
+///
+/// On Unix both signals are awaited via `tokio::signal::unix`; the first one
+/// to fire wins.
+#[cfg(unix)]
+async fn make_shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+
+    tokio::select! {
+        _ = sigterm.recv() => {
+            info!("received SIGTERM");
+        }
+        _ = sigint.recv() => {
+            info!("received SIGINT");
+        }
+    }
+}
+
+/// Fallback for non-Unix targets: only `Ctrl-C` / `SIGINT`.
+#[cfg(not(unix))]
+async fn make_shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for Ctrl-C");
+    info!("received Ctrl-C");
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use std::{net::SocketAddr, path::PathBuf, time::Duration};
+
     use super::*;
+    use crate::config::{Config, SessionCookieSecurePolicy};
+
+    /// Build a minimal [`Config`] suitable for tests (no real sockets opened).
+    fn test_config() -> Config {
+        Config {
+            dns_addrs: vec!["127.0.0.1:5353".parse::<SocketAddr>().unwrap()],
+            admin_addr: "127.0.0.1:18080".parse::<SocketAddr>().unwrap(),
+            db_path: PathBuf::from(":memory:"),
+            session_cookie_secure: SessionCookieSecurePolicy::Never,
+        }
+    }
+
+    // ── Constructor & accessors ───────────────────────────────────────────
+
+    #[test]
+    fn new_sets_default_drain_timeout() {
+        let app = App::new(test_config());
+        assert_eq!(app.drain_timeout(), DEFAULT_DRAIN_TIMEOUT);
+    }
+
+    #[test]
+    fn with_drain_timeout_overrides() {
+        let app = App::new(test_config()).with_drain_timeout(Duration::from_millis(50));
+        assert_eq!(app.drain_timeout(), Duration::from_millis(50));
+    }
+
+    #[test]
+    fn from_config_builds_app() {
+        let cfg = test_config();
+        let app = App::from(cfg);
+        assert_eq!(app.drain_timeout(), DEFAULT_DRAIN_TIMEOUT);
+    }
+
+    #[test]
+    fn cancellation_token_is_cloneable() {
+        let app = App::new(test_config());
+        let token1 = app.cancellation_token();
+        let token2 = app.cancellation_token();
+        // Cancelling one clone cancels all clones.
+        token1.cancel();
+        assert!(token2.is_cancelled());
+    }
+
+    // ── Clean shutdown (immediate signal) ─────────────────────────────────
 
     #[tokio::test]
-    async fn app_run_returns_ok() {
-        let app = App::new();
-        assert!(app.run().await.is_ok());
+    async fn run_with_immediate_shutdown_returns_ok() {
+        let app = App::new(test_config()).with_drain_timeout(Duration::from_millis(200));
+        // Trigger shutdown immediately — all placeholder tasks just await
+        // cancellation, so they exit right away.
+        let result = app.run_until_shutdown(async {}).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn run_with_token_shutdown_returns_ok() {
+        let app = App::new(test_config()).with_drain_timeout(Duration::from_millis(200));
+        let token = app.cancellation_token();
+
+        // Trigger shutdown via the programmatic token after a short yield.
+        let result = app
+            .run_until_shutdown(async move {
+                // Give the subsystem tasks a moment to start.
+                tokio::task::yield_now().await;
+                token.cancel();
+            })
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    // ── Drain-timeout bound ───────────────────────────────────────────────
+    //
+    // Verify that a task which ignores cancellation and sleeps for a very long
+    // time does NOT block `run` past the drain timeout — the timeout branch
+    // fires and `run` still returns Ok.
+
+    #[tokio::test]
+    async fn run_returns_ok_even_when_drain_times_out() {
+        use std::time::Instant;
+
+        // Inject a misbehaving subsystem into the App's *own* tracker via the
+        // (module-private) `spawn_subsystem` seam: it ignores the cancellation
+        // token and sleeps far longer than the drain timeout. This drives the
+        // real timeout branch inside `run_until_shutdown` end-to-end.
+        let drain_timeout = Duration::from_millis(80);
+        let app = App::new(test_config()).with_drain_timeout(drain_timeout);
+        app.spawn_subsystem("rogue", |_token| async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        let start = Instant::now();
+        let result = app.run_until_shutdown(async {}).await;
+        let elapsed = start.elapsed();
+
+        // Always returns Ok regardless of drain outcome (process exits 0).
+        assert!(result.is_ok());
+        // The drain timeout fired: we waited at least the timeout but nowhere
+        // near the rogue task's 60s sleep.
+        assert!(
+            elapsed >= drain_timeout,
+            "should have waited for the drain timeout, waited {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "should not have waited for the rogue task, waited {elapsed:?}"
+        );
     }
 }

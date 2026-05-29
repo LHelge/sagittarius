@@ -1,10 +1,10 @@
 ---
 id: bfx
 title: E1.4 · App runtime & graceful-shutdown harness
-status: open
+status: done
 priority: P1
 created: 2026-05-29T06:00:26.010768179Z
-updated: 2026-05-29T08:17:04.384246892Z
+updated: 2026-05-29T10:29:09.405425268Z
 tags:
 - foundation
 - runtime
