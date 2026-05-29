@@ -275,6 +275,13 @@ pub struct Query {
     header: Header,
     /// The single parsed question section entry.
     question: Question,
+    /// Byte offset of the first byte *after* the question section in `raw`.
+    ///
+    /// This is `reader.position()` immediately after [`Question::read`]
+    /// completes.  Used by [`Query::question_wire`] to raw-copy the question
+    /// bytes into response synthesis output, preserving DNS 0x20
+    /// case-randomization without re-encoding the normalized [`Name`].
+    question_end: usize,
 }
 
 impl Query {
@@ -324,10 +331,16 @@ impl Query {
         let question =
             Question::read(&mut reader).map_err(|e| ParseError::with_id(header.id, e))?;
 
+        // Record the byte offset immediately after the question section.
+        // This allows response synthesis to raw-copy the question bytes
+        // verbatim (preserving DNS 0x20 case-randomization).
+        let question_end = reader.position();
+
         Ok(Self {
             raw,
             header,
             question,
+            question_end,
         })
     }
 
@@ -349,6 +362,38 @@ impl Query {
     #[must_use]
     pub fn question(&self) -> &Question {
         &self.question
+    }
+
+    /// The byte offset immediately after the question section in the raw
+    /// datagram (i.e. `reader.position()` after [`Question::read`] returns).
+    ///
+    /// Equal to the number of bytes consumed by the 12-byte header plus the
+    /// question section (QNAME wire bytes + 2-byte QTYPE + 2-byte QCLASS).
+    ///
+    /// Used by [`crate::codec::synth`] to raw-copy the question section into
+    /// synthesized responses.
+    #[must_use]
+    pub fn question_end(&self) -> usize {
+        self.question_end
+    }
+
+    /// The raw question-section bytes from the original datagram
+    /// (`raw[12..question_end]`), as a zero-copy [`Bytes`] slice.
+    ///
+    /// This slice contains the QNAME wire bytes (unmodified, including any
+    /// DNS 0x20 case-randomization) plus the 2-byte QTYPE and 2-byte QCLASS
+    /// fields.  Response synthesis raw-copies these bytes into the response
+    /// question section rather than re-encoding the normalized [`Name`], so
+    /// that the case of each label byte is preserved exactly as sent by the
+    /// client.
+    ///
+    /// The slice always starts at offset 12 (immediately after the DNS header).
+    #[must_use]
+    pub fn question_wire(&self) -> Bytes {
+        // Safety: question_end is set to reader.position() after Question::read,
+        // which only advances the cursor within the bounds of `raw`.  The slice
+        // [12..question_end] is therefore always valid.
+        self.raw.slice(12..self.question_end)
     }
 }
 

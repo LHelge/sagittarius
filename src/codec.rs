@@ -22,6 +22,7 @@
 //! | [`framing`] | UDP/TCP message framing (length-prefix encode/decode) |
 //! | [`header`] | 12-byte DNS header, [`header::Opcode`], [`header::Rcode`] |
 //! | [`name`] | [`Name`] type, QNAME reader/writer, RR name-skip helper |
+//! | [`synth`] | EDNS/OPT scan, block/local/error response synthesis |
 //! | [`ttl`] | Bounded TTL scan — min-TTL and per-RR TTL field offsets for in-place patching |
 //!
 //! All submodules share this single [`Error`] type; the crate-level
@@ -32,6 +33,7 @@ pub mod header;
 pub mod message;
 pub mod name;
 pub mod reader;
+pub mod synth;
 pub mod ttl;
 pub mod writer;
 
