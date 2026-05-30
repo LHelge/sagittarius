@@ -1,10 +1,10 @@
 ---
 id: ase
 title: E9.2 · Full-stack e2e harness + scenario suite
-status: open
+status: done
 priority: P2
 created: 2026-05-29T08:05:13.068332202Z
-updated: 2026-05-29T09:41:59.312388590Z
+updated: 2026-05-30T13:41:26.003685534Z
 tags:
 - integration
 - test
