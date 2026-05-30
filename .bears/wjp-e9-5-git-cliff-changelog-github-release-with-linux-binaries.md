@@ -1,10 +1,10 @@
 ---
 id: wjp
 title: E9.5 · git-cliff changelog + GitHub Release with Linux binaries
-status: open
+status: done
 priority: P2
 created: 2026-05-30T13:09:35.519031390Z
-updated: 2026-05-30T13:09:35.519031390Z
+updated: 2026-05-30T13:52:16.184833347Z
 tags:
 - release
 - ci
