@@ -414,10 +414,21 @@ mod tests {
         assert_eq!(r.status(), 303);
         assert_eq!(r.headers().get("location").unwrap(), "/login");
 
+        // Pre-auth mutations require an origin signal.
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403);
+
         // Wrong password is rejected (re-renders the form with an error).
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=wrong")
             .send()
             .await
@@ -434,6 +445,7 @@ mod tests {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=s3cret")
             .send()
             .await
@@ -487,6 +499,7 @@ mod tests {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=s3cret")
             .send()
             .await
@@ -601,10 +614,21 @@ mod tests {
         assert_eq!(r.status(), 200);
         assert!(r.text().await.unwrap().contains("Welcome"));
 
+        // Pre-auth setup also requires an origin signal.
+        let r = client
+            .post(format!("{base}/setup"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("username=admin&password=longenough&confirm=longenough")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403);
+
         // Mismatched passwords are rejected.
         let r = client
             .post(format!("{base}/setup"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=longenough&confirm=different")
             .send()
             .await
@@ -624,6 +648,7 @@ mod tests {
         let r = client
             .post(format!("{base}/setup"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=longenough&confirm=longenough")
             .send()
             .await
@@ -647,6 +672,7 @@ mod tests {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=longenough")
             .send()
             .await
@@ -696,6 +722,7 @@ mod tests {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=s3cret")
             .send()
             .await
@@ -823,6 +850,7 @@ mod tests {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=s3cret")
             .send()
             .await
@@ -928,6 +956,7 @@ mod tests {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=s3cret")
             .send()
             .await
@@ -1031,6 +1060,7 @@ mod tests {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=s3cret")
             .send()
             .await
@@ -1106,6 +1136,7 @@ mod tests {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=s3cret")
             .send()
             .await

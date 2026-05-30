@@ -92,7 +92,7 @@ where
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
         Box::pin(async move {
-            let name = &req.question().name.clone();
+            let name = req.question().name.clone();
             let qtype = req.question().qtype;
 
             // Compute EDNS info once; borrowing req.query() here is fine
@@ -107,7 +107,7 @@ where
             //
             // Local wins over all blocking.  The name is private to this
             // server and must never be forwarded.
-            match state.local().lookup(name, qtype) {
+            match state.local().lookup(&name, qtype) {
                 LocalMatch::Answer { data, ttl } => {
                     // Map the typed data to a wire LocalRecord.
                     // Bind octets to a local `let` so the slice borrow lives
@@ -142,7 +142,7 @@ where
             // ── Stage 2: Admin blacklist ──────────────────────────────────────
             //
             // The allowlist cannot override the admin blacklist.
-            if state.blacklist().contains(name) {
+            if state.blacklist().contains(&name) {
                 let bytes =
                     Response::block(req.query(), &block_mode, BLOCK_TTL_SECS, edns.as_ref());
                 return Ok(PipelineResponse::new(bytes, Outcome::BlockedByAdmin));
@@ -153,7 +153,7 @@ where
             // Never short-circuits — only sets the bypass flag so that stage 4
             // (bulk blocklist) is skipped.
             let mut bypass = false;
-            if state.allowlist().contains(name) {
+            if state.allowlist().contains(&name) {
                 bypass = true;
                 req.set_allow_bypass(true);
             }
@@ -161,7 +161,7 @@ where
             // ── Stage 4: Blocklist ────────────────────────────────────────────
             //
             // Skipped when the allowlist granted bypass.
-            if !bypass && state.blocklist().contains(name) {
+            if !bypass && state.blocklist().contains(&name) {
                 let bytes =
                     Response::block(req.query(), &block_mode, BLOCK_TTL_SECS, edns.as_ref());
                 return Ok(PipelineResponse::new(bytes, Outcome::BlockedByBlocklist));
