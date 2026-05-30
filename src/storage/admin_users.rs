@@ -8,6 +8,8 @@
 //! These queries are added in Epic E8 — after the E3 offline gate — so
 //! `cargo sqlx prepare` must be re-run and the updated `.sqlx/` committed.
 
+use std::{fmt, str::FromStr};
+
 use sqlx::SqlitePool;
 
 use super::Error;
@@ -15,6 +17,45 @@ use super::Error;
 // ── Result alias ────────────────────────────────────────────────────────────
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+// ── Role ──────────────────────────────────────────────────────────────────────
+
+/// The privilege level of an admin user.
+///
+/// Maps to/from the `role` TEXT column.  v0.1 only defines `admin`; new roles
+/// are added as variants here and to [`Role::as_str`] / [`Role::from_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Role {
+    /// Full administrative access (the only role in v0.1).
+    #[default]
+    Admin,
+}
+
+impl Role {
+    /// Returns the canonical TEXT representation stored in the database.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+        }
+    }
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Role {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "admin" => Ok(Self::Admin),
+            other => Err(Error::Decode(format!("unknown role value: {other:?}"))),
+        }
+    }
+}
 
 // ── AdminUser ─────────────────────────────────────────────────────────────────
 
@@ -27,12 +68,41 @@ pub struct AdminUser {
     pub username: String,
     /// Argon2id PHC hash string of the password.
     pub password_hash: String,
-    /// Role label (`"admin"` in v0.1).
-    pub role: String,
+    /// The user's privilege level.
+    pub role: Role,
     /// Unix epoch seconds of creation.
     pub created_at: i64,
     /// Unix epoch seconds of the last update.
     pub updated_at: i64,
+}
+
+// ── Private row struct ────────────────────────────────────────────────────────
+
+/// Private projection returned by `query_as!` — all primitive SQLite types so
+/// the macro can type-check the column names and types at compile time.  The
+/// `role` TEXT column is parsed into [`Role`] by [`AdminUser::try_from`].
+struct AdminUserRow {
+    id: i64,
+    username: String,
+    password_hash: String,
+    role: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
+impl TryFrom<AdminUserRow> for AdminUser {
+    type Error = Error;
+
+    fn try_from(row: AdminUserRow) -> Result<Self> {
+        Ok(AdminUser {
+            id: row.id,
+            username: row.username,
+            password_hash: row.password_hash,
+            role: row.role.parse()?,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+    }
 }
 
 // ── AdminUserRepository trait ─────────────────────────────────────────────────
@@ -87,7 +157,7 @@ impl AdminUserRepository for SqliteAdminUserRepo {
 
     async fn find_by_username(&self, username: &str) -> Result<Option<AdminUser>> {
         let row = sqlx::query_as!(
-            AdminUser,
+            AdminUserRow,
             r#"SELECT
                 id            AS "id!",
                 username,
@@ -101,7 +171,7 @@ impl AdminUserRepository for SqliteAdminUserRepo {
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row)
+        row.map(AdminUser::try_from).transpose()
     }
 
     async fn create(&self, username: &str, password_hash: &str) -> Result<AdminUser> {
@@ -122,7 +192,7 @@ impl AdminUserRepository for SqliteAdminUserRepo {
             id: row.id,
             username: username.to_owned(),
             password_hash: password_hash.to_owned(),
-            role: "admin".to_owned(),
+            role: Role::Admin,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -145,6 +215,13 @@ mod tests {
         (dir, SqliteAdminUserRepo::new(db.pool().clone()))
     }
 
+    #[test]
+    fn role_round_trips_through_text() {
+        assert_eq!(Role::Admin.as_str(), "admin");
+        assert_eq!("admin".parse::<Role>().expect("parse"), Role::Admin);
+        assert!("root".parse::<Role>().is_err());
+    }
+
     #[tokio::test]
     async fn fresh_db_has_no_admin_users() {
         let (_dir, repo) = open_repo().await;
@@ -160,7 +237,7 @@ mod tests {
             .expect("create");
         assert!(created.id > 0);
         assert_eq!(created.username, "admin");
-        assert_eq!(created.role, "admin");
+        assert_eq!(created.role, Role::Admin);
         assert!(created.created_at > 0);
 
         assert_eq!(repo.count().await.expect("count"), 1);
