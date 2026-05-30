@@ -1,10 +1,10 @@
 ---
 id: qd9
 title: Group the DNS listener free-fn cluster under a DnsListener type
-status: open
+status: done
 priority: P2
 created: 2026-05-30T11:32:40.817354208Z
-updated: 2026-05-30T11:32:54.697480438Z
+updated: 2026-05-30T12:46:01.235738621Z
 tags:
 - refactor
 - risky

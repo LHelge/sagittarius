@@ -2,10 +2,10 @@
 id: 46z
 title: 'E8.5 follow-up: "behavior lives on types" refactor round'
 type: epic
-status: open
+status: done
 priority: P2
 created: 2026-05-30T11:32:05.225133024Z
-updated: 2026-05-30T11:32:05.225133024Z
+updated: 2026-05-30T12:46:01.235912290Z
 tags:
 - refactor
 - tech-debt
