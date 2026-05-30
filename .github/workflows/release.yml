@@ -1,0 +1,65 @@
+name: Release
+
+# Cutting a release is driven entirely by pushing a semver tag, e.g.:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Every job below gates on `verify`, which fails fast if the tag does not match
+# the crate version or if the tree is not green. Pre-release tags (e.g.
+# v0.1.0-rc1) are accepted and flow through as pre-releases downstream.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+# Least privilege by default; individual jobs opt into the scopes they need.
+permissions: {}
+
+# Never cancel an in-flight release; serialise per tag instead.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SQLX_OFFLINE: "true"
+
+jobs:
+  verify:
+    name: Verify tag + green tree
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Fail in seconds if the pushed tag and Cargo.toml disagree, before any
+      # toolchain is installed or anything is published.
+      - name: Tag matches Cargo.toml version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(grep -m1 -E '^version[[:space:]]*=' Cargo.toml \
+            | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+          echo "tag version:   $tag"
+          echo "crate version: $crate"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::pushed tag v$tag does not match Cargo.toml version $crate"
+            exit 1
+          fi
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
