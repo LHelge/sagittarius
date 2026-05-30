@@ -18,10 +18,8 @@
 //!    form field. Because it is keyed by the session id it rotates on login.
 //!
 //! Pre-authentication forms (login, the first-run wizard) have no session yet,
-//! so they are protected by the `SameSite` + origin checks alone; the token
-//! check is skipped when no session cookie is present.  This is safe because
-//! the underlying handlers still require a valid session via the
-//! [`CurrentUser`](crate::web::auth::CurrentUser) extractor.
+//! so they require a matching `Origin` or `Referer`; the session-bound token
+//! check is skipped only because there is no session id to bind it to.
 
 use axum::{
     body::{Body, Bytes},
@@ -96,8 +94,12 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
         return next.run(req).await;
     }
 
-    // (2) Origin / Referer must match the browser-facing admin origin when present.
-    if !origin_ok(&state, req.headers()) {
+    let cookie = SessionCookie::from_headers(req.headers());
+
+    // (2) Origin / Referer must match the browser-facing admin origin.  For
+    // pre-auth forms, require one of those headers because there is no
+    // session-bound token yet.
+    if !origin_ok(&state, req.headers(), cookie.is_none()) {
         warn!("CSRF: rejected mutation with mismatched Origin/Referer");
         return forbidden();
     }
@@ -105,7 +107,7 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
     // (3) Token check, only when an authenticated session cookie is present.
     // Pre-auth forms (login/wizard) have no session; the handler's auth
     // extractor still gates them.
-    let Some(cookie) = SessionCookie::from_headers(req.headers()) else {
+    let Some(cookie) = cookie else {
         return next.run(req).await;
     };
     let expected = state.csrf_token(&cookie.id);
@@ -150,9 +152,9 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
 }
 
 /// Validate the `Origin` (preferred) or `Referer` header against the
-/// browser-facing admin origin.  Absent both, we defer to the token +
-/// `SameSite` defences and allow the request.
-fn origin_ok(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+/// browser-facing admin origin.  When `require_header` is false and both are
+/// absent, callers can still rely on the session-bound CSRF token.
+fn origin_ok(state: &AppState, headers: &axum::http::HeaderMap, require_header: bool) -> bool {
     let Some(expected) = origin::origin(state.cookie_policy, headers) else {
         // Can't determine our own origin (no Host header) — fail closed.
         return false;
@@ -167,8 +169,9 @@ fn origin_ok(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
             || r.strip_prefix(&expected)
                 .is_some_and(|rest| rest.starts_with('/'));
     }
-    // Neither header present: rely on SameSite + the token.
-    true
+    // Neither header present: authenticated callers may still rely on the token,
+    // but pre-auth forms require an origin signal.
+    !require_header
 }
 
 /// Extract a string field from a JSON object body by key (used for Datastar's

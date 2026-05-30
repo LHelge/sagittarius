@@ -305,6 +305,8 @@ impl AppState {
         let now = Clock::now_secs();
         // Idle and absolute expiry.
         if now >= session.expires_at || now >= session.created_at + ABSOLUTE_SECS {
+            let _ = repo.delete(&cookie.id).await;
+            let _ = repo.delete_expired(now).await;
             return None;
         }
         // Constant-time token check.

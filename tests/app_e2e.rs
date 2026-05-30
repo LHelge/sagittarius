@@ -253,6 +253,7 @@ impl Harness {
         let r = client
             .post(format!("{base}/setup"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=correcthorse&confirm=correcthorse")
             .send()
             .await
@@ -262,6 +263,7 @@ impl Harness {
         let r = client
             .post(format!("{base}/login"))
             .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
             .body("username=admin&password=correcthorse")
             .send()
             .await

@@ -255,10 +255,10 @@ impl Fetcher {
                 let mut accumulated = Vec::new();
                 let mut response = response;
                 while let Some(chunk) = response.chunk().await.map_err(FetchError::Request)? {
-                    accumulated.extend_from_slice(&chunk);
-                    if accumulated.len() > self.max_size {
+                    if chunk.len() > self.max_size.saturating_sub(accumulated.len()) {
                         return Err(FetchError::BodyTooLarge(self.max_size));
                     }
+                    accumulated.extend_from_slice(&chunk);
                 }
 
                 Ok(FetchOutcome::Modified {

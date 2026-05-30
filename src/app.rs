@@ -252,8 +252,9 @@ impl App {
             scheduler.run(token).await;
         });
 
-        // Close the tracker so `wait()` knows the spawn set is complete once
-        // existing tasks finish.  New tasks cannot be spawned after this point.
+        // Close the tracker so `wait()` can complete once tracked tasks drain.
+        // `TaskTracker` still tracks later spawns, such as rebuilt upstream
+        // drivers, but no more startup subsystem tasks are registered here.
         self.tracker.close();
 
         // All subsystems are bound and serving — log the resolved addresses and
