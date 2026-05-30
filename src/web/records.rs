@@ -26,7 +26,11 @@ use crate::{
     storage::local_records::{
         LocalRecordRepository, NewLocalRecord, RecordType, SqliteLocalRecordRepo,
     },
-    web::{AppState, Chrome, auth::CurrentUser, render::WebError},
+    web::{
+        AppState, Chrome,
+        auth::CurrentUser,
+        render::{DomainDisplay, WebError},
+    },
 };
 
 impl AppState {
@@ -87,7 +91,8 @@ impl AppState {
             .into_iter()
             .map(|r| LocalRecordView {
                 id: r.id,
-                name: r.name,
+                // Display the bare name; the stored value keeps its trailing dot.
+                name: r.name.display_domain().to_owned(),
                 record_type: r.record_type.as_str(),
                 value: r.value,
                 ttl: r.ttl,
@@ -249,6 +254,35 @@ mod tests {
             .local()
             .lookup(&"nas.home.lan".parse::<Name>().unwrap(), Qtype::A);
         assert!(matches!(m, LocalMatch::Answer { .. }), "got {m:?}");
+    }
+
+    #[tokio::test]
+    async fn local_page_shows_names_without_trailing_dot() {
+        let (_d, st) = state().await;
+        // Stored normalized to lowercase + trailing dot ...
+        st.add_local_record("Router.Home.LAN", RecordType::A, "192.168.1.1", 300)
+            .await
+            .expect("add");
+        st.add_local_record("*.home.lan", RecordType::Aaaa, "fd00::1", 120)
+            .await
+            .expect("add wildcard");
+
+        let user = CurrentUser {
+            user_id: 1,
+            session_id: "sess".to_owned(),
+        };
+        let html = st
+            .render_local(&user, None)
+            .await
+            .expect("render")
+            .render()
+            .expect("template");
+
+        // ... but displayed bare (the trailing dot stays internal).
+        assert!(html.contains("router.home.lan"));
+        assert!(!html.contains("router.home.lan."));
+        assert!(html.contains("*.home.lan"));
+        assert!(!html.contains("*.home.lan."));
     }
 
     #[tokio::test]
