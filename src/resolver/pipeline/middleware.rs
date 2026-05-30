@@ -200,19 +200,30 @@ where
         .boxed_clone()
 }
 
-// ── classify_rejection ────────────────────────────────────────────────────────
+// ── Rejection classification ──────────────────────────────────────────────────
 
-/// Map a protective-middleware error to the wire response policy.
+/// Classifies a protective-middleware rejection into a wire response policy.
 ///
-/// - [`RateLimited`] → REFUSED (per-client quota exceeded)
-/// - `Overloaded` (load-shed) → REFUSED (server temporarily full)
-/// - `Elapsed` (timeout) and anything else → SERVFAIL
-pub fn classify_rejection(err: &BoxError) -> (Outcome, Rcode) {
-    if err.is::<RateLimited>() || err.is::<tower::load_shed::error::Overloaded>() {
-        (Outcome::Refused, Rcode::Refused)
-    } else {
-        // Elapsed and any other error → SERVFAIL.
-        (Outcome::Servfail, Rcode::ServFail)
+/// Implemented as an extension trait on the boxed error (the rejection type is
+/// `tower`'s `BoxError`, so an inherent method isn't possible) — the behavior
+/// still lives on the value it inspects.
+pub trait ClassifyRejection {
+    /// Map the rejection to its `(Outcome, Rcode)`:
+    ///
+    /// - [`RateLimited`] → REFUSED (per-client quota exceeded)
+    /// - load-shed `Overloaded` → REFUSED (server temporarily full)
+    /// - `Elapsed` (timeout) and anything else → SERVFAIL
+    fn rejection_policy(&self) -> (Outcome, Rcode);
+}
+
+impl ClassifyRejection for dyn std::error::Error + Send + Sync + 'static {
+    fn rejection_policy(&self) -> (Outcome, Rcode) {
+        if self.is::<RateLimited>() || self.is::<tower::load_shed::error::Overloaded>() {
+            (Outcome::Refused, Rcode::Refused)
+        } else {
+            // Elapsed and any other error → SERVFAIL.
+            (Outcome::Servfail, Rcode::ServFail)
+        }
     }
 }
 
@@ -277,7 +288,7 @@ mod tests {
     // ── rate_limit_throttles_one_client_others_pass ───────────────────────────
 
     /// With burst=1 the first request from 1.1.1.1 passes, a second back-to-back
-    /// request from the same IP is rate-limited → classify_rejection → REFUSED.
+    /// request from the same IP is rate-limited → rejection_policy → REFUSED.
     /// A request from a different IP 2.2.2.2 still passes — proving per-client keying.
     #[tokio::test]
     async fn rate_limit_throttles_one_client_others_pass() {
@@ -303,7 +314,7 @@ mod tests {
         // Second immediate request from 1.1.1.1 must be rate-limited.
         let r2 = svc.clone().oneshot(make_request(raw2, ip1)).await;
         let err = r2.expect_err("second request from 1.1.1.1 must be rate-limited");
-        let (outcome, rcode) = classify_rejection(&err);
+        let (outcome, rcode) = err.rejection_policy();
         assert_eq!(outcome, Outcome::Refused, "rate-limited must be Refused");
         assert_eq!(rcode, Rcode::Refused, "rcode must be Refused");
 
@@ -315,7 +326,7 @@ mod tests {
     // ── timeout_returns_servfail ──────────────────────────────────────────────
 
     /// A stub that sleeps 500ms under a 50ms deadline is timed out.
-    /// classify_rejection maps the Elapsed error to (Servfail, ServFail).
+    /// rejection_policy maps the Elapsed error to (Servfail, ServFail).
     #[tokio::test]
     async fn timeout_returns_servfail() {
         let config = ProtectiveConfig {
@@ -340,7 +351,7 @@ mod tests {
             .oneshot(req)
             .await
             .expect_err("slow request must time out");
-        let (outcome, rcode) = classify_rejection(&err);
+        let (outcome, rcode) = err.rejection_policy();
         assert_eq!(outcome, Outcome::Servfail, "timeout must be Servfail");
         assert_eq!(rcode, Rcode::ServFail, "rcode must be ServFail");
     }
@@ -400,7 +411,7 @@ mod tests {
             let result_b = svc.clone().oneshot(req_b).await;
 
             let err = result_b.expect_err("request B must be load-shed");
-            let (outcome, rcode) = classify_rejection(&err);
+            let (outcome, rcode) = err.rejection_policy();
             assert_eq!(outcome, Outcome::Refused, "load-shed must be Refused");
             assert_eq!(rcode, Rcode::Refused, "rcode must be Refused");
 
@@ -417,11 +428,11 @@ mod tests {
 
     // ── classifier_unit_test ──────────────────────────────────────────────────
 
-    /// Direct unit tests for classify_rejection without going through the full stack.
+    /// Direct unit tests for rejection_policy without going through the full stack.
     #[test]
     fn classifier_rate_limited_maps_to_refused() {
         let err: BoxError = Box::new(RateLimited);
-        let (outcome, rcode) = classify_rejection(&err);
+        let (outcome, rcode) = err.rejection_policy();
         assert_eq!(outcome, Outcome::Refused);
         assert_eq!(rcode, Rcode::Refused);
     }
@@ -429,7 +440,7 @@ mod tests {
     #[test]
     fn classifier_overloaded_maps_to_refused() {
         let err: BoxError = Box::new(tower::load_shed::error::Overloaded::new());
-        let (outcome, rcode) = classify_rejection(&err);
+        let (outcome, rcode) = err.rejection_policy();
         assert_eq!(outcome, Outcome::Refused);
         assert_eq!(rcode, Rcode::Refused);
     }
@@ -437,7 +448,7 @@ mod tests {
     #[test]
     fn classifier_elapsed_maps_to_servfail() {
         let err: BoxError = Box::new(tower::timeout::error::Elapsed::new());
-        let (outcome, rcode) = classify_rejection(&err);
+        let (outcome, rcode) = err.rejection_policy();
         assert_eq!(outcome, Outcome::Servfail);
         assert_eq!(rcode, Rcode::ServFail);
     }
@@ -447,7 +458,7 @@ mod tests {
         // Any error type that is neither RateLimited nor Overloaded nor Elapsed
         // must default to SERVFAIL.
         let err: BoxError = "oops".into();
-        let (outcome, rcode) = classify_rejection(&err);
+        let (outcome, rcode) = err.rejection_policy();
         assert_eq!(outcome, Outcome::Servfail);
         assert_eq!(rcode, Rcode::ServFail);
     }

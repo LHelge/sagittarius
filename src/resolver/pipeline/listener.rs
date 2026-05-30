@@ -50,7 +50,7 @@ use crate::{
         message::Query,
         synth::{EdnsInfo, Response},
     },
-    resolver::pipeline::{BoxError, DnsRequest, PipelineResponse, middleware::classify_rejection},
+    resolver::pipeline::{BoxError, DnsRequest, PipelineResponse, middleware::ClassifyRejection},
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ impl DnsListeners {
 /// Drive the service for a successfully-parsed `query` from `client`.
 ///
 /// Returns the reply bytes.  Service errors are mapped to synthesized error
-/// responses via [`classify_rejection`].
+/// responses via [`ClassifyRejection::rejection_policy`].
 async fn run_service<S>(query: &Query, client: SocketAddr, service: S) -> Bytes
 where
     S: Service<DnsRequest, Response = PipelineResponse, Error = BoxError>,
@@ -312,7 +312,7 @@ where
     match service.oneshot(req).await {
         Ok(PipelineResponse { bytes, .. }) => bytes,
         Err(boxerr) => {
-            let (_, rcode) = classify_rejection(&boxerr);
+            let (_, rcode) = boxerr.rejection_policy();
             Response::error_response(query, rcode, edns.as_ref())
         }
     }

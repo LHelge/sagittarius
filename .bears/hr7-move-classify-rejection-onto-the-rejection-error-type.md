@@ -1,10 +1,10 @@
 ---
 id: hr7
 title: Move classify_rejection onto the rejection error type
-status: open
+status: done
 priority: P2
 created: 2026-05-30T11:32:29.997458577Z
-updated: 2026-05-30T11:32:29.997458577Z
+updated: 2026-05-30T12:34:36.703905175Z
 tags:
 - refactor
 parent: 46z

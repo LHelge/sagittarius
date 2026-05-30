@@ -34,7 +34,7 @@ use crate::{
             cache_layer::CacheService,
             forward::ForwardService,
             layers::DecisionStack,
-            middleware::{ProtectiveConfig, build_protective_service, classify_rejection},
+            middleware::{ClassifyRejection, ProtectiveConfig, build_protective_service},
         },
         state::ResolverState,
         upstream::{SharedUpstreamPool, UpstreamConfig, UpstreamTransport},
@@ -116,7 +116,7 @@ where
             let (outcome, rcode) = match &result {
                 Ok(resp) => (resp.outcome, None),
                 Err(e) => {
-                    let (o, rc) = classify_rejection(e);
+                    let (o, rc) = e.rejection_policy();
                     (o, Some(rc))
                 }
             };
