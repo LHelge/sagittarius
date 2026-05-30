@@ -94,6 +94,21 @@ Notes:
 - `--session-cookie-secure auto` uses secure admin cookies when the
   browser-facing request is HTTPS, and allows direct local HTTP while testing.
 
+## Deployment
+
+The [`deploy/`](deploy/) directory has ready-to-adapt examples:
+
+- [`deploy/sagittarius.service`](deploy/sagittarius.service) — a hardened
+  **systemd** unit that runs Sagittarius as a dedicated unprivileged user with
+  `CAP_NET_BIND_SERVICE` for port 53, the database under
+  `/var/lib/sagittarius`, and graceful `SIGTERM` shutdown.
+- [`deploy/Caddyfile`](deploy/Caddyfile) — a **reverse-proxy** snippet that
+  terminates TLS (automatic certificates) in front of the loopback admin UI.
+
+Bind the admin interface to loopback or a trusted network and reach it only
+through the proxy; the forwarded scheme/host headers it sets are trusted for
+secure-cookie and CSRF origin decisions.
+
 > Detailed installation and configuration docs will be added as the project
 > stabilizes.
 

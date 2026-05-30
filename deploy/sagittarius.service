@@ -1,0 +1,57 @@
+# Example systemd unit for Sagittarius.
+#
+# Install:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin sagittarius
+#   sudo install -Dm755 target/release/sagittarius /usr/local/bin/sagittarius
+#   sudo install -d -o sagittarius -g sagittarius /var/lib/sagittarius
+#   sudo install -Dm644 deploy/sagittarius.service /etc/systemd/system/sagittarius.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sagittarius
+#
+# The admin UI binds to loopback; front it with a reverse proxy for TLS /
+# remote access (see deploy/Caddyfile).
+
+[Unit]
+Description=Sagittarius DNS sinkhole
+Documentation=https://github.com/LHelge/sagittarius
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=sagittarius
+Group=sagittarius
+ExecStart=/usr/local/bin/sagittarius \
+    --dns-addr 0.0.0.0:53 \
+    --admin-addr 127.0.0.1:8080 \
+    --db-path /var/lib/sagittarius/sagittarius.db \
+    --session-cookie-secure auto
+
+# Binding port 53 as a non-root user needs this capability.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Graceful shutdown: Sagittarius drains in-flight queries on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=2
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# The SQLite database lives here and is the only writable path.
+StateDirectory=sagittarius
+ReadWritePaths=/var/lib/sagittarius
+
+[Install]
+WantedBy=multi-user.target

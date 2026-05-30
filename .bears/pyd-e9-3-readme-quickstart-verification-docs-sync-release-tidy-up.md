@@ -1,10 +1,10 @@
 ---
 id: pyd
 title: E9.3 · README quickstart verification + docs sync + release tidy-up
-status: open
+status: done
 priority: P2
 created: 2026-05-29T08:05:22.918556320Z
-updated: 2026-05-29T08:05:22.918556320Z
+updated: 2026-05-30T13:49:22.448068522Z
 tags:
 - integration
 - docs

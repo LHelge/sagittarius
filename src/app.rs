@@ -258,8 +258,11 @@ impl App {
 
         // All subsystems are bound and serving — log the resolved addresses and
         // hand them to the readiness seam before blocking on the trigger.
+        // The UDP set holds one entry per `SO_REUSEPORT` socket, so collapse
+        // duplicates for a readable log line.
+        let unique_dns: std::collections::BTreeSet<_> = dns_udp.iter().copied().collect();
         info!(
-            dns_addrs = ?dns_udp,
+            dns_addrs = ?unique_dns,
             admin_addr = %admin_addr,
             "runtime ready, awaiting shutdown signal",
         );
