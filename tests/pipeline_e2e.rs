@@ -35,11 +35,7 @@ use sagittarius::{
     },
     resolver::{
         local::{LocalRecords, RecordData},
-        pipeline::{
-            engine::{build_engine, upstream_config_from_row},
-            listener::DnsListeners,
-            middleware::ProtectiveConfig,
-        },
+        pipeline::{engine::build_engine, listener::DnsListeners, middleware::ProtectiveConfig},
         state::ResolverState,
         upstream::{
             DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, SharedUpstreamPool,
@@ -565,12 +561,12 @@ async fn telemetry_observed_end_to_end() {
     .expect("test timed out");
 }
 
-// ── 9. upstream_config_from_row: seeded upstreams map correctly ───────────────
+// ── 9. UpstreamConfig::try_from(&Upstream): seeded upstreams map correctly ────
 
-/// Integration smoke-test for `upstream_config_from_row` using the actual
-/// seeded upstream rows from a real temp DB.
+/// Integration smoke-test for `UpstreamConfig::try_from(&Upstream)` using the
+/// actual seeded upstream rows from a real temp DB.
 #[tokio::test]
-async fn upstream_config_from_row_maps_seeded_upstreams() {
+async fn upstream_config_maps_seeded_upstreams() {
     use sagittarius::storage::upstreams::{SqliteUpstreamRepo, UpstreamRepository};
 
     let dir = TempDir::new().expect("temp dir");
@@ -586,8 +582,8 @@ async fn upstream_config_from_row_maps_seeded_upstreams() {
     // Both seeded upstreams (1.1.1.1 UDP, 1.0.0.1 UDP) must map to port 53.
     assert_eq!(rows.len(), 2, "exactly 2 seeded upstreams");
     for row in &rows {
-        let cfg = upstream_config_from_row(row)
-            .unwrap_or_else(|| panic!("seeded upstream {} must map", row.address));
+        let cfg = UpstreamConfig::try_from(row)
+            .unwrap_or_else(|_| panic!("seeded upstream {} must map", row.address));
         assert_eq!(cfg.addr.port(), 53, "seeded UDP upstream must use port 53");
         assert_eq!(cfg.transport, UpstreamTransport::Udp);
     }

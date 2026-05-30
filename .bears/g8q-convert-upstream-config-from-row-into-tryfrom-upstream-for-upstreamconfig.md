@@ -1,10 +1,10 @@
 ---
 id: g8q
 title: Convert upstream_config_from_row into TryFrom<&Upstream> for UpstreamConfig
-status: open
+status: done
 priority: P1
 created: 2026-05-30T11:32:21.020880005Z
-updated: 2026-05-30T11:32:21.020880005Z
+updated: 2026-05-30T12:26:12.869857025Z
 tags:
 - refactor
 parent: 46z

@@ -10,10 +10,11 @@
 //!   `TelemetryLayer` → `protective middleware` → `DecisionStack` → `ForwardService`
 //!   and returns a [`tower::util::BoxCloneService`] ready for the DNS listener.
 //!
-//! - [`upstream_config_from_row`] — maps a persisted [`storage::upstreams::Upstream`]
-//!   row to a runtime [`UpstreamConfig`], applying default ports per transport
-//!   and returning `None` for rows that cannot be resolved to an IP:port (e.g.
-//!   hostname-only DoH URLs, which are out of scope for v0.1).
+//! - `TryFrom<&Upstream> for UpstreamConfig` — maps a persisted
+//!   [`storage::upstreams::Upstream`] row to a runtime [`UpstreamConfig`],
+//!   applying default ports per transport and returning [`UnmappableUpstream`]
+//!   for rows that cannot be resolved to an IP:port (e.g. hostname-only DoH
+//!   URLs, which are out of scope for v0.1).
 
 use std::{
     future::Future,
@@ -178,37 +179,55 @@ pub fn build_engine(
 ///
 /// The seeded upstreams (1.1.1.1 and 1.0.0.1, UDP) both parse as `IpAddr`
 /// and are mapped correctly.
-pub fn upstream_config_from_row(row: &Upstream) -> Option<UpstreamConfig> {
-    let transport = match row.transport {
-        Transport::Udp => UpstreamTransport::Udp,
-        Transport::Tcp => UpstreamTransport::Tcp,
-        Transport::Dot => UpstreamTransport::Dot,
-        Transport::Doh => UpstreamTransport::Doh,
-    };
+/// A stored [`Upstream`] row could not be mapped to a runtime
+/// [`UpstreamConfig`]: its address is neither an `IP:port` nor a bare IP (e.g.
+/// a hostname-only DoH URL, out of scope for v0.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnmappableUpstream;
 
-    let default_port = match transport {
-        UpstreamTransport::Udp | UpstreamTransport::Tcp => 53u16,
-        UpstreamTransport::Dot => 853,
-        UpstreamTransport::Doh => 443,
-    };
+impl std::fmt::Display for UnmappableUpstream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("upstream address is not an IP or IP:port")
+    }
+}
 
-    let addr: SocketAddr = if let Ok(sa) = row.address.parse::<SocketAddr>() {
-        // Already has an explicit port — use as-is.
-        sa
-    } else if let Ok(ip) = row.address.parse::<IpAddr>() {
-        // Bare IP — attach the default port for this transport.
-        SocketAddr::new(ip, default_port)
-    } else {
-        // Unparseable (e.g. a DoH URL or hostname) — skip.
-        return None;
-    };
+impl std::error::Error for UnmappableUpstream {}
 
-    Some(UpstreamConfig {
-        addr,
-        transport,
-        tls_server_name: row.tls_server_name.clone(),
-        http_endpoint: None, // defaults to /dns-query for DoH
-    })
+impl TryFrom<&Upstream> for UpstreamConfig {
+    type Error = UnmappableUpstream;
+
+    fn try_from(row: &Upstream) -> Result<Self, Self::Error> {
+        let transport = match row.transport {
+            Transport::Udp => UpstreamTransport::Udp,
+            Transport::Tcp => UpstreamTransport::Tcp,
+            Transport::Dot => UpstreamTransport::Dot,
+            Transport::Doh => UpstreamTransport::Doh,
+        };
+
+        let default_port = match transport {
+            UpstreamTransport::Udp | UpstreamTransport::Tcp => 53u16,
+            UpstreamTransport::Dot => 853,
+            UpstreamTransport::Doh => 443,
+        };
+
+        let addr: SocketAddr = if let Ok(sa) = row.address.parse::<SocketAddr>() {
+            // Already has an explicit port — use as-is.
+            sa
+        } else if let Ok(ip) = row.address.parse::<IpAddr>() {
+            // Bare IP — attach the default port for this transport.
+            SocketAddr::new(ip, default_port)
+        } else {
+            // Unparseable (e.g. a DoH URL or hostname).
+            return Err(UnmappableUpstream);
+        };
+
+        Ok(UpstreamConfig {
+            addr,
+            transport,
+            tls_server_name: row.tls_server_name.clone(),
+            http_endpoint: None, // defaults to /dns-query for DoH
+        })
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -231,13 +250,13 @@ mod tests {
         }
     }
 
-    // ── upstream_config_from_row unit tests ───────────────────────────────────
+    // ── UpstreamConfig::try_from(&Upstream) unit tests ────────────────────────
 
     /// Bare IP "1.1.1.1" with UDP transport → default port 53.
     #[test]
     fn udp_bare_ip_gets_default_port_53() {
         let row = make_row("1.1.1.1", Transport::Udp, None);
-        let cfg = upstream_config_from_row(&row).expect("must map");
+        let cfg = UpstreamConfig::try_from(&row).expect("must map");
         assert_eq!(cfg.addr, "1.1.1.1:53".parse::<SocketAddr>().unwrap());
         assert_eq!(cfg.transport, UpstreamTransport::Udp);
         assert!(cfg.tls_server_name.is_none());
@@ -247,7 +266,7 @@ mod tests {
     #[test]
     fn udp_explicit_port_preserved() {
         let row = make_row("9.9.9.9:8053", Transport::Udp, None);
-        let cfg = upstream_config_from_row(&row).expect("must map");
+        let cfg = UpstreamConfig::try_from(&row).expect("must map");
         assert_eq!(cfg.addr, "9.9.9.9:8053".parse::<SocketAddr>().unwrap());
     }
 
@@ -255,7 +274,7 @@ mod tests {
     #[test]
     fn dot_bare_ip_gets_default_port_853_with_sni() {
         let row = make_row("1.1.1.1", Transport::Dot, Some("cloudflare-dns.com"));
-        let cfg = upstream_config_from_row(&row).expect("must map");
+        let cfg = UpstreamConfig::try_from(&row).expect("must map");
         assert_eq!(
             cfg.addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 853)
@@ -264,26 +283,27 @@ mod tests {
         assert_eq!(cfg.tls_server_name.as_deref(), Some("cloudflare-dns.com"));
     }
 
-    /// A DoH URL / hostname ("https://cloudflare-dns.com/dns-query") → `None`.
+    /// A DoH URL / hostname ("https://cloudflare-dns.com/dns-query") → error.
     #[test]
-    fn doh_url_hostname_returns_none() {
+    fn doh_url_hostname_is_unmappable() {
         let row = make_row(
             "https://cloudflare-dns.com/dns-query",
             Transport::Doh,
             Some("cloudflare-dns.com"),
         );
-        let cfg = upstream_config_from_row(&row);
         assert!(
-            cfg.is_none(),
+            matches!(UpstreamConfig::try_from(&row), Err(UnmappableUpstream)),
             "DoH URL / hostname must not map to an UpstreamConfig in v0.1"
         );
     }
 
-    /// A plain hostname without port → `None`.
+    /// A plain hostname without port → error.
     #[test]
-    fn plain_hostname_returns_none() {
+    fn plain_hostname_is_unmappable() {
         let row = make_row("dns.quad9.net", Transport::Udp, None);
-        let cfg = upstream_config_from_row(&row);
-        assert!(cfg.is_none(), "plain hostname must return None");
+        assert!(matches!(
+            UpstreamConfig::try_from(&row),
+            Err(UnmappableUpstream)
+        ));
     }
 }

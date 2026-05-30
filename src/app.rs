@@ -25,15 +25,11 @@ use crate::{
     config::Config,
     error::Result,
     resolver::{
-        pipeline::{
-            engine::{build_engine, upstream_config_from_row},
-            listener::DnsListeners,
-            middleware::ProtectiveConfig,
-        },
+        pipeline::{engine::build_engine, listener::DnsListeners, middleware::ProtectiveConfig},
         state::ResolverState,
         upstream::{
             DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, SharedUpstreamPool,
-            UpstreamPool,
+            UpstreamConfig, UpstreamPool,
         },
     },
     storage::{
@@ -163,12 +159,12 @@ impl App {
 
         let configs: Vec<_> = rows
             .iter()
-            .filter_map(|r| {
-                let c = upstream_config_from_row(r);
-                if c.is_none() {
+            .filter_map(|r| match UpstreamConfig::try_from(r) {
+                Ok(c) => Some(c),
+                Err(_) => {
                     tracing::warn!(addr = %r.address, "skipping unmappable upstream");
+                    None
                 }
-                c
             })
             .collect();
 

@@ -24,9 +24,9 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    resolver::{
-        pipeline::engine::upstream_config_from_row,
-        upstream::{DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, UpstreamPool},
+    resolver::upstream::{
+        DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, UpstreamConfig,
+        UpstreamPool,
     },
     storage::upstreams::{
         NewUpstream, SqliteUpstreamRepo, Transport, Upstream, UpstreamRepository,
@@ -40,7 +40,10 @@ impl AppState {
         let rows = SqliteUpstreamRepo::new(self.db.pool().clone())
             .list_enabled()
             .await?;
-        let configs: Vec<_> = rows.iter().filter_map(upstream_config_from_row).collect();
+        let configs: Vec<_> = rows
+            .iter()
+            .filter_map(|r| UpstreamConfig::try_from(r).ok())
+            .collect();
         let new_pool = UpstreamPool::connect(
             &configs,
             &self.tracker,
@@ -130,7 +133,7 @@ impl AppState {
             enabled: true,
             sort_order: 0,
         };
-        if upstream_config_from_row(&probe).is_none() {
+        if UpstreamConfig::try_from(&probe).is_err() {
             return Err(WebError::bad_request(
                 "Address must be an IP address (optionally with :port); hostnames and DoH URLs are not supported in v0.1.",
             ));
