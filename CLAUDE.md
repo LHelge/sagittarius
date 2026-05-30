@@ -113,6 +113,21 @@ directory — otherwise the offline build (`SQLX_OFFLINE=true`) and CI will fail
 
 Also mark any finished bears tasks as completed first (see above).
 
+## Shell & tooling
+
+Keep shell usage minimal so routine work doesn't trip permission prompts:
+
+- **Edit files with the editor tools** (Read / Write / Edit), never with shell
+  text manglers. No `sed`, `awk`, or `echo >` / heredocs to create or rewrite
+  files.
+- **One command, one job.** Don't chain steps with `&&`/`;` unless the later
+  step genuinely depends on the earlier one. Skip throwaway `echo` banners,
+  status prints, and "let me check" probes — run the command you actually need.
+- **Prefer dedicated tools over shell** when one fits (Read instead of `cat`,
+  the search tools instead of `grep`/`find` pipelines).
+- Keep commands short and predictable; reserve long pipelines for when they're
+  the clearest way to express a real task.
+
 ## When in doubt
 
 If anything is unclear or underspecified, **ask questions rather than guessing**.
