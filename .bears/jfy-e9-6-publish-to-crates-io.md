@@ -1,10 +1,10 @@
 ---
 id: jfy
 title: E9.6 · Publish to crates.io
-status: open
+status: done
 priority: P2
 created: 2026-05-30T13:09:39.403741541Z
-updated: 2026-05-30T13:09:39.403741541Z
+updated: 2026-05-30T13:55:27.313394060Z
 tags:
 - release
 - ci
