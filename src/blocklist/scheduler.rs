@@ -33,10 +33,7 @@
 //! next cycle boundary.  E8 may also fire the [`RefreshTrigger`] immediately
 //! after changing the interval to apply the new value without waiting.
 
-use std::{
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{sync::Arc, time::Duration};
 
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -50,6 +47,7 @@ use crate::{
     },
     resolver::state::ResolverState,
     storage::blocklists::{BlocklistRepository, RefreshMetadata, SqliteBlocklistRepo},
+    time::Clock,
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -274,7 +272,7 @@ impl BlocklistScheduler {
                     }
                     let meta = RefreshMetadata {
                         entry_count: count as u64,
-                        last_updated: now_epoch(),
+                        last_updated: Clock::now_secs(),
                         etag: new_validators.etag,
                         last_modified: new_validators.last_modified,
                     };
@@ -472,16 +470,6 @@ impl BlocklistScheduler {
             }
         }
     }
-}
-
-// ── Private helpers ───────────────────────────────────────────────────────────
-
-/// Return the current Unix epoch time in seconds.
-fn now_epoch() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

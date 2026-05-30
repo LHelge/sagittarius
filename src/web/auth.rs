@@ -34,10 +34,7 @@
 //! `__Host-` prefix is only ever used together with `Secure` + `Path=/` + no
 //! `Domain`, satisfying the browser prefix rules.
 
-use std::{
-    sync::OnceLock,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::OnceLock;
 
 use argon2::{
     Argon2,
@@ -59,6 +56,7 @@ use crate::{
         admin_users::{AdminUserRepository, SqliteAdminUserRepo},
         sessions::{NewSession, SessionRepository, SqliteSessionRepo},
     },
+    time::Clock,
     web::{
         AppState, Chrome,
         crypto::{ConstantTimeEq, ToHex},
@@ -81,14 +79,6 @@ const RENEW_THRESHOLD_SECS: i64 = 3600;
 const COOKIE_SECURE: &str = "__Host-sgt_session";
 /// Cookie name for direct plain-HTTP / loopback use (no prefix).
 const COOKIE_INSECURE: &str = "sgt_session";
-
-/// Current unix epoch in seconds.
-fn now_epoch() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
 
 // ── Password ──────────────────────────────────────────────────────────────────
 
@@ -312,7 +302,7 @@ impl AppState {
         let repo = SqliteSessionRepo::new(self.db.pool().clone());
         let session = repo.find(&cookie.id).await.ok()??;
 
-        let now = now_epoch();
+        let now = Clock::now_secs();
         // Idle and absolute expiry.
         if now >= session.expires_at || now >= session.created_at + ABSOLUTE_SECS {
             return None;
@@ -338,7 +328,7 @@ impl AppState {
     /// Create a session for `user_id` and return the `Set-Cookie` header value.
     async fn begin_session(&self, headers: &HeaderMap, user_id: i64) -> Result<String, WebError> {
         let cookie = SessionCookie::issue();
-        let expires_at = now_epoch() + IDLE_SECS;
+        let expires_at = Clock::now_secs() + IDLE_SECS;
 
         SqliteSessionRepo::new(self.db.pool().clone())
             .insert(&NewSession {

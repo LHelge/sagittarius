@@ -28,4 +28,5 @@ pub mod error;
 pub mod resolver;
 pub mod storage;
 pub mod telemetry;
+pub mod time;
 pub mod web;
