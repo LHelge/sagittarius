@@ -138,12 +138,21 @@ impl DnsRequest {
 
 // ── Outcome ───────────────────────────────────────────────────────────────────
 
+/// The one-click action the live query log offers for a row, keyed purely on
+/// its [`Outcome`] (not on the domain's current list membership).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogAction {
+    /// Block a currently-resolving domain (add it to the admin blacklist).
+    Block,
+    /// Make a blocked domain resolve again.
+    Unblock,
+}
+
 /// Classifies how a DNS query was answered.
 ///
 /// Used for telemetry (E6.6) and admin UI one-click actions (E8).  The
-/// classifier methods [`Outcome::is_blocked`], [`Outcome::offers_whitelist`],
-/// and [`Outcome::offers_blacklist`] encode the SPEC §9 rules about which
-/// actions are available for each outcome.
+/// classifier methods [`Outcome::is_blocked`] and [`Outcome::log_action`]
+/// encode the SPEC §9 rules about which action each outcome offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// Answered from an authoritative local record.
@@ -176,22 +185,18 @@ impl Outcome {
         matches!(self, Self::BlockedByAdmin | Self::BlockedByBlocklist)
     }
 
-    /// Returns `true` if the one-click *whitelist* action is meaningful.
+    /// The one-click [`LogAction`] this outcome offers, if any.
     ///
-    /// Only `BlockedByBlocklist` qualifies — an admin block cannot be overridden
-    /// by the allowlist, and resolved/local answers are not blocked.
+    /// - A resolved answer (`Cached` / `Forwarded`) can be turned into a block.
+    /// - A blocked answer (admin or blocklist) can be unblocked.
+    /// - Everything else (local answers, errors) offers no action.
     #[must_use]
-    pub fn offers_whitelist(&self) -> bool {
-        matches!(self, Self::BlockedByBlocklist)
-    }
-
-    /// Returns `true` if the one-click *blacklist* action is meaningful.
-    ///
-    /// Only `Cached` and `Forwarded` qualify — a resolved answer can be turned
-    /// into a block.  Local answers and existing blocks cannot.
-    #[must_use]
-    pub fn offers_blacklist(&self) -> bool {
-        matches!(self, Self::Cached | Self::Forwarded)
+    pub fn log_action(&self) -> Option<LogAction> {
+        match self {
+            Self::Cached | Self::Forwarded => Some(LogAction::Block),
+            Self::BlockedByAdmin | Self::BlockedByBlocklist => Some(LogAction::Unblock),
+            _ => None,
+        }
     }
 
     /// The coarse category used to group outcomes in the live query log
@@ -323,35 +328,28 @@ mod tests {
     }
 
     #[test]
-    fn outcome_offers_whitelist() {
-        // Only BlockedByBlocklist offers whitelist
-        assert!(Outcome::BlockedByBlocklist.offers_whitelist());
+    fn outcome_log_action() {
+        // Resolved answers can be blocked.
+        assert_eq!(Outcome::Cached.log_action(), Some(LogAction::Block));
+        assert_eq!(Outcome::Forwarded.log_action(), Some(LogAction::Block));
 
-        assert!(!Outcome::BlockedByAdmin.offers_whitelist());
-        assert!(!Outcome::Local.offers_whitelist());
-        assert!(!Outcome::LocalNoData.offers_whitelist());
-        assert!(!Outcome::Cached.offers_whitelist());
-        assert!(!Outcome::Forwarded.offers_whitelist());
-        assert!(!Outcome::Refused.offers_whitelist());
-        assert!(!Outcome::Formerr.offers_whitelist());
-        assert!(!Outcome::Servfail.offers_whitelist());
-        assert!(!Outcome::Error.offers_whitelist());
-    }
+        // Both kinds of blocked answer can be unblocked.
+        assert_eq!(
+            Outcome::BlockedByAdmin.log_action(),
+            Some(LogAction::Unblock)
+        );
+        assert_eq!(
+            Outcome::BlockedByBlocklist.log_action(),
+            Some(LogAction::Unblock)
+        );
 
-    #[test]
-    fn outcome_offers_blacklist() {
-        // Only Cached and Forwarded offer blacklist
-        assert!(Outcome::Cached.offers_blacklist());
-        assert!(Outcome::Forwarded.offers_blacklist());
-
-        assert!(!Outcome::Local.offers_blacklist());
-        assert!(!Outcome::LocalNoData.offers_blacklist());
-        assert!(!Outcome::BlockedByAdmin.offers_blacklist());
-        assert!(!Outcome::BlockedByBlocklist.offers_blacklist());
-        assert!(!Outcome::Refused.offers_blacklist());
-        assert!(!Outcome::Formerr.offers_blacklist());
-        assert!(!Outcome::Servfail.offers_blacklist());
-        assert!(!Outcome::Error.offers_blacklist());
+        // Everything else offers no action.
+        assert_eq!(Outcome::Local.log_action(), None);
+        assert_eq!(Outcome::LocalNoData.log_action(), None);
+        assert_eq!(Outcome::Refused.log_action(), None);
+        assert_eq!(Outcome::Formerr.log_action(), None);
+        assert_eq!(Outcome::Servfail.log_action(), None);
+        assert_eq!(Outcome::Error.log_action(), None);
     }
 
     #[test]

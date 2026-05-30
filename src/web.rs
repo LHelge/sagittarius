@@ -192,11 +192,9 @@ impl AppState {
             // Live query log + the shared SSE stream (log + dashboard counters).
             .route("/log", get(Self::query_log))
             .route("/events", get(Self::events))
-            // One-click list actions from the live log (add + undo).
-            .route("/log/whitelist", post(Self::log_whitelist))
-            .route("/log/unwhitelist", post(Self::log_unwhitelist))
-            .route("/log/blacklist", post(Self::log_blacklist))
-            .route("/log/unblacklist", post(Self::log_unblacklist))
+            // One-click block / unblock actions from the live log.
+            .route("/log/block", post(Self::log_block))
+            .route("/log/unblock", post(Self::log_unblock))
             // Manual list + local-record management (E8.8).
             .route("/blacklist", get(Self::blacklist_page))
             .route("/blacklist/add", post(Self::blacklist_add))
@@ -846,16 +844,17 @@ mod tests {
 
         // Without the CSRF token the mutation is rejected.
         let r = client
-            .post(format!("{base}/log/whitelist?domain=ads.example.com"))
+            .post(format!("{base}/log/unblock?domain=ads.example.com"))
             .header("cookie", &cookie)
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), 403);
 
-        // With the token it succeeds and returns a Datastar toast patch.
+        // With the token it succeeds and returns a Datastar toast patch. The
+        // domain is not admin-blacklisted, so Unblock allowlists it.
         let r = client
-            .post(format!("{base}/log/whitelist?domain=ads.example.com"))
+            .post(format!("{base}/log/unblock?domain=ads.example.com"))
             .header("cookie", &cookie)
             .header("x-csrf-token", &csrf)
             .send()
@@ -864,7 +863,7 @@ mod tests {
         assert_eq!(r.status(), 200);
         let body = r.text().await.unwrap();
         assert!(body.contains("datastar-patch-elements"));
-        assert!(body.contains("allowlist"));
+        assert!(body.contains("Unblocked"));
 
         // Persisted to the DB and swapped into the live set.
         assert!(app.resolver.allowlist().contains(&dom));
@@ -874,13 +873,12 @@ mod tests {
             .unwrap();
         assert!(names.contains(&dom));
 
-        // The real Datastar path: token in the JSON signal body (no header),
-        // with a row id — succeeds and returns the toggled "Remove" button.
+        // The real Datastar path: token in the JSON signal body (no header).
+        // Block adds the resolved domain to the blacklist; the response is just
+        // the toast — the button is not toggled.
         let dom2: Name = "ads2.example.com".parse().unwrap();
         let r = client
-            .post(format!(
-                "{base}/log/blacklist?domain=ads2.example.com&row=7"
-            ))
+            .post(format!("{base}/log/block?domain=ads2.example.com"))
             .header("cookie", &cookie)
             .header("content-type", "application/json")
             .body(format!("{{\"csrf\":\"{csrf}\",\"f_text\":\"\"}}"))
@@ -889,11 +887,8 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 200);
         let body = r.text().await.unwrap();
-        assert!(
-            body.contains("id=\"act-7\""),
-            "must toggle the row's button"
-        );
-        assert!(body.contains("Remove from blacklist"));
+        assert!(body.contains("Blocked"));
+        assert!(!body.contains("act-"), "button must not be toggled");
         assert!(app.resolver.blacklist().contains(&dom2));
 
         cancel.cancel();
