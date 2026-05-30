@@ -155,10 +155,10 @@ impl App {
     ///
     /// `on_ready` is invoked exactly once with the actually-bound
     /// [`RuntimeAddrs`] after every subsystem is listening and just before the
-    /// shutdown trigger is awaited. It lets integration tests discover
-    /// OS-chosen ephemeral ports and drive the live DNS and admin surfaces;
-    /// [`run_until_shutdown`](Self::run_until_shutdown) passes a no-op.
-    async fn run_until_ready(
+    /// shutdown trigger is awaited. It lets embedders and integration tests
+    /// discover OS-chosen ephemeral ports and drive the live DNS and admin
+    /// surfaces; [`run`](Self::run) passes a no-op.
+    pub async fn run_until_ready(
         self,
         shutdown: impl Future<Output = ()>,
         on_ready: impl FnOnce(RuntimeAddrs),
