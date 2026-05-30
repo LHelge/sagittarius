@@ -12,8 +12,6 @@
 //! failing source never clobbers the live set — the scheduler keeps the last
 //! good snapshot (E7.4).
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
@@ -27,6 +25,7 @@ use crate::{
     storage::blocklists::{
         BlocklistFormat, BlocklistRepository, NewBlocklist, SqliteBlocklistRepo,
     },
+    time::Clock,
     web::{AppState, Chrome, auth::CurrentUser, dashboard::group, render::WebError},
 };
 
@@ -37,7 +36,7 @@ impl AppState {
         error: Option<String>,
         notice: Option<String>,
     ) -> Result<BlocklistsPageTemplate, WebError> {
-        let now = now_epoch();
+        let now = Clock::now_secs();
         let sources = SqliteBlocklistRepo::new(self.db.pool().clone())
             .list()
             .await?
@@ -174,14 +173,6 @@ impl AppState {
             Err(e) => e.into_response(),
         }
     }
-}
-
-/// Current unix epoch seconds.
-fn now_epoch() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
 }
 
 /// Render a coarse "… ago" string for a past epoch relative to `now`.

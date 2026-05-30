@@ -1,10 +1,10 @@
 ---
 id: 3bf
 title: Consolidate the triplicated now_epoch() helper
-status: open
+status: done
 priority: P1
 created: 2026-05-30T11:32:26.469620908Z
-updated: 2026-05-30T11:32:26.469620908Z
+updated: 2026-05-30T12:29:47.990747046Z
 tags:
 - refactor
 - dry
