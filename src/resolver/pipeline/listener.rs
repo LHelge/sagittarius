@@ -39,6 +39,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UdpSocket},
+    sync::Semaphore,
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower::{Service, ServiceExt as _};
@@ -66,6 +67,12 @@ const UDP_DEFAULT_LIMIT: usize = 512;
 
 /// Recommended DNS-over-UDP payload ceiling (DNS Flag Day 2020 / RFC 8906).
 const UDP_MAX_LIMIT: usize = 1232;
+
+/// Maximum concurrent UDP datagram handlers per socket.
+///
+/// Tower's protective middleware still enforces the global query budget, but
+/// this cap prevents unbounded task creation before a datagram reaches tower.
+const UDP_HANDLER_CONCURRENCY: usize = 1024;
 
 enum TcpRead {
     Complete,
@@ -382,9 +389,21 @@ where
     async fn run_udp(self, socket: UdpSocket) {
         let socket = Arc::new(socket);
         let handlers = TaskTracker::new();
+        let permits = Arc::new(Semaphore::new(UDP_HANDLER_CONCURRENCY));
         let mut buf = vec![0u8; 65535];
 
         loop {
+            let permit = tokio::select! {
+                biased;
+                _ = self.token.cancelled() => break,
+                permit = permits.clone().acquire_owned() => {
+                    match permit {
+                        Ok(permit) => permit,
+                        Err(_closed) => break,
+                    }
+                }
+            };
+
             tokio::select! {
                 biased;
                 _ = self.token.cancelled() => break,
@@ -392,12 +411,13 @@ where
                     match result {
                         Ok((len, peer)) => {
                             let raw = Bytes::copy_from_slice(&buf[..len]);
-                            let handler = self.clone();
-                            let sock = socket.clone();
+                                let handler = self.clone();
+                                let sock = socket.clone();
 
-                            handlers.spawn(async move {
-                                handler.handle_datagram(raw, peer, sock).await;
-                            });
+                                handlers.spawn(async move {
+                                    let _permit = permit;
+                                    handler.handle_datagram(raw, peer, sock).await;
+                                });
                         }
                         Err(e) => {
                             warn!(error = %e, "UDP recv_from error");
