@@ -138,8 +138,21 @@ impl SettingsForm {
             .parse()
             .map_err(|_| WebError::bad_request("Invalid blocking mode."))?;
 
-        let custom_block_ipv4 = parse_opt_ip::<Ipv4Addr>(&self.custom_block_ipv4, "IPv4")?;
-        let custom_block_ipv6 = parse_opt_ip::<Ipv6Addr>(&self.custom_block_ipv6, "IPv6")?;
+        // Custom IPs only matter in Custom mode, where the inputs are visible
+        // and validated strictly. In other modes the inputs are hidden, so we
+        // keep whatever still parses (preserving previously-saved IPs) and
+        // silently drop anything else — a stale value can never block saving.
+        let (custom_block_ipv4, custom_block_ipv6) = if blocking_mode == BlockingMode::Custom {
+            (
+                parse_opt_ip::<Ipv4Addr>(&self.custom_block_ipv4, "IPv4")?,
+                parse_opt_ip::<Ipv6Addr>(&self.custom_block_ipv6, "IPv6")?,
+            )
+        } else {
+            (
+                self.custom_block_ipv4.trim().parse::<Ipv4Addr>().ok(),
+                self.custom_block_ipv6.trim().parse::<Ipv6Addr>().ok(),
+            )
+        };
 
         if !matches!(self.ui_theme.as_str(), "auto" | "light" | "dark") {
             return Err(WebError::bad_request("Theme must be auto, light, or dark."));
@@ -263,14 +276,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_custom_ip_is_rejected() {
+    async fn invalid_custom_ip_in_custom_mode_is_rejected() {
         let (_d, st) = state().await;
         let mut f = base_form();
+        f.blocking_mode = "custom".to_owned();
         f.custom_block_ipv4 = "not-an-ip".to_owned();
         assert!(matches!(
             st.apply_settings(f).await,
             Err(WebError::BadRequest(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn invalid_custom_ip_ignored_when_mode_not_custom() {
+        let (_d, st) = state().await;
+        let mut f = base_form(); // nxdomain
+        // A stale/invalid value in the (hidden) custom field must not block the
+        // save — it is simply dropped.
+        f.custom_block_ipv4 = "not-an-ip".to_owned();
+        st.apply_settings(f).await.expect("apply");
+        let s = SqliteSettingsRepo::new(st.db.pool().clone())
+            .get()
+            .await
+            .unwrap();
+        assert_eq!(s.custom_block_ipv4, None);
+    }
+
+    #[tokio::test]
+    async fn valid_custom_ip_preserved_across_non_custom_save() {
+        let (_d, st) = state().await;
+        // A valid custom IP survives a save made while in a non-custom mode, so
+        // switching modes back and forth does not lose it.
+        let mut f = base_form(); // nxdomain
+        f.custom_block_ipv4 = "203.0.113.9".to_owned();
+        st.apply_settings(f).await.expect("apply");
+        let s = SqliteSettingsRepo::new(st.db.pool().clone())
+            .get()
+            .await
+            .unwrap();
+        assert_eq!(s.custom_block_ipv4, Some("203.0.113.9".parse().unwrap()));
     }
 
     #[tokio::test]
