@@ -113,6 +113,11 @@ pub enum Error {
     #[error("invalid domain name: empty label")]
     EmptyLabel,
 
+    /// A domain label contained a byte outside Sagittarius' supported ASCII LDH
+    /// syntax (`A-Z`, `a-z`, `0-9`, and interior `-`).
+    #[error("invalid domain label byte: 0x{0:02x}")]
+    InvalidLabelByte(u8),
+
     /// A DNS message exceeded the 65535-byte maximum wire-format length.
     ///
     /// DNS over TCP uses a 2-byte length prefix (u16), so no message can

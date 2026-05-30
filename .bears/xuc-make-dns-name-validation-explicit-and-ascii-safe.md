@@ -1,10 +1,10 @@
 ---
 id: xuc
 title: Make DNS name validation explicit and ASCII-safe
-status: open
+status: done
 priority: P2
 created: 2026-05-30T17:43:54.624788Z
-updated: 2026-05-30T17:43:54.624788Z
+updated: 2026-05-30T17:56:43.269559Z
 tags:
 - review
 - codec
