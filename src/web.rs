@@ -223,7 +223,7 @@ impl AppState {
             .route("/blocklists/toggle", post(Self::blocklist_toggle))
             .route("/blocklists/refresh", post(Self::blocklist_refresh))
             // First-run wizard (public; gated by the wizard layer below).
-            .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
+            .route("/setup", get(Self::setup_form).post(Self::setup_submit))
             // Authentication (public).
             .route("/login", get(Self::login_form).post(Self::login_submit))
             .route("/logout", post(Self::logout))
