@@ -42,7 +42,6 @@ use datastar::{
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    resolver::pipeline::Outcome,
     telemetry::{QueryEvent, Stats},
     web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay},
 };
@@ -112,19 +111,6 @@ fn counters_event(stats: &Stats) -> Event {
     PatchSignals::new(json).write_as_axum_sse_event()
 }
 
-/// Map an [`Outcome`] to a filter category and a badge CSS class.
-fn categorize(outcome: Outcome) -> (&'static str, &'static str) {
-    match outcome {
-        Outcome::BlockedByAdmin | Outcome::BlockedByBlocklist => ("blocked", "sgt-badge--blocked"),
-        Outcome::Cached => ("cached", "sgt-badge--cached"),
-        Outcome::Forwarded => ("forwarded", "sgt-badge--forwarded"),
-        Outcome::Local | Outcome::LocalNoData => ("local", "sgt-badge--local"),
-        Outcome::Refused | Outcome::Formerr | Outcome::Servfail | Outcome::Error => {
-            ("other", "sgt-badge--other")
-        }
-    }
-}
-
 // ── Templates ───────────────────────────────────────────────────────────────
 
 /// One rendered query-log row.  Shared by the server-side seed and the SSE
@@ -136,7 +122,6 @@ struct LogRowView {
     qname: String,
     qtype: String,
     outcome_label: String,
-    outcome_class: &'static str,
     outcome_cat: &'static str,
     latency_ms: u64,
     /// Lowercased "qname client" haystack for the client-side text filter.
@@ -153,7 +138,6 @@ static ROW_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl LogRowView {
     fn from_event(ev: &QueryEvent) -> Self {
-        let (cat, class) = categorize(ev.outcome);
         // Display the bare domain; the canonical trailing dot stays internal.
         let qname = ev.qname.to_string().display_domain().to_owned();
         let client = ev.client.ip().to_string();
@@ -179,8 +163,7 @@ impl LogRowView {
             qname,
             qtype: format!("{:?}", ev.qtype),
             outcome_label: ev.outcome.to_string(),
-            outcome_class: class,
-            outcome_cat: cat,
+            outcome_cat: ev.outcome.category(),
             latency_ms: ev.latency.as_millis() as u64,
             search,
             action_html,
@@ -216,22 +199,13 @@ struct LogPageTemplate {
 mod tests {
     use super::*;
     use crate::codec::{message::Qtype, name::Name};
+    use crate::resolver::pipeline::Outcome;
     use std::time::Duration;
 
     fn event(domain: &str, outcome: Outcome) -> QueryEvent {
         let client = "192.168.1.5:5000".parse().unwrap();
         let qname: Name = domain.parse().unwrap();
         QueryEvent::new(client, qname, Qtype::A, outcome).with_latency(Duration::from_millis(7))
-    }
-
-    #[test]
-    fn categorize_maps_outcomes() {
-        assert_eq!(categorize(Outcome::BlockedByBlocklist).0, "blocked");
-        assert_eq!(categorize(Outcome::BlockedByAdmin).0, "blocked");
-        assert_eq!(categorize(Outcome::Cached).0, "cached");
-        assert_eq!(categorize(Outcome::Forwarded).0, "forwarded");
-        assert_eq!(categorize(Outcome::Local).0, "local");
-        assert_eq!(categorize(Outcome::Servfail).0, "other");
     }
 
     #[test]

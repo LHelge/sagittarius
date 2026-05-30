@@ -88,15 +88,6 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
     next.run(req).await
 }
 
-/// `GET /setup` — render the first-run wizard form.
-pub async fn setup_form(State(state): State<AppState>) -> Response {
-    WizardTemplate {
-        chrome: state.bare_chrome().await,
-        error: None,
-    }
-    .into_response()
-}
-
 /// First-run wizard form payload.
 #[derive(Debug, serde::Deserialize)]
 pub struct SetupForm {
@@ -105,55 +96,72 @@ pub struct SetupForm {
     confirm: String,
 }
 
-/// `POST /setup` — create the initial admin account.
-pub async fn setup_submit(
-    State(state): State<AppState>,
-    axum::Form(form): axum::Form<SetupForm>,
-) -> Response {
-    // Race guard: if an admin was created concurrently, close the wizard.
-    let repo = SqliteAdminUserRepo::new(state.db.pool().clone());
-    match repo.count().await {
-        Ok(0) => {}
-        Ok(_) => return Redirect::to("/login").into_response(),
-        Err(e) => return WebError::from(e).into_response(),
+impl SetupForm {
+    /// The submitted username, trimmed of surrounding whitespace.
+    fn username(&self) -> &str {
+        self.username.trim()
     }
 
-    let username = form.username.trim();
-    if let Err(msg) = validate(username, &form.password, &form.confirm) {
-        return WizardTemplate {
-            chrome: state.bare_chrome().await,
-            error: Some(msg),
+    /// Validate the inputs, returning a user-facing message on failure.
+    fn validate(&self) -> Result<(), String> {
+        if self.username().is_empty() {
+            return Err("Username is required.".to_owned());
         }
-        .into_response();
+        if self.password.len() < MIN_PASSWORD_LEN {
+            return Err(format!(
+                "Password must be at least {MIN_PASSWORD_LEN} characters."
+            ));
+        }
+        if self.password != self.confirm {
+            return Err("Passwords do not match.".to_owned());
+        }
+        Ok(())
     }
-
-    let password = match Password::hash(&form.password) {
-        Ok(p) => p,
-        Err(e) => return e.into_response(),
-    };
-    if let Err(e) = repo.create(username, password.as_str()).await {
-        return WebError::from(e).into_response();
-    }
-
-    // Unlock the UI; the operator now logs in normally.
-    state.setup_done.store(true, Ordering::Relaxed);
-    Redirect::to("/login").into_response()
 }
 
-/// Validate the wizard inputs, returning a user-facing message on failure.
-fn validate(username: &str, password: &str, confirm: &str) -> Result<(), String> {
-    if username.is_empty() {
-        return Err("Username is required.".to_owned());
+impl AppState {
+    /// `GET /setup` — render the first-run wizard form.
+    pub async fn setup_form(State(state): State<AppState>) -> Response {
+        WizardTemplate {
+            chrome: state.bare_chrome().await,
+            error: None,
+        }
+        .into_response()
     }
-    if password.len() < MIN_PASSWORD_LEN {
-        return Err(format!(
-            "Password must be at least {MIN_PASSWORD_LEN} characters."
-        ));
+
+    /// `POST /setup` — create the initial admin account.
+    pub async fn setup_submit(
+        State(state): State<AppState>,
+        axum::Form(form): axum::Form<SetupForm>,
+    ) -> Response {
+        // Race guard: if an admin was created concurrently, close the wizard.
+        let repo = SqliteAdminUserRepo::new(state.db.pool().clone());
+        match repo.count().await {
+            Ok(0) => {}
+            Ok(_) => return Redirect::to("/login").into_response(),
+            Err(e) => return WebError::from(e).into_response(),
+        }
+
+        if let Err(msg) = form.validate() {
+            return WizardTemplate {
+                chrome: state.bare_chrome().await,
+                error: Some(msg),
+            }
+            .into_response();
+        }
+
+        let password = match Password::hash(&form.password) {
+            Ok(p) => p,
+            Err(e) => return e.into_response(),
+        };
+        if let Err(e) = repo.create(form.username(), password.as_str()).await {
+            return WebError::from(e).into_response();
+        }
+
+        // Unlock the UI; the operator now logs in normally.
+        state.setup_done.store(true, Ordering::Relaxed);
+        Redirect::to("/login").into_response()
     }
-    if password != confirm {
-        return Err("Passwords do not match.".to_owned());
-    }
-    Ok(())
 }
 
 /// The first-run wizard page (bare layout).
@@ -170,25 +178,37 @@ struct WizardTemplate {
 mod tests {
     use super::*;
 
+    fn form(username: &str, password: &str, confirm: &str) -> SetupForm {
+        SetupForm {
+            username: username.to_owned(),
+            password: password.to_owned(),
+            confirm: confirm.to_owned(),
+        }
+    }
+
     #[test]
     fn validate_accepts_good_input() {
-        assert!(validate("admin", "longenough", "longenough").is_ok());
+        assert!(form("admin", "longenough", "longenough").validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_empty_username() {
-        assert!(validate("", "longenough", "longenough").is_err());
+        assert!(form("", "longenough", "longenough").validate().is_err());
+        // Whitespace-only usernames are rejected too (trimmed).
+        assert!(form("   ", "longenough", "longenough").validate().is_err());
     }
 
     #[test]
     fn validate_rejects_short_password() {
-        let err = validate("admin", "short", "short").unwrap_err();
+        let err = form("admin", "short", "short").validate().unwrap_err();
         assert!(err.contains("at least"));
     }
 
     #[test]
     fn validate_rejects_mismatch() {
-        let err = validate("admin", "longenough", "different").unwrap_err();
+        let err = form("admin", "longenough", "different")
+            .validate()
+            .unwrap_err();
         assert!(err.contains("do not match"));
     }
 }

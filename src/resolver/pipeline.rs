@@ -193,6 +193,20 @@ impl Outcome {
     pub fn offers_blacklist(&self) -> bool {
         matches!(self, Self::Cached | Self::Forwarded)
     }
+
+    /// The coarse category used to group outcomes in the live query log
+    /// (filtering and badge styling): `blocked`, `cached`, `forwarded`,
+    /// `local`, or `other`.
+    #[must_use]
+    pub fn category(&self) -> &'static str {
+        match self {
+            Self::BlockedByAdmin | Self::BlockedByBlocklist => "blocked",
+            Self::Cached => "cached",
+            Self::Forwarded => "forwarded",
+            Self::Local | Self::LocalNoData => "local",
+            Self::Refused | Self::Formerr | Self::Servfail | Self::Error => "other",
+        }
+    }
 }
 
 impl std::fmt::Display for Outcome {
@@ -338,6 +352,19 @@ mod tests {
         assert!(!Outcome::Formerr.offers_blacklist());
         assert!(!Outcome::Servfail.offers_blacklist());
         assert!(!Outcome::Error.offers_blacklist());
+    }
+
+    #[test]
+    fn outcome_category_groups_variants() {
+        assert_eq!(Outcome::BlockedByAdmin.category(), "blocked");
+        assert_eq!(Outcome::BlockedByBlocklist.category(), "blocked");
+        assert_eq!(Outcome::Cached.category(), "cached");
+        assert_eq!(Outcome::Forwarded.category(), "forwarded");
+        assert_eq!(Outcome::Local.category(), "local");
+        assert_eq!(Outcome::LocalNoData.category(), "local");
+        assert_eq!(Outcome::Refused.category(), "other");
+        assert_eq!(Outcome::Servfail.category(), "other");
+        assert_eq!(Outcome::Error.category(), "other");
     }
 
     #[test]
