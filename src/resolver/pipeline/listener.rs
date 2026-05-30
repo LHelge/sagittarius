@@ -542,7 +542,13 @@ where
                     if let Some(id) = e.id() {
                         // Recoverable FORMERR — send it and continue the pipeline.
                         let formerr = Response::formerr(id);
-                        let framed = framing::tcp::encode_length_prefix(&formerr);
+                        let framed = match framing::tcp::try_encode_length_prefix(&formerr) {
+                            Ok(frame) => frame,
+                            Err(e) => {
+                                debug!(peer = %peer, error = %e, "TCP FORMERR too large to frame");
+                                return;
+                            }
+                        };
                         if stream.write_all(&framed).await.is_err() {
                             return;
                         }
@@ -557,7 +563,13 @@ where
 
             // TCP: no size limit, no TC bit — send the full reply.
             let reply = Self::run_service(self.service.clone(), &query, peer).await;
-            let framed = framing::tcp::encode_length_prefix(&reply);
+            let framed = match framing::tcp::try_encode_length_prefix(&reply) {
+                Ok(frame) => frame,
+                Err(e) => {
+                    debug!(peer = %peer, reply_len = reply.len(), error = %e, "TCP reply too large to frame");
+                    return;
+                }
+            };
             if stream.write_all(&framed).await.is_err() {
                 return;
             }
