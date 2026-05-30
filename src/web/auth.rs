@@ -3,9 +3,11 @@
 //!
 //! # Passwords
 //!
-//! Passwords are hashed with **Argon2id** using OWASP-recommended parameters
-//! (m = 19 MiB, t = 2, p = 1) and stored as PHC strings.  Verification is
-//! constant-time via [`argon2::password_hash::PasswordVerifier`].
+//! Passwords are hashed with **Argon2id** using the `argon2` crate's default
+//! cost (the OWASP-recommended m = 19 MiB, t = 2, p = 1) and stored as PHC
+//! strings.  Verification is constant-time via
+//! [`argon2::password_hash::PasswordVerifier`] and reads the cost from each
+//! stored PHC string.
 //!
 //! # Sessions
 //!
@@ -35,7 +37,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::{
-    Algorithm, Argon2, Params, Version,
+    Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use axum::{
@@ -72,18 +74,16 @@ const COOKIE_SECURE: &str = "__Host-sgt_session";
 /// Cookie name for direct plain-HTTP / loopback use (no prefix).
 const COOKIE_INSECURE: &str = "sgt_session";
 
-/// Argon2id parameters (OWASP): 19 MiB memory, 2 iterations, 1 lane.
-const ARGON_M_COST: u32 = 19_456;
-const ARGON_T_COST: u32 = 2;
-const ARGON_P_COST: u32 = 1;
-
 // ── Password hashing ────────────────────────────────────────────────────────
 
-/// Build the configured Argon2id hasher.
+/// Build the Argon2id hasher.
+///
+/// Uses the crate default, which is Argon2id (v0x13) with the OWASP-recommended
+/// cost (m = 19 MiB, t = 2, p = 1).  Verification reads the cost from each
+/// stored PHC string, so existing hashes stay verifiable even if the default
+/// changes in a future crate upgrade.
 fn hasher() -> Argon2<'static> {
-    let params =
-        Params::new(ARGON_M_COST, ARGON_T_COST, ARGON_P_COST, None).expect("valid argon2 params");
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+    Argon2::default()
 }
 
 /// Hash a plaintext password into an Argon2id PHC string.
