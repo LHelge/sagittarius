@@ -134,13 +134,7 @@ impl AppState {
         State(state): State<AppState>,
         axum::Form(form): axum::Form<SetupForm>,
     ) -> Response {
-        // Race guard: if an admin was created concurrently, close the wizard.
         let repo = SqliteAdminUserRepo::new(state.db.pool().clone());
-        match repo.count().await {
-            Ok(0) => {}
-            Ok(_) => return Redirect::to("/login").into_response(),
-            Err(e) => return WebError::from(e).into_response(),
-        }
 
         if let Err(msg) = form.validate() {
             return WizardTemplate {
@@ -154,8 +148,13 @@ impl AppState {
             Ok(p) => p,
             Err(e) => return e.into_response(),
         };
-        if let Err(e) = repo.create(form.username(), password.as_str()).await {
-            return WebError::from(e).into_response();
+        match repo
+            .create_initial(form.username(), password.as_str())
+            .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => return Redirect::to("/login").into_response(),
+            Err(e) => return WebError::from(e).into_response(),
         }
 
         // Unlock the UI; the operator now logs in normally.
