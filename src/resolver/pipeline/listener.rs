@@ -130,7 +130,7 @@ impl UdpListenerPool {
                 }
                 Ok(count)
             }
-            Err(e) if is_reuseport_unsupported(&e) => {
+            Err(e) if Self::is_reuseport_unsupported(&e) => {
                 warn!(
                     addr = %addr,
                     error = %e,
@@ -180,6 +180,21 @@ impl UdpListenerPool {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.sockets.is_empty()
+    }
+
+    /// Returns `true` if the error indicates SO_REUSEPORT is not supported.
+    fn is_reuseport_unsupported(e: &io::Error) -> bool {
+        // ENOPROTOOPT (92 on Linux, 42 on macOS/BSD) means the socket option is
+        // not known to the kernel — i.e. SO_REUSEPORT is not supported.
+        // We also match InvalidInput as a belt-and-suspenders fallback.
+        #[cfg(target_os = "linux")]
+        const ENOPROTOOPT: i32 = 92;
+        #[cfg(target_os = "macos")]
+        const ENOPROTOOPT: i32 = 42;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        const ENOPROTOOPT: i32 = 42; // Reasonable default for other Unix targets.
+
+        e.raw_os_error() == Some(ENOPROTOOPT) || e.kind() == io::ErrorKind::InvalidInput
     }
 }
 
@@ -283,257 +298,234 @@ impl DnsListeners {
         S::Future: Send + 'static,
     {
         for socket in self.udp {
-            let svc = service.clone();
-            let tok = token.clone();
-            tracker.spawn(udp_loop(socket, svc, tok));
+            let serve = ServeLoop::new(service.clone(), token.clone());
+            tracker.spawn(serve.run_udp(socket));
         }
         for listener in self.tcp {
-            let svc = service.clone();
-            let tok = token.clone();
-            tracker.spawn(tcp_loop(listener, svc, tok));
+            let serve = ServeLoop::new(service.clone(), token.clone());
+            tracker.spawn(serve.run_tcp(listener));
         }
     }
 }
 
-// ── Shared handler helper ─────────────────────────────────────────────────────
+// ── ServeLoop ───────────────────────────────────────────────────────────────
 
-/// Drive the service for a successfully-parsed `query` from `client`.
+/// Drives one bound socket's serve loop and its per-message handler tasks.
 ///
-/// Returns the reply bytes.  Service errors are mapped to synthesized error
-/// responses via [`ClassifyRejection::rejection_policy`].
-async fn run_service<S>(query: &Query, client: SocketAddr, service: S) -> Bytes
-where
-    S: Service<DnsRequest, Response = PipelineResponse, Error = BoxError>,
-    S::Future: Send,
-{
-    let edns = EdnsInfo::scan(query);
-    let req = DnsRequest::new(query.clone(), client);
-
-    match service.oneshot(req).await {
-        Ok(PipelineResponse { bytes, .. }) => bytes,
-        Err(boxerr) => {
-            let (_, rcode) = boxerr.rejection_policy();
-            Response::error_response(query, rcode, edns.as_ref())
-        }
-    }
-}
-
-// ── UDP serve loop ────────────────────────────────────────────────────────────
-
-/// UDP datagram serve loop for a single socket.
-async fn udp_loop<S>(socket: UdpSocket, service: S, token: CancellationToken)
-where
-    S: Service<DnsRequest, Response = PipelineResponse, Error = BoxError> + Clone + Send + 'static,
-    S::Future: Send + 'static,
-{
-    let socket = Arc::new(socket);
-    let handlers = TaskTracker::new();
-    let mut buf = vec![0u8; 65535];
-
-    loop {
-        tokio::select! {
-            biased;
-            _ = token.cancelled() => break,
-            result = socket.recv_from(&mut buf) => {
-                match result {
-                    Ok((len, peer)) => {
-                        let raw = Bytes::copy_from_slice(&buf[..len]);
-                        let svc = service.clone();
-                        let sock = socket.clone();
-
-                        handlers.spawn(async move {
-                            handle_udp_datagram(raw, peer, svc, sock).await;
-                        });
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "UDP recv_from error");
-                    }
-                }
-            }
-        }
-    }
-
-    handlers.close();
-    let _ = handlers.wait().await;
-}
-
-/// Handle a single UDP datagram: parse → service → size check → send.
-async fn handle_udp_datagram<S>(raw: Bytes, peer: SocketAddr, service: S, socket: Arc<UdpSocket>)
-where
-    S: Service<DnsRequest, Response = PipelineResponse, Error = BoxError> + Send,
-    S::Future: Send,
-{
-    let query = match Query::try_from(raw) {
-        Ok(q) => q,
-        Err(e) => {
-            if let Some(id) = e.id() {
-                trace!(peer = %peer, id, "UDP FORMERR");
-                let formerr = Response::formerr(id);
-                let _ = socket.send_to(&formerr, peer).await;
-            } else {
-                trace!(peer = %peer, "UDP datagram too short to recover id; dropping");
-            }
-            return;
-        }
-    };
-
-    let edns = EdnsInfo::scan(&query);
-    let reply = run_service(&query, peer, service).await;
-
-    // UDP size check: truncate if reply exceeds the client-advertised limit.
-    let limit = edns
-        .as_ref()
-        .map(|e| e.udp_payload_size as usize)
-        .unwrap_or(UDP_DEFAULT_LIMIT)
-        .min(UDP_MAX_LIMIT);
-
-    let final_reply = if reply.len() > limit {
-        debug!(
-            peer = %peer,
-            reply_len = reply.len(),
-            limit,
-            "UDP reply exceeds limit; sending TC=1"
-        );
-        Response::truncated(&query, edns.as_ref())
-    } else {
-        reply
-    };
-
-    let _ = socket.send_to(&final_reply, peer).await;
-    trace!(peer = %peer, reply_len = final_reply.len(), "UDP reply sent");
-}
-
-// ── TCP serve loop ────────────────────────────────────────────────────────────
-
-/// TCP listener serve loop for a single [`TcpListener`].
-async fn tcp_loop<S>(listener: TcpListener, service: S, token: CancellationToken)
-where
-    S: Service<DnsRequest, Response = PipelineResponse, Error = BoxError> + Clone + Send + 'static,
-    S::Future: Send + 'static,
-{
-    let handlers = TaskTracker::new();
-
-    loop {
-        tokio::select! {
-            biased;
-            _ = token.cancelled() => break,
-            result = listener.accept() => {
-                match result {
-                    Ok((stream, peer)) => {
-                        let svc = service.clone();
-                        let tok = token.clone();
-                        handlers.spawn(async move {
-                            handle_tcp_connection(stream, peer, svc, tok).await;
-                        });
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "TCP accept error");
-                    }
-                }
-            }
-        }
-    }
-
-    handlers.close();
-    let _ = handlers.wait().await;
-}
-
-/// Handle a single TCP connection — RFC 7766 pipelined length-prefixed messages.
-///
-/// The `token` is checked on each read so the connection is abandoned promptly
-/// when the server is shutting down.
-async fn handle_tcp_connection<S>(
-    mut stream: tokio::net::TcpStream,
-    peer: SocketAddr,
+/// Holds the dependencies every handler needs — the cloneable pipeline
+/// `service` and the shutdown `token` — so the UDP/TCP loops and their datagram
+/// / connection handlers read as methods on one cohesive component rather than
+/// a cluster of free functions threading the same arguments.  A fresh clone is
+/// spawned per socket (and cheaply re-cloned per datagram/connection).
+#[derive(Clone)]
+struct ServeLoop<S> {
     service: S,
     token: CancellationToken,
-) where
-    S: Service<DnsRequest, Response = PipelineResponse, Error = BoxError> + Clone + Send,
-    S::Future: Send,
+}
+
+impl<S> ServeLoop<S>
+where
+    S: Service<DnsRequest, Response = PipelineResponse, Error = BoxError> + Clone + Send + 'static,
+    S::Future: Send + 'static,
 {
-    loop {
-        // ── Read 2-byte length prefix with idle timeout ────────────────────
-        let mut len_buf = [0u8; 2];
-        let read_result = tokio::select! {
-            biased;
-            _ = token.cancelled() => {
-                trace!(peer = %peer, "TCP connection closed: shutdown");
-                return;
+    fn new(service: S, token: CancellationToken) -> Self {
+        Self { service, token }
+    }
+
+    /// Drive `service` for a successfully-parsed `query` from `client`.
+    ///
+    /// Takes the (already-cloned) service by value so the returned future
+    /// borrows nothing from `self` — keeping the per-handler futures `Send`
+    /// without requiring `S: Sync`.  Service errors are mapped to synthesized
+    /// error responses via [`ClassifyRejection::rejection_policy`].
+    async fn run_service(service: S, query: &Query, client: SocketAddr) -> Bytes {
+        let edns = EdnsInfo::scan(query);
+        let req = DnsRequest::new(query.clone(), client);
+
+        match service.oneshot(req).await {
+            Ok(PipelineResponse { bytes, .. }) => bytes,
+            Err(boxerr) => {
+                let (_, rcode) = boxerr.rejection_policy();
+                Response::error_response(query, rcode, edns.as_ref())
             }
-            r = tokio::time::timeout(TCP_IDLE_TIMEOUT, stream.read_exact(&mut len_buf)) => r,
-        };
-        match read_result {
-            Err(_elapsed) => {
-                trace!(peer = %peer, "TCP connection idle; closing");
-                return;
+        }
+    }
+
+    /// UDP datagram serve loop for a single socket.
+    async fn run_udp(self, socket: UdpSocket) {
+        let socket = Arc::new(socket);
+        let handlers = TaskTracker::new();
+        let mut buf = vec![0u8; 65535];
+
+        loop {
+            tokio::select! {
+                biased;
+                _ = self.token.cancelled() => break,
+                result = socket.recv_from(&mut buf) => {
+                    match result {
+                        Ok((len, peer)) => {
+                            let raw = Bytes::copy_from_slice(&buf[..len]);
+                            let handler = self.clone();
+                            let sock = socket.clone();
+
+                            handlers.spawn(async move {
+                                handler.handle_datagram(raw, peer, sock).await;
+                            });
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "UDP recv_from error");
+                        }
+                    }
+                }
             }
-            Ok(Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                trace!(peer = %peer, "TCP clean EOF; closing");
-                return;
-            }
-            Ok(Err(e)) => {
-                debug!(peer = %peer, error = %e, "TCP read error; closing");
-                return;
-            }
-            Ok(Ok(_)) => {} // got 2 bytes
         }
 
-        let msg_len = u16::from_be_bytes(len_buf) as usize;
+        handlers.close();
+        let _ = handlers.wait().await;
+    }
 
-        // ── Read the message body ──────────────────────────────────────────
-        let mut body = BytesMut::with_capacity(msg_len);
-        body.resize(msg_len, 0);
-        if let Err(e) = stream.read_exact(&mut body).await {
-            debug!(peer = %peer, error = %e, "TCP body read error; closing");
-            return;
-        }
-        let raw = body.freeze();
-
-        // ── Parse → service → reply ────────────────────────────────────────
+    /// Handle a single UDP datagram: parse → service → size check → send.
+    async fn handle_datagram(self, raw: Bytes, peer: SocketAddr, socket: Arc<UdpSocket>) {
         let query = match Query::try_from(raw) {
             Ok(q) => q,
             Err(e) => {
                 if let Some(id) = e.id() {
-                    // Recoverable FORMERR — send it and continue the pipeline.
+                    trace!(peer = %peer, id, "UDP FORMERR");
                     let formerr = Response::formerr(id);
-                    let framed = framing::tcp::encode_length_prefix(&formerr);
-                    if stream.write_all(&framed).await.is_err() {
-                        return;
-                    }
-                    continue;
+                    let _ = socket.send_to(&formerr, peer).await;
                 } else {
-                    // Unrecoverable — close the connection.
-                    trace!(peer = %peer, "TCP unrecoverable parse error; closing");
-                    return;
+                    trace!(peer = %peer, "UDP datagram too short to recover id; dropping");
                 }
+                return;
             }
         };
 
-        // TCP: no size limit, no TC bit — send the full reply.
-        let reply = run_service(&query, peer, service.clone()).await;
-        let framed = framing::tcp::encode_length_prefix(&reply);
-        if stream.write_all(&framed).await.is_err() {
-            return;
-        }
-        trace!(peer = %peer, reply_len = reply.len(), "TCP reply sent");
+        let edns = EdnsInfo::scan(&query);
+        let reply = Self::run_service(self.service.clone(), &query, peer).await;
+
+        // UDP size check: truncate if reply exceeds the client-advertised limit.
+        let limit = edns
+            .as_ref()
+            .map(|e| e.udp_payload_size as usize)
+            .unwrap_or(UDP_DEFAULT_LIMIT)
+            .min(UDP_MAX_LIMIT);
+
+        let final_reply = if reply.len() > limit {
+            debug!(
+                peer = %peer,
+                reply_len = reply.len(),
+                limit,
+                "UDP reply exceeds limit; sending TC=1"
+            );
+            Response::truncated(&query, edns.as_ref())
+        } else {
+            reply
+        };
+
+        let _ = socket.send_to(&final_reply, peer).await;
+        trace!(peer = %peer, reply_len = final_reply.len(), "UDP reply sent");
     }
-}
 
-// ── Platform helpers ──────────────────────────────────────────────────────────
+    /// TCP listener serve loop for a single [`TcpListener`].
+    async fn run_tcp(self, listener: TcpListener) {
+        let handlers = TaskTracker::new();
 
-/// Returns `true` if the error indicates SO_REUSEPORT is not supported.
-fn is_reuseport_unsupported(e: &io::Error) -> bool {
-    // ENOPROTOOPT (92 on Linux, 42 on macOS/BSD) means the socket option is
-    // not known to the kernel — i.e. SO_REUSEPORT is not supported.
-    // We also match InvalidInput as a belt-and-suspenders fallback.
-    #[cfg(target_os = "linux")]
-    const ENOPROTOOPT: i32 = 92;
-    #[cfg(target_os = "macos")]
-    const ENOPROTOOPT: i32 = 42;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    const ENOPROTOOPT: i32 = 42; // Reasonable default for other Unix targets.
+        loop {
+            tokio::select! {
+                biased;
+                _ = self.token.cancelled() => break,
+                result = listener.accept() => {
+                    match result {
+                        Ok((stream, peer)) => {
+                            let handler = self.clone();
+                            handlers.spawn(async move {
+                                handler.handle_connection(stream, peer).await;
+                            });
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "TCP accept error");
+                        }
+                    }
+                }
+            }
+        }
 
-    e.raw_os_error() == Some(ENOPROTOOPT) || e.kind() == io::ErrorKind::InvalidInput
+        handlers.close();
+        let _ = handlers.wait().await;
+    }
+
+    /// Handle a single TCP connection — RFC 7766 pipelined length-prefixed messages.
+    ///
+    /// The shutdown token is checked on each read so the connection is abandoned
+    /// promptly when the server is shutting down.
+    async fn handle_connection(self, mut stream: tokio::net::TcpStream, peer: SocketAddr) {
+        loop {
+            // ── Read 2-byte length prefix with idle timeout ────────────────────
+            let mut len_buf = [0u8; 2];
+            let read_result = tokio::select! {
+                biased;
+                _ = self.token.cancelled() => {
+                    trace!(peer = %peer, "TCP connection closed: shutdown");
+                    return;
+                }
+                r = tokio::time::timeout(TCP_IDLE_TIMEOUT, stream.read_exact(&mut len_buf)) => r,
+            };
+            match read_result {
+                Err(_elapsed) => {
+                    trace!(peer = %peer, "TCP connection idle; closing");
+                    return;
+                }
+                Ok(Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    trace!(peer = %peer, "TCP clean EOF; closing");
+                    return;
+                }
+                Ok(Err(e)) => {
+                    debug!(peer = %peer, error = %e, "TCP read error; closing");
+                    return;
+                }
+                Ok(Ok(_)) => {} // got 2 bytes
+            }
+
+            let msg_len = u16::from_be_bytes(len_buf) as usize;
+
+            // ── Read the message body ──────────────────────────────────────────
+            let mut body = BytesMut::with_capacity(msg_len);
+            body.resize(msg_len, 0);
+            if let Err(e) = stream.read_exact(&mut body).await {
+                debug!(peer = %peer, error = %e, "TCP body read error; closing");
+                return;
+            }
+            let raw = body.freeze();
+
+            // ── Parse → service → reply ────────────────────────────────────────
+            let query = match Query::try_from(raw) {
+                Ok(q) => q,
+                Err(e) => {
+                    if let Some(id) = e.id() {
+                        // Recoverable FORMERR — send it and continue the pipeline.
+                        let formerr = Response::formerr(id);
+                        let framed = framing::tcp::encode_length_prefix(&formerr);
+                        if stream.write_all(&framed).await.is_err() {
+                            return;
+                        }
+                        continue;
+                    } else {
+                        // Unrecoverable — close the connection.
+                        trace!(peer = %peer, "TCP unrecoverable parse error; closing");
+                        return;
+                    }
+                }
+            };
+
+            // TCP: no size limit, no TC bit — send the full reply.
+            let reply = Self::run_service(self.service.clone(), &query, peer).await;
+            let framed = framing::tcp::encode_length_prefix(&reply);
+            if stream.write_all(&framed).await.is_err() {
+                return;
+            }
+            trace!(peer = %peer, reply_len = reply.len(), "TCP reply sent");
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
