@@ -46,7 +46,7 @@ use crate::{
         parse::{BlocklistParser as _, Parser},
     },
     resolver::state::ResolverState,
-    storage::blocklists::{BlocklistRepository, RefreshMetadata, SqliteBlocklistRepo},
+    storage::blocklists::{Blocklist, BlocklistRepository, RefreshMetadata, SqliteBlocklistRepo},
     time::Clock,
 };
 
@@ -58,6 +58,12 @@ use crate::{
 /// in the settings row, the scheduler clamps to this floor so a misconfigured
 /// value cannot create a busy-loop.
 const MIN_INTERVAL: Duration = Duration::from_secs(60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceRefresh {
+    Contributed,
+    Incomplete,
+}
 
 // ── RefreshSummary ────────────────────────────────────────────────────────────
 
@@ -138,6 +144,7 @@ impl BlocklistScheduler {
     ///
     /// No I/O is performed here — call [`load_from_cache`](Self::load_from_cache)
     /// and then [`run`](Self::run) to start work.
+    #[must_use]
     pub fn new(repo: SqliteBlocklistRepo, state: Arc<ResolverState>, fetcher: Fetcher) -> Self {
         Self {
             repo,
@@ -150,6 +157,7 @@ impl BlocklistScheduler {
     /// Return a [`RefreshTrigger`] handle that can fire an on-demand refresh.
     ///
     /// Multiple handles may be obtained; each shares the same [`Notify`].
+    #[must_use]
     pub fn trigger(&self) -> RefreshTrigger {
         RefreshTrigger(Arc::clone(&self.notify))
     }
@@ -171,6 +179,146 @@ impl BlocklistScheduler {
         let text = String::from_utf8_lossy(content);
         let names = Parser::from(format).parse(&text);
         aggregator.add(source_id, names);
+    }
+
+    async fn refresh_source(
+        &self,
+        source: &Blocklist,
+        aggregator: &mut Aggregator<i64>,
+        summary: &mut RefreshSummary,
+    ) -> SourceRefresh {
+        let validators = Validators {
+            etag: source.etag.clone(),
+            last_modified: source.last_modified.clone(),
+        };
+
+        match self.fetcher.fetch(&source.url, &validators).await {
+            Ok(FetchOutcome::Modified { body, validators }) => {
+                self.handle_modified(source, body, validators, aggregator, summary)
+                    .await
+            }
+            Ok(FetchOutcome::NotModified) => {
+                self.handle_not_modified(source, aggregator, summary).await
+            }
+            Err(e) => {
+                self.handle_fetch_error(source, &e, aggregator, summary)
+                    .await
+            }
+        }
+    }
+
+    async fn handle_modified(
+        &self,
+        source: &Blocklist,
+        body: bytes::Bytes,
+        validators: Validators,
+        aggregator: &mut Aggregator<i64>,
+        summary: &mut RefreshSummary,
+    ) -> SourceRefresh {
+        let text = String::from_utf8_lossy(&body);
+        let names = Parser::from(source.format).parse(&text);
+        let count = names.len();
+        aggregator.add(source.id, names);
+
+        if let Err(e) = self.repo.save_cache(source.id, &body).await {
+            warn!(
+                id = source.id,
+                url = %source.url,
+                error = %e,
+                "refresh: failed to save cache (continuing)"
+            );
+        }
+        let meta = RefreshMetadata {
+            entry_count: count as u64,
+            last_updated: Clock::now_secs(),
+            etag: validators.etag,
+            last_modified: validators.last_modified,
+        };
+        if let Err(e) = self.repo.update_refresh_metadata(source.id, &meta).await {
+            warn!(
+                id = source.id,
+                url = %source.url,
+                error = %e,
+                "refresh: failed to update metadata (continuing)"
+            );
+        }
+
+        summary.fetched += 1;
+        info!(
+            id = source.id,
+            url = %source.url,
+            domains = count,
+            "refresh: source updated (200)"
+        );
+        SourceRefresh::Contributed
+    }
+
+    async fn handle_not_modified(
+        &self,
+        source: &Blocklist,
+        aggregator: &mut Aggregator<i64>,
+        summary: &mut RefreshSummary,
+    ) -> SourceRefresh {
+        let result = self.add_cached_source(source, aggregator, "304").await;
+        summary.not_modified += 1;
+        if result == SourceRefresh::Incomplete {
+            summary.failed += 1;
+        }
+        info!(
+            id = source.id,
+            url = %source.url,
+            "refresh: source not modified (304)"
+        );
+        result
+    }
+
+    async fn handle_fetch_error(
+        &self,
+        source: &Blocklist,
+        error: &crate::blocklist::fetch::FetchError,
+        aggregator: &mut Aggregator<i64>,
+        summary: &mut RefreshSummary,
+    ) -> SourceRefresh {
+        warn!(
+            id = source.id,
+            url = %source.url,
+            error = %error,
+            "refresh: fetch failed, falling back to cached content"
+        );
+        summary.failed += 1;
+        self.add_cached_source(source, aggregator, "fetch failed")
+            .await
+    }
+
+    async fn add_cached_source(
+        &self,
+        source: &Blocklist,
+        aggregator: &mut Aggregator<i64>,
+        context: &'static str,
+    ) -> SourceRefresh {
+        match self.repo.load_cache(source.id).await {
+            Ok(Some(cached)) => {
+                Self::decode_and_add(aggregator, source.id, source.format, &cached.content);
+                SourceRefresh::Contributed
+            }
+            Ok(None) => {
+                warn!(
+                    id = source.id,
+                    url = %source.url,
+                    "refresh: {context} but no cached content — source skipped"
+                );
+                SourceRefresh::Incomplete
+            }
+            Err(e) => {
+                warn!(
+                    id = source.id,
+                    url = %source.url,
+                    error = %e,
+                    "refresh: {context} but cache read failed — source skipped"
+                );
+                SourceRefresh::Incomplete
+            }
+        }
     }
 
     // ── Offline-start ─────────────────────────────────────────────────────────
@@ -246,131 +394,12 @@ impl BlocklistScheduler {
         let mut complete_snapshot = true;
 
         for source in &sources {
-            let validators = Validators {
-                etag: source.etag.clone(),
-                last_modified: source.last_modified.clone(),
-            };
-
-            match self.fetcher.fetch(&source.url, &validators).await {
-                Ok(FetchOutcome::Modified {
-                    body,
-                    validators: new_validators,
-                }) => {
-                    // Parse fresh content.
-                    let text = String::from_utf8_lossy(&body);
-                    let names = Parser::from(source.format).parse(&text);
-                    let count = names.len();
-                    aggregator.add(source.id, names);
-
-                    // Persist the cache and refresh metadata.
-                    if let Err(e) = self.repo.save_cache(source.id, &body).await {
-                        warn!(
-                            id = source.id,
-                            url = %source.url,
-                            error = %e,
-                            "refresh: failed to save cache (continuing)"
-                        );
-                    }
-                    let meta = RefreshMetadata {
-                        entry_count: count as u64,
-                        last_updated: Clock::now_secs(),
-                        etag: new_validators.etag,
-                        last_modified: new_validators.last_modified,
-                    };
-                    if let Err(e) = self.repo.update_refresh_metadata(source.id, &meta).await {
-                        warn!(
-                            id = source.id,
-                            url = %source.url,
-                            error = %e,
-                            "refresh: failed to update metadata (continuing)"
-                        );
-                    }
-
-                    summary.fetched += 1;
-                    info!(
-                        id = source.id,
-                        url = %source.url,
-                        domains = count,
-                        "refresh: source updated (200)"
-                    );
-                }
-
-                Ok(FetchOutcome::NotModified) => {
-                    // Content unchanged — load from cache to keep it in the set.
-                    match self.repo.load_cache(source.id).await {
-                        Ok(Some(cached)) => {
-                            Self::decode_and_add(
-                                &mut aggregator,
-                                source.id,
-                                source.format,
-                                &cached.content,
-                            );
-                        }
-                        Ok(None) => {
-                            warn!(
-                                id = source.id,
-                                url = %source.url,
-                                "refresh: 304 but no cached content found — source skipped"
-                            );
-                            complete_snapshot = false;
-                            summary.failed += 1;
-                        }
-                        Err(e) => {
-                            warn!(
-                                id = source.id,
-                                url = %source.url,
-                                error = %e,
-                                "refresh: 304 but cache read failed — source skipped"
-                            );
-                            complete_snapshot = false;
-                            summary.failed += 1;
-                        }
-                    }
-                    summary.not_modified += 1;
-                    info!(
-                        id = source.id,
-                        url = %source.url,
-                        "refresh: source not modified (304)"
-                    );
-                }
-
-                Err(e) => {
-                    // Network or protocol error — fall back to cached body.
-                    warn!(
-                        id = source.id,
-                        url = %source.url,
-                        error = %e,
-                        "refresh: fetch failed, falling back to cached content"
-                    );
-                    match self.repo.load_cache(source.id).await {
-                        Ok(Some(cached)) => {
-                            Self::decode_and_add(
-                                &mut aggregator,
-                                source.id,
-                                source.format,
-                                &cached.content,
-                            );
-                        }
-                        Ok(None) => {
-                            warn!(
-                                id = source.id,
-                                url = %source.url,
-                                "refresh: fetch failed and no cached content — source dropped"
-                            );
-                            complete_snapshot = false;
-                        }
-                        Err(ce) => {
-                            warn!(
-                                id = source.id,
-                                url = %source.url,
-                                cache_error = %ce,
-                                "refresh: fetch failed and cache read also failed — source dropped"
-                            );
-                            complete_snapshot = false;
-                        }
-                    }
-                    summary.failed += 1;
-                }
+            if self
+                .refresh_source(source, &mut aggregator, &mut summary)
+                .await
+                == SourceRefresh::Incomplete
+            {
+                complete_snapshot = false;
             }
         }
 
