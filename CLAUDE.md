@@ -28,6 +28,7 @@ This project uses [bears](https://github.com/LHelge/bea-rs) for task tracking.
 - Tasks are plain markdown files in the repo. It is fine to **edit a task file
   directly** after it was created via the MCP.
 - **Mark tasks completed before committing** the changes that finish them.
+- **Do not** use the tool `get_graph` it is buggy on projects with this many dependencies
 
 ### Agent loop
 
