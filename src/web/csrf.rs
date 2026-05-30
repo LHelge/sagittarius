@@ -34,7 +34,12 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use tracing::warn;
 
-use crate::web::{AppState, auth, origin};
+use crate::web::{
+    AppState,
+    auth::SessionCookie,
+    crypto::{ConstantTimeEq, ToHex},
+    origin,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -42,16 +47,35 @@ type HmacSha256 = Hmac<Sha256>;
 /// form field.  Admin forms are tiny; anything larger is rejected.
 const MAX_FORM_BODY: usize = 64 * 1024;
 
+/// A session-bound anti-CSRF token: `HMAC-SHA256(csrf_key, session_id)`,
+/// hex-encoded.  Unforgeable without the per-process key and bound to the
+/// session, so it rotates on login.
+pub(crate) struct CsrfToken(String);
+
+impl CsrfToken {
+    /// The hex token value, for embedding in rendered pages.
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+
+    /// Borrow the hex token value.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Constant-time check that a `presented` token matches this one.
+    pub(crate) fn verify(&self, presented: &str) -> bool {
+        self.as_str().ct_eq(presented)
+    }
+}
+
 impl AppState {
-    /// Derive the session-bound CSRF token for `session_id`.
-    ///
-    /// `HMAC-SHA256(csrf_key, session_id)`, hex-encoded.  Unforgeable without
-    /// the per-process key and bound to the session, so it rotates on login.
-    pub(crate) fn csrf_token(&self, session_id: &str) -> String {
+    /// Derive the session-bound [`CsrfToken`] for `session_id`.
+    pub(crate) fn csrf_token(&self, session_id: &str) -> CsrfToken {
         let mut mac = HmacSha256::new_from_slice(self.csrf_key.as_ref())
             .expect("HMAC accepts any key length");
         mac.update(session_id.as_bytes());
-        to_hex(mac.finalize().into_bytes())
+        CsrfToken(mac.finalize().into_bytes().to_hex())
     }
 }
 
@@ -81,17 +105,17 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
     // (3) Token check, only when an authenticated session cookie is present.
     // Pre-auth forms (login/wizard) have no session; the handler's auth
     // extractor still gates them.
-    let Some((session_id, _token)) = auth::read_cookie(req.headers()) else {
+    let Some(cookie) = SessionCookie::from_headers(req.headers()) else {
         return next.run(req).await;
     };
-    let expected = state.csrf_token(&session_id);
+    let expected = state.csrf_token(&cookie.id);
 
     // The token may arrive in the `X-CSRF-Token` header (explicit API clients) …
     if let Some(header_token) = req
         .headers()
         .get("x-csrf-token")
         .and_then(|v| v.to_str().ok())
-        && auth::ct_eq(header_token, &expected)
+        && expected.verify(header_token)
     {
         return next.run(req).await;
     }
@@ -117,7 +141,7 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
     } else {
         form_field(&bytes, "csrf_token")
     };
-    if !token.is_some_and(|t| auth::ct_eq(&t, &expected)) {
+    if !token.is_some_and(|t| expected.verify(&t)) {
         warn!("CSRF: rejected mutation with missing/invalid token");
         return forbidden();
     }
@@ -168,18 +192,6 @@ fn form_field(body: &Bytes, key: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Lowercase-hex encode.
-fn to_hex(bytes: impl AsRef<[u8]>) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let bytes = bytes.as_ref();
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 /// A bare 403 response.
@@ -233,10 +245,5 @@ mod tests {
         h.insert("host", "127.0.0.1:8080".parse().unwrap());
         let expected = origin::origin(SessionCookieSecurePolicy::Never, &h).unwrap();
         assert_eq!(expected, "http://127.0.0.1:8080");
-    }
-
-    #[test]
-    fn to_hex_round_trips_known_value() {
-        assert_eq!(to_hex([0x00, 0xff, 0x10]), "00ff10");
     }
 }
