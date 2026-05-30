@@ -29,7 +29,7 @@ use axum::{
 
 use crate::{
     storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-    web::{AppState, Chrome, auth::hash_password, render::WebError},
+    web::{AppState, Chrome, auth::Password, render::WebError},
 };
 
 /// Minimum acceptable length for the initial admin password.
@@ -127,11 +127,11 @@ pub async fn setup_submit(
         .into_response();
     }
 
-    let hash = match hash_password(&form.password) {
-        Ok(h) => h,
+    let password = match Password::hash(&form.password) {
+        Ok(p) => p,
         Err(e) => return e.into_response(),
     };
-    if let Err(e) = repo.create(username, &hash).await {
+    if let Err(e) = repo.create(username, password.as_str()).await {
         return WebError::from(e).into_response();
     }
 

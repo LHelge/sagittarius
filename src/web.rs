@@ -20,6 +20,7 @@
 pub mod assets;
 pub mod auth;
 pub mod blocklists;
+pub mod crypto;
 pub mod csrf;
 pub mod dashboard;
 pub mod lists;
@@ -169,7 +170,7 @@ impl AppState {
             active,
             show_nav: true,
             authenticated: true,
-            csrf_token: self.csrf_token(&user.session_id),
+            csrf_token: self.csrf_token(&user.session_id).into_string(),
         }
     }
 
@@ -224,8 +225,8 @@ impl AppState {
             // First-run wizard (public; gated by the wizard layer below).
             .route("/setup", get(wizard::setup_form).post(wizard::setup_submit))
             // Authentication (public).
-            .route("/login", get(auth::login_form).post(auth::login_submit))
-            .route("/logout", post(auth::logout))
+            .route("/login", get(Self::login_form).post(Self::login_submit))
+            .route("/logout", post(Self::logout))
             // Embedded static assets (no CDN, no Node build).
             .route("/assets/datastar.js", get(Assets::datastar_js))
             .route("/assets/pico.pumpkin.min.css", get(Assets::pico_css))
@@ -261,7 +262,7 @@ impl AdminServer {
     ///
     /// Returns [`Error::Bind`] if the address cannot be bound.
     pub async fn bind(addr: SocketAddr, state: AppState) -> Result<Self, Error> {
-        auth::warn_if_insecure(state.cookie_policy, addr);
+        auth::SessionCookie::warn_if_insecure(state.cookie_policy, addr);
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|source| Error::Bind { addr, source })?;
@@ -381,7 +382,7 @@ mod tests {
     async fn auth_flow_end_to_end() {
         use crate::{
             storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-            web::auth::hash_password,
+            web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
@@ -390,7 +391,7 @@ mod tests {
 
         // Seed an admin account.
         SqliteAdminUserRepo::new(pool.clone())
-            .create("admin", &hash_password("s3cret").expect("hash"))
+            .create("admin", Password::hash("s3cret").expect("hash").as_str())
             .await
             .expect("create admin");
 
@@ -468,7 +469,7 @@ mod tests {
         assert!(dash.contains("/assets/pico.pumpkin.min.css"));
         assert!(dash.contains("/assets/datastar.js"));
         assert!(dash.contains("aria-current=\"page\""));
-        assert!(dash.contains(&app.csrf_token(&session_id_of(&cookie))));
+        assert!(dash.contains(app.csrf_token(&session_id_of(&cookie)).as_str()));
 
         // Expire the session server-side: the same cookie no longer authorizes.
         sqlx::query("UPDATE sessions SET expires_at = 0")
@@ -505,7 +506,7 @@ mod tests {
 
         // The logout mutation requires the session-bound CSRF token. Derive it
         // from the session id (the cookie's `id` component).
-        let csrf = app.csrf_token(&session_id_of(&cookie));
+        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
 
         // Without the token the mutation is rejected.
         let r = client
@@ -669,14 +670,14 @@ mod tests {
             resolver::pipeline::Outcome,
             storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
             telemetry::QueryEvent,
-            web::auth::hash_password,
+            web::auth::Password,
         };
         use reqwest::redirect::Policy;
         use std::time::Duration;
 
         let (_dir, state) = test_state().await;
         SqliteAdminUserRepo::new(state.db.pool().clone())
-            .create("admin", &hash_password("s3cret").unwrap())
+            .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
         let app = state.clone();
@@ -799,13 +800,13 @@ mod tests {
                 admin_users::{AdminUserRepository, SqliteAdminUserRepo},
                 lists::{AllowlistRepository, SqliteAllowlistRepo},
             },
-            web::auth::hash_password,
+            web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
         SqliteAdminUserRepo::new(state.db.pool().clone())
-            .create("admin", &hash_password("s3cret").unwrap())
+            .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
         let app = state.clone();
@@ -838,7 +839,7 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie));
+        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
 
         let dom: Name = "ads.example.com".parse().unwrap();
         assert!(!app.resolver.allowlist().contains(&dom));
@@ -907,13 +908,13 @@ mod tests {
         use crate::{
             codec::name::Name,
             storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-            web::auth::hash_password,
+            web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
         SqliteAdminUserRepo::new(state.db.pool().clone())
-            .create("admin", &hash_password("s3cret").unwrap())
+            .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
         let app = state.clone();
@@ -946,7 +947,7 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie));
+        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
         let dom: Name = "ads.example.com".parse().unwrap();
 
         // Add via the management form (CSRF token travels as a form field).
@@ -1010,13 +1011,13 @@ mod tests {
         use crate::{
             codec::synth::BlockMode,
             storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-            web::auth::hash_password,
+            web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
         SqliteAdminUserRepo::new(state.db.pool().clone())
-            .create("admin", &hash_password("s3cret").unwrap())
+            .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
         let app = state.clone();
@@ -1049,7 +1050,7 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie));
+        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
 
         // Seed defaults use null-ip; switch to nxdomain over the form.
         assert_eq!(app.resolver.settings().block_mode, BlockMode::null_ip());
@@ -1086,12 +1087,12 @@ mod tests {
             admin_users::{AdminUserRepository, SqliteAdminUserRepo},
             blocklists::{BlocklistRepository, SqliteBlocklistRepo},
         };
-        use crate::web::auth::hash_password;
+        use crate::web::auth::Password;
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
         SqliteAdminUserRepo::new(state.db.pool().clone())
-            .create("admin", &hash_password("s3cret").unwrap())
+            .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
         let app = state.clone();
@@ -1124,7 +1125,7 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie));
+        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
 
         // Add a source via the form.
         let r = client
