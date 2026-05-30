@@ -38,7 +38,7 @@ use bytes::{Bytes, BytesMut};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UdpSocket},
+    net::{TcpListener, TcpStream, UdpSocket},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tower::{Service, ServiceExt as _};
@@ -66,6 +66,14 @@ const UDP_DEFAULT_LIMIT: usize = 512;
 
 /// Recommended DNS-over-UDP payload ceiling (DNS Flag Day 2020 / RFC 8906).
 const UDP_MAX_LIMIT: usize = 1232;
+
+enum TcpRead {
+    Complete,
+    Shutdown,
+    Idle,
+    Eof,
+    Error(io::Error),
+}
 
 // ── UdpListenerPool ───────────────────────────────────────────────────────────
 
@@ -332,6 +340,25 @@ where
         Self { service, token }
     }
 
+    async fn read_tcp_exact(
+        stream: &mut TcpStream,
+        token: &CancellationToken,
+        buf: &mut [u8],
+    ) -> TcpRead {
+        let read_result = tokio::select! {
+            biased;
+            _ = token.cancelled() => return TcpRead::Shutdown,
+            r = tokio::time::timeout(TCP_IDLE_TIMEOUT, stream.read_exact(buf)) => r,
+        };
+
+        match read_result {
+            Err(_elapsed) => TcpRead::Idle,
+            Ok(Ok(_)) => TcpRead::Complete,
+            Ok(Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => TcpRead::Eof,
+            Ok(Err(e)) => TcpRead::Error(e),
+        }
+    }
+
     /// Drive `service` for a successfully-parsed `query` from `client`.
     ///
     /// Takes the (already-cloned) service by value so the returned future
@@ -458,32 +485,28 @@ where
     ///
     /// The shutdown token is checked on each read so the connection is abandoned
     /// promptly when the server is shutting down.
-    async fn handle_connection(self, mut stream: tokio::net::TcpStream, peer: SocketAddr) {
+    async fn handle_connection(self, mut stream: TcpStream, peer: SocketAddr) {
         loop {
             // ── Read 2-byte length prefix with idle timeout ────────────────────
             let mut len_buf = [0u8; 2];
-            let read_result = tokio::select! {
-                biased;
-                _ = self.token.cancelled() => {
+            match Self::read_tcp_exact(&mut stream, &self.token, &mut len_buf).await {
+                TcpRead::Complete => {}
+                TcpRead::Shutdown => {
                     trace!(peer = %peer, "TCP connection closed: shutdown");
                     return;
                 }
-                r = tokio::time::timeout(TCP_IDLE_TIMEOUT, stream.read_exact(&mut len_buf)) => r,
-            };
-            match read_result {
-                Err(_elapsed) => {
+                TcpRead::Idle => {
                     trace!(peer = %peer, "TCP connection idle; closing");
                     return;
                 }
-                Ok(Err(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                TcpRead::Eof => {
                     trace!(peer = %peer, "TCP clean EOF; closing");
                     return;
                 }
-                Ok(Err(e)) => {
+                TcpRead::Error(e) => {
                     debug!(peer = %peer, error = %e, "TCP read error; closing");
                     return;
                 }
-                Ok(Ok(_)) => {} // got 2 bytes
             }
 
             let msg_len = u16::from_be_bytes(len_buf) as usize;
@@ -491,9 +514,24 @@ where
             // ── Read the message body ──────────────────────────────────────────
             let mut body = BytesMut::with_capacity(msg_len);
             body.resize(msg_len, 0);
-            if let Err(e) = stream.read_exact(&mut body).await {
-                debug!(peer = %peer, error = %e, "TCP body read error; closing");
-                return;
+            match Self::read_tcp_exact(&mut stream, &self.token, &mut body).await {
+                TcpRead::Complete => {}
+                TcpRead::Shutdown => {
+                    trace!(peer = %peer, "TCP connection closed while reading body: shutdown");
+                    return;
+                }
+                TcpRead::Idle => {
+                    trace!(peer = %peer, "TCP body read idle; closing");
+                    return;
+                }
+                TcpRead::Eof => {
+                    trace!(peer = %peer, "TCP clean EOF while reading body; closing");
+                    return;
+                }
+                TcpRead::Error(e) => {
+                    debug!(peer = %peer, error = %e, "TCP body read error; closing");
+                    return;
+                }
             }
             let raw = body.freeze();
 
@@ -668,6 +706,28 @@ mod tests {
             let hdr = parse_header(&reply);
             assert!(hdr.qr(), "QR must be set");
             assert_eq!(hdr.id, 0xBEEF, "id must match");
+
+            shutdown(token, tracker).await;
+        })
+        .await
+        .expect("test timed out");
+    }
+
+    /// Shutdown while a TCP client is stalled mid-frame must drain promptly.
+    #[tokio::test]
+    async fn tcp_body_read_observes_shutdown() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            let listeners = DnsListeners::bind(&[bind_addr], 1).expect("bind");
+            let server_addr = listeners.tcp[0].local_addr().expect("local_addr");
+
+            let (token, tracker) = spawn_listeners(listeners, tower::service_fn(noerror_service));
+
+            let mut stream = TcpStream::connect(server_addr).await.expect("connect");
+            stream
+                .write_all(&42u16.to_be_bytes())
+                .await
+                .expect("write length prefix");
 
             shutdown(token, tracker).await;
         })
