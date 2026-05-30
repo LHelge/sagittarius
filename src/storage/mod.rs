@@ -677,7 +677,7 @@ mod tests {
             .expect("disable upstream");
 
         // Re-apply the seed SQL directly (as if the migration ran a second time).
-        let seed_sql = include_str!("../migrations/20260529130932_seed_defaults.up.sql");
+        let seed_sql = include_str!("../../migrations/20260529130932_seed_defaults.up.sql");
         sqlx::raw_sql(seed_sql)
             .execute(db.pool())
             .await
