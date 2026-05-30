@@ -79,68 +79,50 @@ impl moka::Expiry<Question, CachedResponse> for DnsCacheExpiry {
     }
 }
 
-// ── TTL clamp helper ──────────────────────────────────────────────────────────
+impl CachedResponse {
+    /// Produce a patched copy of this cached response ready to send to a client.
+    ///
+    /// Two in-place mutations are applied to a byte-for-byte copy of `bytes`:
+    ///
+    /// 1. **Transaction ID** — if the buffer is at least 2 bytes, the first two
+    ///    bytes are overwritten with `client_txn_id` in big-endian order.
+    /// 2. **TTL decrement** — for each recorded offset, if `offset + 4 <= len`,
+    ///    the big-endian `u32` at that offset is decremented by `elapsed_secs`
+    ///    (saturating at 0).
+    ///
+    /// The patching is fully bounds-guarded and never panics on bad input.
+    fn patched_for(&self, client_txn_id: u16, elapsed_secs: u32) -> Bytes {
+        let len = self.bytes.len();
+        let mut buf = BytesMut::with_capacity(len);
+        buf.put_slice(&self.bytes);
 
-/// Clamp `secs` to `[min, max]` (both inclusive).
-///
-/// # Panics
-///
-/// Does not panic; relies on `u32::clamp` which requires `min <= max`.
-/// Callers must ensure `min <= max`, which is enforced in [`DnsCache::new`].
-#[inline]
-fn clamp_ttl(secs: u32, min: u32, max: u32) -> u32 {
-    secs.clamp(min, max)
-}
-
-// ── Patch helper ─────────────────────────────────────────────────────────────
-
-/// Produce a patched copy of a cached DNS response ready to send to a client.
-///
-/// Two in-place mutations are applied to a byte-for-byte copy of `bytes`:
-///
-/// 1. **Transaction ID** — if the buffer is at least 2 bytes, the first two
-///    bytes are overwritten with `client_txn_id` in big-endian order.
-/// 2. **TTL decrement** — for each offset in `ttl_offsets`, if `offset + 4 <=
-///    len`, the big-endian `u32` at that offset is decremented by
-///    `elapsed_secs` (saturating at 0).
-///
-/// The patching is fully bounds-guarded and never panics on bad input.
-fn patch_response(
-    bytes: &[u8],
-    ttl_offsets: &[usize],
-    client_txn_id: u16,
-    elapsed_secs: u32,
-) -> Bytes {
-    let len = bytes.len();
-    let mut buf = BytesMut::with_capacity(len);
-    buf.put_slice(bytes);
-
-    // 1. Patch transaction ID (bytes 0–1, big-endian).
-    if len >= 2 {
-        let id_bytes = client_txn_id.to_be_bytes();
-        buf[0] = id_bytes[0];
-        buf[1] = id_bytes[1];
-    }
-
-    // 2. Decrement each TTL field in-place (bounds-guarded).
-    for &offset in ttl_offsets {
-        if offset + 4 <= len {
-            let old = u32::from_be_bytes([
-                buf[offset],
-                buf[offset + 1],
-                buf[offset + 2],
-                buf[offset + 3],
-            ]);
-            let new_ttl = old.saturating_sub(elapsed_secs);
-            let new_bytes = new_ttl.to_be_bytes();
-            buf[offset] = new_bytes[0];
-            buf[offset + 1] = new_bytes[1];
-            buf[offset + 2] = new_bytes[2];
-            buf[offset + 3] = new_bytes[3];
+        // 1. Patch transaction ID (bytes 0–1, big-endian).
+        if len >= 2 {
+            let id_bytes = client_txn_id.to_be_bytes();
+            buf[0] = id_bytes[0];
+            buf[1] = id_bytes[1];
         }
-    }
 
-    buf.freeze()
+        // 2. Decrement each TTL field in-place (bounds-guarded).
+        for &offset in self.ttl_offsets.iter() {
+            if offset + 4 <= len {
+                let old = u32::from_be_bytes([
+                    buf[offset],
+                    buf[offset + 1],
+                    buf[offset + 2],
+                    buf[offset + 3],
+                ]);
+                let new_ttl = old.saturating_sub(elapsed_secs);
+                let new_bytes = new_ttl.to_be_bytes();
+                buf[offset] = new_bytes[0];
+                buf[offset + 1] = new_bytes[1];
+                buf[offset + 2] = new_bytes[2];
+                buf[offset + 3] = new_bytes[3];
+            }
+        }
+
+        buf.freeze()
+    }
 }
 
 // ── DnsCache ──────────────────────────────────────────────────────────────────
@@ -213,7 +195,7 @@ impl DnsCache {
         ttl_offsets: Vec<usize>,
         expiry_ttl_secs: u32,
     ) {
-        let clamped = clamp_ttl(expiry_ttl_secs, self.min_ttl, self.max_ttl);
+        let clamped = self.clamp_ttl(expiry_ttl_secs);
         let entry = CachedResponse {
             bytes,
             ttl_offsets: Arc::from(ttl_offsets),
@@ -241,12 +223,7 @@ impl DnsCache {
             .try_into()
             .unwrap_or(u32::MAX);
 
-        Some(patch_response(
-            &entry.bytes,
-            &entry.ttl_offsets,
-            client_txn_id,
-            elapsed_secs,
-        ))
+        Some(entry.patched_for(client_txn_id, elapsed_secs))
     }
 
     /// Run any pending maintenance tasks (e.g. expire stale entries).
@@ -255,6 +232,13 @@ impl DnsCache {
     /// background maintenance thread.
     pub async fn run_pending_tasks(&self) {
         self.inner.run_pending_tasks().await;
+    }
+
+    /// Clamp a caller-supplied TTL (seconds) into this cache's `[min, max]`
+    /// bounds.  `new` guarantees `min_ttl <= max_ttl`.
+    #[inline]
+    fn clamp_ttl(&self, secs: u32) -> u32 {
+        secs.clamp(self.min_ttl, self.max_ttl)
     }
 }
 
@@ -328,31 +312,45 @@ mod tests {
         }
     }
 
-    // ── clamp_ttl ─────────────────────────────────────────────────────────────
+    /// Build a bare [`CachedResponse`] over `bytes` + `ttl_offsets` for testing
+    /// the patch logic (the `stored_at` / `expiry` fields are irrelevant here).
+    fn cached(bytes: Bytes, ttl_offsets: Vec<usize>) -> CachedResponse {
+        CachedResponse {
+            bytes,
+            ttl_offsets: Arc::from(ttl_offsets),
+            stored_at: Instant::now(),
+            expiry: Duration::from_secs(0),
+        }
+    }
+
+    // ── DnsCache::clamp_ttl ─────────────────────────────────────────────────────
 
     #[test]
     fn clamp_ttl_below_min_returns_min() {
-        assert_eq!(clamp_ttl(0, 5, 3600), 5);
-        assert_eq!(clamp_ttl(4, 5, 3600), 5);
+        let cache = DnsCache::new(100, 5, 3600);
+        assert_eq!(cache.clamp_ttl(0), 5);
+        assert_eq!(cache.clamp_ttl(4), 5);
     }
 
     #[test]
     fn clamp_ttl_above_max_returns_max() {
-        assert_eq!(clamp_ttl(7200, 5, 3600), 3600);
-        assert_eq!(clamp_ttl(u32::MAX, 5, 3600), 3600);
+        let cache = DnsCache::new(100, 5, 3600);
+        assert_eq!(cache.clamp_ttl(7200), 3600);
+        assert_eq!(cache.clamp_ttl(u32::MAX), 3600);
     }
 
     #[test]
     fn clamp_ttl_in_range_unchanged() {
-        assert_eq!(clamp_ttl(300, 5, 3600), 300);
-        assert_eq!(clamp_ttl(5, 5, 3600), 5);
-        assert_eq!(clamp_ttl(3600, 5, 3600), 3600);
+        let cache = DnsCache::new(100, 5, 3600);
+        assert_eq!(cache.clamp_ttl(300), 300);
+        assert_eq!(cache.clamp_ttl(5), 5);
+        assert_eq!(cache.clamp_ttl(3600), 3600);
     }
 
-    // ── patch_response ────────────────────────────────────────────────────────
+    // ── CachedResponse::patched_for ─────────────────────────────────────────────
 
     /// Build a small but structurally complete A-record response, run TtlScan
-    /// to get real offsets, then call patch_response and verify via re-parse.
+    /// to get real offsets, then patch and verify via re-parse.
     #[test]
     fn patch_response_txn_id_and_ttl_decrement() {
         let original_ttl: u32 = 300;
@@ -366,7 +364,7 @@ mod tests {
         let elapsed: u32 = 30;
         let client_id: u16 = 0xBEEF;
 
-        let patched = patch_response(&msg, &scan.ttl_offsets, client_id, elapsed);
+        let patched = cached(msg.clone(), scan.ttl_offsets.clone()).patched_for(client_id, elapsed);
 
         // Transaction ID must equal client_id.
         assert_eq!(
@@ -391,7 +389,7 @@ mod tests {
         let scan = TtlScan::scan(&msg.clone()).expect("scan");
 
         // elapsed = 0 → TTLs unchanged; only txn-id changes.
-        let patched = patch_response(&msg, &scan.ttl_offsets, 0xBBBB, 0);
+        let patched = cached(msg.clone(), scan.ttl_offsets.clone()).patched_for(0xBBBB, 0);
 
         assert_eq!(read_txn_id(&patched), 0xBBBB);
         // TTL should be unchanged (elapsed = 0).
@@ -405,7 +403,7 @@ mod tests {
         let msg = build_a_response(0x0001, "sat.example.com", ttl);
         let scan = TtlScan::scan(&msg.clone()).expect("scan");
 
-        let patched = patch_response(&msg, &scan.ttl_offsets, 0x0001, ttl + 50);
+        let patched = cached(msg.clone(), scan.ttl_offsets.clone()).patched_for(0x0001, ttl + 50);
 
         // Must saturate at 0, not wrap around.
         assert_eq!(
@@ -421,7 +419,7 @@ mod tests {
         let msg = build_a_response(0x0001, "zero.example.com", 0);
         let scan = TtlScan::scan(&msg.clone()).expect("scan");
 
-        let patched = patch_response(&msg, &scan.ttl_offsets, 0x0001, 100);
+        let patched = cached(msg.clone(), scan.ttl_offsets.clone()).patched_for(0x0001, 100);
         assert_eq!(read_u32_at(&patched, scan.ttl_offsets[0]), 0);
     }
 
@@ -432,14 +430,14 @@ mod tests {
         let bad_offsets: Vec<usize> = vec![msg.len() - 1, msg.len(), msg.len() + 100];
 
         // Must not panic.
-        let _ = patch_response(&msg, &bad_offsets, 0x0001, 10);
+        let _ = cached(msg.clone(), bad_offsets).patched_for(0x0001, 10);
     }
 
     /// Buffer shorter than 2 bytes — no txn-id patch, no panic.
     #[test]
     fn patch_response_short_buffer_no_panic() {
         let buf = &[0xAAu8]; // 1 byte — too short to hold a txn-id
-        let patched = patch_response(buf, &[], 0xBEEF, 0);
+        let patched = cached(Bytes::copy_from_slice(buf), vec![]).patched_for(0xBEEF, 0);
         // Must not panic and must return the unchanged single byte.
         assert_eq!(&patched[..], &[0xAAu8]);
     }
@@ -447,7 +445,7 @@ mod tests {
     /// Empty buffer — no panic and empty output.
     #[test]
     fn patch_response_empty_buffer_no_panic() {
-        let patched = patch_response(&[], &[], 0x1234, 10);
+        let patched = cached(Bytes::new(), vec![]).patched_for(0x1234, 10);
         assert_eq!(patched.len(), 0);
     }
 
@@ -585,10 +583,10 @@ mod tests {
 
     // ── Re-parse patched bytes ────────────────────────────────────────────────
 
-    /// Build a response, scan TTLs, call patch_response, then re-parse the
-    /// patched bytes with Header::read and TtlScan to confirm structural validity.
+    /// Build a response, scan TTLs, patch it, then re-parse the patched bytes
+    /// with Header::read and TtlScan to confirm structural validity.
     #[test]
-    fn patch_response_patched_bytes_are_re_parseable() {
+    fn patched_bytes_are_re_parseable() {
         let original_ttl: u32 = 120;
         let msg = build_a_response(0xFFFF, "reparse.example.com", original_ttl);
         let bytes_ref: Bytes = msg.clone();
@@ -597,7 +595,8 @@ mod tests {
         let elapsed: u32 = 20;
         let client_id: u16 = 0x4242;
 
-        let patched_bytes = patch_response(&msg, &scan.ttl_offsets, client_id, elapsed);
+        let patched_bytes =
+            cached(msg.clone(), scan.ttl_offsets.clone()).patched_for(client_id, elapsed);
 
         // The patched message must still be parseable by TtlScan.
         let patched_scan = TtlScan::scan(&patched_bytes).expect("patched message must scan");
