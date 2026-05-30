@@ -20,11 +20,11 @@
 //!
 //! # Resilience
 //!
-//! A transient network failure for one source will **not** clear that source
-//! from the live set.  The scheduler falls back to the previously cached body
-//! so the active blocklist retains its last-good snapshot.  Only a source that
-//! has never been successfully fetched *and* has no cached content contributes
-//! nothing.
+//! A transient network failure for one source will **not** clear the live set.
+//! The scheduler falls back to the previously cached body for that source; if
+//! any enabled source cannot contribute fresh or cached content, the whole
+//! refresh is treated as incomplete and the previous live snapshot remains in
+//! use.
 //!
 //! # Interval live-updates
 //!
@@ -243,6 +243,7 @@ impl BlocklistScheduler {
 
         let mut aggregator: Aggregator<i64> = Aggregator::new();
         let mut summary = RefreshSummary::default();
+        let mut complete_snapshot = true;
 
         for source in &sources {
             let validators = Validators {
@@ -311,6 +312,8 @@ impl BlocklistScheduler {
                                 url = %source.url,
                                 "refresh: 304 but no cached content found — source skipped"
                             );
+                            complete_snapshot = false;
+                            summary.failed += 1;
                         }
                         Err(e) => {
                             warn!(
@@ -319,6 +322,8 @@ impl BlocklistScheduler {
                                 error = %e,
                                 "refresh: 304 but cache read failed — source skipped"
                             );
+                            complete_snapshot = false;
+                            summary.failed += 1;
                         }
                     }
                     summary.not_modified += 1;
@@ -352,6 +357,7 @@ impl BlocklistScheduler {
                                 url = %source.url,
                                 "refresh: fetch failed and no cached content — source dropped"
                             );
+                            complete_snapshot = false;
                         }
                         Err(ce) => {
                             warn!(
@@ -360,6 +366,7 @@ impl BlocklistScheduler {
                                 cache_error = %ce,
                                 "refresh: fetch failed and cache read also failed — source dropped"
                             );
+                            complete_snapshot = false;
                         }
                     }
                     summary.failed += 1;
@@ -367,8 +374,15 @@ impl BlocklistScheduler {
             }
         }
 
-        // Atomic swap: install the merged set.
-        let contributions = aggregator.install(self.state.blocklist());
+        // Atomic swap: install only complete snapshots.  A partial rebuild would
+        // otherwise erase domains from sources that could not be fetched and had
+        // no usable cache, violating the last-good-snapshot guarantee.
+        let contributions = if complete_snapshot {
+            aggregator.install(self.state.blocklist())
+        } else {
+            warn!("refresh: incomplete snapshot; keeping existing live blocklist");
+            Vec::new()
+        };
         summary.total_domains = self.state.blocklist().len();
 
         info!(
@@ -757,6 +771,68 @@ mod tests {
             "bad source's cached domain must be retained"
         );
         assert_eq!(state.blocklist().len(), 2, "exactly 2 domains in live set");
+    }
+
+    /// If any enabled source cannot be fetched and has no cached fallback, the
+    /// refresh must keep the previous live snapshot instead of installing a
+    /// partial set from the sources that did succeed.
+    #[tokio::test]
+    async fn refresh_once_incomplete_source_keeps_previous_live_snapshot() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/good.txt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(b"0.0.0.0 newly-fetched.example.com\n".to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/missing.txt"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let (_dir, db) = open_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+        let repo = SqliteBlocklistRepo::new(db.pool().clone());
+
+        let previous: crate::codec::name::Name = "previous.example.com".parse().unwrap();
+        state
+            .blocklist()
+            .store([previous.clone()].into_iter().collect());
+
+        repo.insert(NewBlocklist {
+            url: format!("{}/good.txt", server.uri()),
+            format: BlocklistFormat::Hosts,
+            enabled: true,
+        })
+        .await
+        .expect("insert good");
+
+        repo.insert(NewBlocklist {
+            url: format!("{}/missing.txt", server.uri()),
+            format: BlocklistFormat::DomainList,
+            enabled: true,
+        })
+        .await
+        .expect("insert missing");
+
+        let scheduler = make_scheduler(&db, Arc::clone(&state));
+        let summary = scheduler.refresh_once().await.expect("refresh_once");
+
+        assert_eq!(summary.fetched, 1, "good source still fetched");
+        assert_eq!(summary.failed, 1, "missing source counts as failed");
+        assert_eq!(summary.total_domains, 1, "previous snapshot remains live");
+
+        let fetched: crate::codec::name::Name = "newly-fetched.example.com".parse().unwrap();
+        assert!(state.blocklist().contains(&previous));
+        assert!(
+            !state.blocklist().contains(&fetched),
+            "partial refresh result must not be installed"
+        );
     }
 
     // ── On-demand trigger forces a refresh ───────────────────────────────────
