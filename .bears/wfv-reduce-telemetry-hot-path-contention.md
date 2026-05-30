@@ -1,10 +1,10 @@
 ---
 id: wfv
 title: Reduce telemetry hot-path contention
-status: open
+status: done
 priority: P2
 created: 2026-05-30T17:43:54.614134Z
-updated: 2026-05-30T17:43:54.614134Z
+updated: 2026-05-30T17:54:47.530051Z
 tags:
 - review
 - telemetry
