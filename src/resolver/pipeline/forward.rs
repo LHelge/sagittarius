@@ -29,8 +29,8 @@
 //! # Transaction-ID patching
 //!
 //! The upstream bytes carry hickory's internal transaction ID, not the client's.
-//! [`patch_txn_id`] copies the bytes and overwrites the first two bytes with the
-//! client's query ID for the reply.  The directive caches the **un-patched**
+//! [`DnsMessageBytes::with_txn_id`] copies the bytes and overwrites the first two
+//! bytes with the client's query ID for the reply.  The directive caches the **un-patched**
 //! upstream bytes; patching (and TTL decrement) happens at serve time in
 //! [`DnsCache::get`](crate::resolver::cache::DnsCache::get).
 //!
@@ -153,7 +153,7 @@ impl Service<DnsRequest> for ForwardService {
                     // bytes carry hickory's internal txn-id, not the client's.
                     // (The cache stores the un-patched bytes; DnsCache::get
                     // re-patches per requesting client on serve.)
-                    let reply = patch_txn_id(&fr.bytes, client_id);
+                    let reply = fr.bytes.with_txn_id(client_id);
                     Ok(ForwardOutput::new(
                         PipelineResponse::new(reply, Outcome::Forwarded),
                         directive,
@@ -179,20 +179,26 @@ impl Service<DnsRequest> for ForwardService {
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── DNS message bytes helpers ──────────────────────────────────────────────────
 
-/// Copy `bytes` and overwrite the first two bytes (the DNS transaction ID)
-/// with `id` in big-endian order.
-///
-/// Bounds-guarded: if `bytes` is shorter than 2 bytes, the original bytes
-/// are returned unchanged (no panic).
-fn patch_txn_id(bytes: &Bytes, id: u16) -> Bytes {
-    if bytes.len() < 2 {
-        return bytes.clone();
+/// Rewrites the transaction id on a raw DNS message buffer.
+trait DnsMessageBytes {
+    /// Copy the message and overwrite the first two bytes (the DNS transaction
+    /// id) with `id` in big-endian order.
+    ///
+    /// Bounds-guarded: a buffer shorter than 2 bytes is returned unchanged.
+    fn with_txn_id(&self, id: u16) -> Bytes;
+}
+
+impl DnsMessageBytes for Bytes {
+    fn with_txn_id(&self, id: u16) -> Bytes {
+        if self.len() < 2 {
+            return self.clone();
+        }
+        let mut buf = BytesMut::from(&self[..]);
+        buf[0..2].copy_from_slice(&id.to_be_bytes());
+        buf.freeze()
     }
-    let mut buf = BytesMut::from(&bytes[..]);
-    buf[0..2].copy_from_slice(&id.to_be_bytes());
-    buf.freeze()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -222,6 +228,20 @@ mod tests {
         },
         storage::Db,
     };
+
+    #[test]
+    fn with_txn_id_rewrites_first_two_bytes() {
+        let msg = Bytes::from_static(&[0x12, 0x34, 0xAA, 0xBB]);
+        let patched = msg.with_txn_id(0xBEEF);
+        assert_eq!(&patched[..], &[0xBE, 0xEF, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn with_txn_id_short_buffer_is_unchanged() {
+        let one = Bytes::from_static(&[0xAA]);
+        assert_eq!(&one.with_txn_id(0xBEEF)[..], &[0xAA]);
+        assert_eq!(Bytes::new().with_txn_id(0x1234).len(), 0);
+    }
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 

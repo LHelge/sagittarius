@@ -1,10 +1,10 @@
 ---
 id: qs8
 title: Move cache clamp_ttl / patch_response / patch_txn_id onto their types
-status: open
+status: done
 priority: P2
 created: 2026-05-30T11:32:35.299201256Z
-updated: 2026-05-30T11:32:35.299201256Z
+updated: 2026-05-30T12:39:53.144407158Z
 tags:
 - refactor
 parent: 46z
