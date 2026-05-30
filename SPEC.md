@@ -1,8 +1,9 @@
 # Sagittarius — Technical Specification
 
-> Status: **Draft / pre-1.0.** This document describes the intended design and
-> is expected to evolve as the implementation matures. Anything marked
-> *(future)* is out of scope for the first milestone.
+> Status: **Draft / pre-1.0.** 0.1.0 is released; 0.2.0 is in progress (see the
+> §12 roadmap). This document describes the intended design and evolves as the
+> implementation matures. Items under *Later (future)* in §12 are not yet
+> scheduled.
 
 Sagittarius is a self-hosted DNS sinkhole — a recursive/forwarding DNS server
 that blocks unwanted domains (ads, trackers, malware) at the network level,
@@ -585,33 +586,63 @@ null-IP / custom, per the configured block mode) and authoritative local
 
 ## 12. Roadmap
 
-### v0.1 (first milestone)
+### v0.1 — first milestone *(released as 0.1.0)*
 
-- [ ] Custom lazy DNS codec: shallow reader (header + question), EDNS/OPT-aware
+- [x] Custom lazy DNS codec: shallow reader (header + question), EDNS/OPT-aware
       response synthesis, bounded TTL scan (UDP + TCP).
-- [ ] `cargo-fuzz` target for the codec against malformed/adversarial input.
-- [ ] tokio listeners (IPv4/IPv6) + tower pipeline (rate limit, timeout,
+- [x] `cargo-fuzz` target for the codec against malformed/adversarial input.
+- [x] tokio listeners (IPv4/IPv6) + tower pipeline (rate limit, timeout,
       backpressure, early-return layers).
-- [ ] In-memory blacklist/allowlist/blocklist sets + local-record map with
+- [x] In-memory blacklist/allowlist/blocklist sets + local-record map with
       wildcards behind `arc-swap`; moka raw-bytes cache with TTL-offset patching.
-- [ ] Upstream forwarding incl. **DoH/DoT** (hickory transport client).
-- [ ] Blocklist subscription, fetch, aggregation, and background refresh
+- [x] Upstream forwarding incl. **DoH/DoT** (hickory transport client).
+- [x] Blocklist subscription, fetch, aggregation, and background refresh
       scheduler (atomic snapshot swap).
-- [ ] SQLite storage (config only) + migrations (schema + seed defaults) +
+- [x] SQLite storage (config only) + migrations (schema + seed defaults) +
       startup load into memory.
-- [ ] `tracing`/`tracing-subscriber` query + app logging to stdout.
-- [ ] In-memory live-log buffer + broadcast and runtime stats counters.
-- [ ] axum + askama + Datastar (SSE) admin UI (live log + dashboard), Pico CSS,
+- [x] `tracing`/`tracing-subscriber` query + app logging to stdout.
+- [x] In-memory live-log buffer + broadcast and runtime stats counters.
+- [x] axum + askama + Datastar (SSE) admin UI (live log + dashboard), Pico CSS,
       authentication + CSRF protection.
-- [ ] Graceful shutdown (drain in-flight queries, close DB cleanly).
-- [ ] Vendor all frontend assets and embed via `include_str!`/`include_bytes!`.
+- [x] Graceful shutdown (drain in-flight queries, close DB cleanly).
+- [x] Vendor all frontend assets and embed via `include_str!`/`include_bytes!`.
+
+### v0.2 — next milestone *(planned)*
+
+Scoped as epics **E10–E15** in the project task tracker. The §-level design for
+each feature is filled in as it lands; this list is the milestone scope.
+
+- **Persistent query log & historical telemetry** (E10) — per-query rows
+  persisted to SQLite, written off the DNS hot path (bounded queue + batched
+  writes); configurable retention (default 30 days) with a periodic purge and
+  incremental vacuum; a DB-backed, paginated live log (replacing the in-memory
+  ring buffer); windowed, restart-surviving dashboard figures; a logging
+  enable/disable toggle and a clear-log action.
+- **Per-list blocklist effectiveness** (E11) — record which blocklist source
+  blocked each request (primary source per domain, resolved off the hot path)
+  and surface per-list block counts.
+- **Temporarily pause blocking** (E12) — disable all blocking for a chosen
+  duration (5 min / 30 min / 1 h / custom) with resume-now; auto-resumes.
+- **Reverse DNS for the LAN** (E13) — synthesize PTR from local records and
+  conditional-forward private `in-addr.arpa` / `ip6.arpa` zones to the
+  router/DHCP (a general forward-zone mechanism).
+- **Client hostname decoration** (E14) — show device hostnames (IP fallback) in
+  the live log and top-clients via internal, cached reverse lookups.
+- **Upstream selection & health** (E15) — per-upstream response-time tracking
+  and telemetry, plus selection strategies beyond random (latency-weighted and
+  parallel).
 
 ### Later *(future)*
 
-- Durable query-log storage with configurable retention, and historical
-  dashboard time-series charts built on it (charts lean toward server-rendered
-  SVG or a tiny lib such as uPlot; vendored and embedded like all other assets).
-- DNSSEC validation.
+- Historical dashboard **time-series charts** built on the durable query log
+  (server-rendered SVG or a tiny lib such as uPlot; vendored and embedded like
+  all other assets).
+- **Recursive resolution** mode (E16) — iterate from the root instead of
+  forwarding; likely built on `hickory-recursor`, kept as an opt-in mode so the
+  raw-passthrough forward path is unaffected.
+- **DNSSEC validation** (E17) — validate the RRSIG chain to the root trust
+  anchor; wired into the recursive track first and reusable for a
+  validating-forwarder mode. Depends on the recursive track.
 - Subdomain / parent-domain blocking (reversed-label trie, shared with local
   records — §3.1).
 - Native TLS / built-in ACME (Let's Encrypt) for the admin interface.
