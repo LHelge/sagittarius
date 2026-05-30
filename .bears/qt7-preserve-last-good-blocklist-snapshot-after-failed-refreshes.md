@@ -1,10 +1,10 @@
 ---
 id: qt7
 title: Preserve last-good blocklist snapshot after failed refreshes
-status: open
+status: done
 priority: P1
 created: 2026-05-30T17:43:47.021538Z
-updated: 2026-05-30T17:43:47.021538Z
+updated: 2026-05-30T17:51:58.548580Z
 tags:
 - review
 - blocklist
