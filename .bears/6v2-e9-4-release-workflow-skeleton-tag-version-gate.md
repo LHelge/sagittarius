@@ -1,10 +1,10 @@
 ---
 id: 6v2
 title: E9.4 · Release workflow skeleton + tag/version gate
-status: open
+status: done
 priority: P2
 created: 2026-05-30T13:09:30.586656102Z
-updated: 2026-05-30T13:09:30.586656102Z
+updated: 2026-05-30T13:50:32.993753405Z
 tags:
 - release
 - ci
