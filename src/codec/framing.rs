@@ -15,10 +15,10 @@
 //! big-endian length** field indicating the number of bytes in the following
 //! message.  The length does **not** include the 2-byte prefix itself.
 //!
-//! [`tcp::encode_length_prefix`] prepends this prefix to a message buffer.
-//! [`tcp::decode_length_prefix`] reads the prefix from a byte slice to learn
-//! the expected message length, returning a typed error — never a panic — when
-//! the prefix is truncated.
+//! [`tcp::try_encode_length_prefix`] prepends this prefix to a message buffer.
+//! [`tcp::decode_length_prefix`] reads the prefix from a byte slice to learn the
+//! expected message length.  Fallible helpers return typed errors instead of
+//! panicking on invalid transport frames.
 
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -72,22 +72,33 @@ pub mod tcp {
     /// The returned [`Bytes`] is:
     /// `[high_byte_of_len, low_byte_of_len, ...message...]`
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `message.len() > u16::MAX` (65535 bytes) — DNS messages
-    /// over TCP are bounded by the 16-bit length field.  In practice a valid
-    /// DNS message is always far smaller.
-    #[must_use]
-    pub fn encode_length_prefix(message: &Bytes) -> Bytes {
+    /// Returns [`Error::MessageTooLong`] if `message.len() > u16::MAX` (65535
+    /// bytes), the maximum representable by the DNS-over-TCP length field.
+    pub fn try_encode_length_prefix(message: &Bytes) -> Result<Bytes, Error> {
         let msg_len = message.len();
-        assert!(
-            msg_len <= usize::from(u16::MAX),
-            "DNS message too large for TCP framing: {msg_len} > 65535"
-        );
+        if msg_len > usize::from(u16::MAX) {
+            return Err(Error::MessageTooLong(msg_len));
+        }
         let mut buf = BytesMut::with_capacity(LENGTH_PREFIX_SIZE + msg_len);
         buf.put_u16(msg_len as u16);
         buf.put_slice(message);
-        buf.freeze()
+        Ok(buf.freeze())
+    }
+
+    /// Encode a known-small DNS `message` for TCP transport.
+    ///
+    /// Prefer [`try_encode_length_prefix`] when framing data derived from a
+    /// remote request.  This infallible wrapper is intended for test fixtures and
+    /// other call sites where the input size is already statically constrained.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `message.len() > u16::MAX`.
+    #[must_use]
+    pub fn encode_length_prefix(message: &Bytes) -> Bytes {
+        try_encode_length_prefix(message).expect("DNS message too large for TCP framing")
     }
 
     /// Decode the 2-byte TCP length-prefix from `frame_start`.
@@ -155,6 +166,14 @@ mod tests {
         let msg = Bytes::new();
         let framed = tcp::encode_length_prefix(&msg);
         assert_eq!(&framed[..], &[0x00, 0x00]);
+    }
+
+    #[test]
+    fn tcp_try_encode_rejects_oversized_message() {
+        let msg = Bytes::from(vec![0u8; usize::from(u16::MAX) + 1]);
+        let err = tcp::try_encode_length_prefix(&msg).unwrap_err();
+
+        assert!(matches!(err, Error::MessageTooLong(65536)));
     }
 
     // ── TCP decode ────────────────────────────────────────────────────────────

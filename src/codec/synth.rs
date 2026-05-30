@@ -16,8 +16,8 @@
 //!   starts), keeping responses compact.
 //! - **EDNS echo**: when the query carried an OPT pseudo-RR
 //!   ([`EdnsInfo::scan`] returns `Some`), a matching OPT is appended to the
-//!   additional section.  The client COOKIE option (option-code 10, RFC 7873)
-//!   is reflected verbatim as a v0.1 simplification; full server-cookie
+//!   additional section.  A well-formed client COOKIE option (option-code 10,
+//!   RFC 7873) is reflected as a v0.1 simplification; full server-cookie
 //!   generation per RFC 7873 is future scope.
 //!
 //! # Entry point
@@ -71,6 +71,13 @@ pub const SERVER_UDP_PAYLOAD_SIZE: u16 = 1232;
 /// EDNS COOKIE option code (RFC 7873 §4).
 const EDNS_OPTION_COOKIE: u16 = 10;
 
+/// RFC 7873 client-cookie length.
+const EDNS_CLIENT_COOKIE_LEN: usize = 8;
+
+/// RFC 7873 permits server cookies from 8 to 32 bytes, appended after the
+/// 8-byte client cookie.  Queries may carry just the client cookie, or both.
+const EDNS_COOKIE_MAX_LEN: usize = 40;
+
 /// Answer RR owner — compression pointer to offset 12 (the QNAME).
 ///
 /// Two bytes `[0xC0, 0x0C]`: top two bits of 0xC0 signal a compression
@@ -102,9 +109,9 @@ pub struct EdnsInfo {
     pub udp_payload_size: u16,
     /// The EDNS COOKIE option data (RFC 7873) if present.
     ///
-    /// Contains the raw option-data bytes (client cookie, and optionally a
-    /// server cookie).  In v0.1, the response synthesis reflects these bytes
-    /// verbatim; full server-cookie generation per RFC 7873 is future scope.
+    /// Contains validated raw option-data bytes (client cookie, and optionally
+    /// a server cookie).  In v0.1, the response synthesis reflects these bytes;
+    /// full server-cookie generation per RFC 7873 is future scope.
     pub cookie: Option<Bytes>,
 }
 
@@ -178,8 +185,9 @@ impl EdnsInfo {
     /// Extract the EDNS COOKIE option data (option-code 10) from OPT RDATA.
     ///
     /// OPT RDATA is a sequence of `{option-code u16, option-length u16, data…}`
-    /// tuples.  Returns the data bytes of the first COOKIE option found, or
-    /// `None` if no COOKIE option is present or the RDATA is malformed.
+    /// tuples.  Returns the data bytes of the first well-formed COOKIE option
+    /// found, or `None` if no COOKIE option is present, the RDATA is malformed,
+    /// or the COOKIE length is invalid per RFC 7873.
     fn extract_cookie(rdata: &Bytes) -> Option<Bytes> {
         let mut pos = 0usize;
         let data = rdata;
@@ -195,13 +203,18 @@ impl EdnsInfo {
             }
 
             if code == EDNS_OPTION_COOKIE {
-                return Some(data.slice(pos..end));
+                return Self::valid_cookie_len(length).then(|| data.slice(pos..end));
             }
 
             pos = end;
         }
 
         None
+    }
+
+    fn valid_cookie_len(length: usize) -> bool {
+        length == EDNS_CLIENT_COOKIE_LEN
+            || (EDNS_CLIENT_COOKIE_LEN * 2..=EDNS_COOKIE_MAX_LEN).contains(&length)
     }
 }
 
@@ -510,14 +523,13 @@ impl Response {
     /// - TYPE: 41.
     /// - CLASS: [`SERVER_UDP_PAYLOAD_SIZE`].
     /// - TTL: 0 (extended RCODE=0, version=0, flags=0).
-    /// - RDATA: COOKIE option (`{0x00 0x0A, length, data}`) if the query had
-    ///   one; otherwise zero bytes (RDLENGTH=0).
+    /// - RDATA: COOKIE option (`{0x00 0x0A, length, data}`) if the query had a
+    ///   valid one; otherwise zero bytes (RDLENGTH=0).
     ///
     /// # Cookie reflection (v0.1 simplification)
     ///
-    /// The client cookie is reflected verbatim.  Full server-cookie generation
-    /// per RFC 7873 §5 (HMAC-SHA-256 keyed with a server secret) is future
-    /// scope.
+    /// Valid cookie option data is reflected.  Full server-cookie generation per
+    /// RFC 7873 §5 (HMAC-SHA-256 keyed with a server secret) is future scope.
     fn write_opt(w: &mut Writer, edns: &EdnsInfo) {
         // Root owner name.
         w.write_u8(0x00);
@@ -531,10 +543,13 @@ impl Response {
         // RDATA: reflect the COOKIE option if present.
         if let Some(cookie) = &edns.cookie {
             // OPTION-CODE(2) + OPTION-LENGTH(2) + cookie data.
-            let opt_len: u16 = 4 + cookie.len() as u16;
+            let opt_len =
+                u16::try_from(4 + cookie.len()).expect("validated EDNS COOKIE must fit in u16");
+            let cookie_len =
+                u16::try_from(cookie.len()).expect("validated EDNS COOKIE must fit in u16");
             w.write_u16(opt_len); // RDLENGTH
             w.write_u16(EDNS_OPTION_COOKIE); // OPTION-CODE = 10
-            w.write_u16(cookie.len() as u16); // OPTION-LENGTH
+            w.write_u16(cookie_len); // OPTION-LENGTH
             w.write_slice(cookie); // option data
         } else {
             w.write_u16(0); // RDLENGTH = 0
@@ -731,6 +746,26 @@ mod tests {
         assert_eq!(info.udp_payload_size, 1232);
         let got_cookie = info.cookie.expect("cookie must be present");
         assert_eq!(&got_cookie[..], cookie_bytes);
+    }
+
+    #[test]
+    fn edns_scan_ignores_cookie_with_invalid_length() {
+        let invalid_cookie = [0xAA; 9];
+        let raw = build_query_with_opt(
+            0x5678,
+            true,
+            "ads.example.com",
+            1,
+            1232,
+            Some(&invalid_cookie),
+        );
+        let query = Query::try_from(raw).unwrap();
+        let info = EdnsInfo::scan(&query).expect("OPT should still be found");
+
+        assert!(
+            info.cookie.is_none(),
+            "invalid COOKIE lengths must not be reflected"
+        );
     }
 
     #[test]
@@ -1136,6 +1171,29 @@ mod tests {
             "OPTION-CODE must be 10 (COOKIE)"
         );
         assert_eq!(opt_data, client_cookie, "cookie must be reflected verbatim");
+    }
+
+    #[test]
+    fn edns_query_with_invalid_cookie_omits_cookie_from_response() {
+        let invalid_cookie = [0xAA; 9];
+        let raw = build_query_with_opt(
+            0xAAAB,
+            true,
+            "blocked.example.com",
+            1,
+            1232,
+            Some(&invalid_cookie),
+        );
+        let query = Query::try_from(raw).unwrap();
+        let edns = EdnsInfo::scan(&query).expect("OPT must be found");
+
+        let resp = Response::block(&query, &BlockMode::null_ip(), 60, Some(&edns));
+        let (_, _, _, opt_rdata) = read_opt_rr(&resp).expect("OPT must be in response");
+
+        assert!(
+            opt_rdata.is_empty(),
+            "invalid COOKIE option data must not be reflected"
+        );
     }
 
     #[test]
