@@ -131,6 +131,15 @@ pub trait AdminUserRepository {
     /// The `username` column is UNIQUE; inserting a duplicate surfaces as
     /// [`Error::Sqlx`].
     async fn create(&self, username: &str, password_hash: &str) -> Result<AdminUser>;
+
+    /// Create the initial admin user only if the table is still empty.
+    ///
+    /// Returns `Ok(None)` if another setup request created an admin first.
+    async fn create_initial(
+        &self,
+        username: &str,
+        password_hash: &str,
+    ) -> Result<Option<AdminUser>>;
 }
 
 // ── SqliteAdminUserRepo ─────────────────────────────────────────────────────
@@ -196,6 +205,32 @@ impl AdminUserRepository for SqliteAdminUserRepo {
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
+    }
+
+    async fn create_initial(
+        &self,
+        username: &str,
+        password_hash: &str,
+    ) -> Result<Option<AdminUser>> {
+        let row = sqlx::query_as!(
+            AdminUserRow,
+            r#"INSERT INTO admin_users (username, password_hash, role)
+            SELECT ?, ?, 'admin'
+            WHERE NOT EXISTS (SELECT 1 FROM admin_users)
+            RETURNING
+                id            AS "id!",
+                username,
+                password_hash,
+                role,
+                created_at    AS "created_at!",
+                updated_at    AS "updated_at!""#,
+            username,
+            password_hash,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(AdminUser::try_from).transpose()
     }
 }
 
@@ -269,6 +304,31 @@ mod tests {
         assert!(
             matches!(err, Err(Error::Sqlx(_))),
             "duplicate username must surface as Sqlx error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_initial_only_inserts_when_table_is_empty() {
+        let (_dir, repo) = open_repo().await;
+
+        let first = repo
+            .create_initial("admin", "$h1")
+            .await
+            .expect("create initial")
+            .expect("first setup should insert");
+        let second = repo
+            .create_initial("other", "$h2")
+            .await
+            .expect("second create initial");
+
+        assert_eq!(first.username, "admin");
+        assert!(second.is_none(), "second setup must not insert");
+        assert_eq!(repo.count().await.expect("count"), 1);
+        assert!(
+            repo.find_by_username("other")
+                .await
+                .expect("find")
+                .is_none()
         );
     }
 }
