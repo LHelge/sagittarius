@@ -1,10 +1,10 @@
 ---
 id: 7gw
 title: Bound UDP handler fan-out before pipeline middleware
-status: open
+status: done
 priority: P2
 created: 2026-05-30T17:43:47.028730Z
-updated: 2026-05-30T17:43:47.028730Z
+updated: 2026-05-30T17:53:10.916820Z
 tags:
 - review
 - dns
