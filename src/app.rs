@@ -47,6 +47,22 @@ use crate::{
 /// up and returning anyway.
 pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
+// ── RuntimeAddrs ────────────────────────────────────────────────────────────────
+
+/// The addresses the runtime actually bound, surfaced once every subsystem is
+/// listening.
+///
+/// When the configuration requests an ephemeral port (`:0`) the OS picks the
+/// real port; this struct reports the resolved values so callers — notably the
+/// integration test harness — can reach the live DNS and admin surfaces.
+#[derive(Debug, Clone)]
+pub struct RuntimeAddrs {
+    /// Bound UDP DNS socket addresses (one entry per bound socket).
+    pub dns_udp: Vec<std::net::SocketAddr>,
+    /// Bound admin HTTP server address.
+    pub admin: std::net::SocketAddr,
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 /// The top-level application handle.
@@ -136,7 +152,17 @@ impl App {
     /// The `shutdown` future is how the caller injects the shutdown trigger.
     /// In production [`run`](Self::run) passes the real OS-signal future; in
     /// tests a simple `token.cancelled()` or `async {}` is used instead.
-    async fn run_until_shutdown(self, shutdown: impl Future<Output = ()>) -> Result<()> {
+    ///
+    /// `on_ready` is invoked exactly once with the actually-bound
+    /// [`RuntimeAddrs`] after every subsystem is listening and just before the
+    /// shutdown trigger is awaited. It lets integration tests discover
+    /// OS-chosen ephemeral ports and drive the live DNS and admin surfaces;
+    /// [`run_until_shutdown`](Self::run_until_shutdown) passes a no-op.
+    async fn run_until_ready(
+        self,
+        shutdown: impl Future<Output = ()>,
+        on_ready: impl FnOnce(RuntimeAddrs),
+    ) -> Result<()> {
         // ── Real DNS engine startup ────────────────────────────────────────────
         let db = Db::connect(&self.config.db_path).await?;
         let state = ResolverState::hydrate(&db).await?;
@@ -206,12 +232,16 @@ impl App {
             .map(NonZeroUsize::get)
             .unwrap_or(1);
         let listeners = DnsListeners::bind(&self.config.dns_addrs, udp_sockets_per_addr)?;
+        // Capture the actually-bound UDP addresses before `serve` consumes the
+        // listener set; with `:0` these carry the OS-chosen ports.
+        let dns_udp = listeners.udp_local_addrs();
         listeners.serve(engine, self.shutdown_token.clone(), &self.tracker);
 
         // ── Web admin server ──────────────────────────────────────────────────
         // Bind here (not inside the spawned task) so a bad --admin-addr fails
         // startup, mirroring the DNS listener's bind → serve split.
         let admin = AdminServer::bind(self.config.admin_addr, app_state).await?;
+        let admin_addr = admin.local_addr()?;
 
         // ── Subsystem tasks ───────────────────────────────────────────────────
         self.spawn_subsystem("web-admin", move |token| async move {
@@ -226,12 +256,19 @@ impl App {
         // existing tasks finish.  New tasks cannot be spawned after this point.
         self.tracker.close();
 
-        // Wait for the shutdown trigger.
+        // All subsystems are bound and serving — log the resolved addresses and
+        // hand them to the readiness seam before blocking on the trigger.
         info!(
-            dns_addrs = ?self.config.dns_addrs,
-            admin_addr = %self.config.admin_addr,
+            dns_addrs = ?dns_udp,
+            admin_addr = %admin_addr,
             "runtime ready, awaiting shutdown signal",
         );
+        on_ready(RuntimeAddrs {
+            dns_udp,
+            admin: admin_addr,
+        });
+
+        // Wait for the shutdown trigger.
         shutdown.await;
 
         // Signal all subsystems to stop.
@@ -252,6 +289,14 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Run until `shutdown` resolves, discarding the readiness addresses.
+    ///
+    /// Thin wrapper over [`run_until_ready`](Self::run_until_ready) for callers
+    /// and tests that don't need the bound addresses.
+    async fn run_until_shutdown(self, shutdown: impl Future<Output = ()>) -> Result<()> {
+        self.run_until_ready(shutdown, |_| {}).await
     }
 
     /// Run the application to completion.
@@ -442,5 +487,130 @@ mod tests {
             elapsed < Duration::from_secs(5),
             "should not have waited for the rogue task, waited {elapsed:?}"
         );
+    }
+
+    // ── Full-stack assembly (E9.1 capstone) ───────────────────────────────
+    //
+    // Prove the assembled binary brings up all three subsystems together and,
+    // *before any admin account exists*, the first-run wizard is reachable over
+    // HTTP **and** the DNS listener answers a query authoritatively. The query
+    // targets a seeded local record so the assertion needs no upstream/network.
+
+    #[tokio::test]
+    async fn full_stack_serves_dns_and_wizard_before_admin_exists() {
+        use tokio::net::UdpSocket;
+        use tokio::sync::oneshot;
+
+        use crate::codec::{header::Header, name::Name, writer::Writer};
+        use crate::storage::local_records::{
+            LocalRecordRepository, NewLocalRecord, RecordType, SqliteLocalRecordRepo,
+        };
+
+        // Seed a local A record so DNS can answer with no upstream/network.
+        let dir = TempDir::new().expect("temp dir");
+        let db_path = dir.path().join("test.db");
+        let db = Db::connect(&db_path).await.expect("create db");
+        SqliteLocalRecordRepo::new(db.pool().clone())
+            .add(NewLocalRecord {
+                name: "router.home.lan".to_string(),
+                record_type: RecordType::A,
+                value: "192.168.1.1".to_string(),
+                ttl: 300,
+            })
+            .await
+            .expect("seed local record");
+        drop(db);
+
+        let config = Config {
+            dns_addrs: vec!["127.0.0.1:0".parse::<SocketAddr>().unwrap()],
+            admin_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            db_path,
+            session_cookie_secure: SessionCookieSecurePolicy::Never,
+        };
+
+        // Launch the fully-assembled App on a background task; the readiness
+        // seam hands back the OS-chosen ephemeral ports.
+        let app = App::new(config).with_drain_timeout(Duration::from_secs(2));
+        let (ready_tx, ready_rx) = oneshot::channel::<RuntimeAddrs>();
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            app.run_until_ready(
+                async move {
+                    let _ = stop_rx.await;
+                },
+                move |addrs| {
+                    let _ = ready_tx.send(addrs);
+                },
+            )
+            .await
+        });
+
+        let addrs = timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .expect("startup within 5s")
+            .expect("ready signal");
+
+        // 1) First-run wizard is reachable while admin_users is empty.
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let base = format!("http://{}", addrs.admin);
+
+        let root = client.get(format!("{base}/")).send().await.expect("GET /");
+        assert_eq!(root.status(), 303, "root redirects while no admin exists");
+        assert_eq!(root.headers().get("location").unwrap(), "/setup");
+
+        let setup = client
+            .get(format!("{base}/setup"))
+            .send()
+            .await
+            .expect("GET /setup");
+        assert_eq!(setup.status(), 200, "wizard must render");
+        assert!(
+            setup.text().await.unwrap().contains("Welcome"),
+            "wizard page content",
+        );
+
+        // 2) DNS answers the seeded local record authoritatively.
+        let server = addrs.dns_udp[0];
+        let sock = UdpSocket::bind("127.0.0.1:0").await.expect("client socket");
+        sock.connect(server).await.expect("connect");
+
+        let mut w = Writer::with_capacity(64);
+        Header::new(0xBEEF)
+            .with_qdcount(1)
+            .with_rd(true)
+            .write(&mut w);
+        let qname: Name = "router.home.lan.".parse().expect("name");
+        qname.write(&mut w);
+        w.write_u16(1u16); // QTYPE A
+        w.write_u16(1u16); // QCLASS IN
+        sock.send(&w.finish()).await.expect("send query");
+
+        let mut buf = vec![0u8; 512];
+        let n = timeout(Duration::from_secs(5), sock.recv(&mut buf))
+            .await
+            .expect("response within 5s")
+            .expect("recv");
+        let resp = &buf[..n];
+
+        assert_eq!(u16::from_be_bytes([resp[0], resp[1]]), 0xBEEF, "txn id");
+        assert_ne!(resp[2] & 0x80, 0, "QR bit must be set (response)");
+        assert_eq!(resp[3] & 0x0f, 0, "RCODE must be NOERROR");
+        let ancount = u16::from_be_bytes([resp[6], resp[7]]);
+        assert!(ancount >= 1, "at least one answer record");
+        assert!(
+            resp.windows(4).any(|bytes| bytes == [192, 168, 1, 1]),
+            "answer must carry the seeded A address",
+        );
+
+        // Clean shutdown drains every subsystem and exits Ok.
+        let _ = stop_tx.send(());
+        let result = timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("App shuts down within 5s")
+            .expect("join");
+        assert!(result.is_ok());
     }
 }

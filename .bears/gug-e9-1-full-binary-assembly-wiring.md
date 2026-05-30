@@ -1,10 +1,10 @@
 ---
 id: gug
 title: E9.1 · Full binary assembly & wiring
-status: open
+status: done
 priority: P2
 created: 2026-05-29T08:05:03.686206455Z
-updated: 2026-05-29T08:21:06.272974327Z
+updated: 2026-05-30T13:13:24.489299197Z
 tags:
 - integration
 depends_on:
