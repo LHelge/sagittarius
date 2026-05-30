@@ -1,0 +1,19 @@
+# Example Caddy reverse-proxy config for the Sagittarius admin UI.
+#
+# Sagittarius serves the admin interface as plain HTTP on loopback; Caddy
+# terminates TLS (automatic Let's Encrypt certificates) and forwards to it.
+# Run with: caddy run --config deploy/Caddyfile
+#
+# Security note (SPEC §9, §11): the forwarded scheme/host headers below are
+# trusted for the secure-cookie `auto` decision and CSRF origin checks, so
+# Sagittarius must only ever be reachable *through* this proxy — never exposed
+# directly on a public interface.
+
+dns.example.com {
+	# Forward to the loopback admin address from sagittarius.service.
+	reverse_proxy 127.0.0.1:8080
+
+	# Optional: restrict the admin UI to your LAN / VPN range.
+	# @blocked not remote_ip 192.168.0.0/16 10.0.0.0/8
+	# respond @blocked "Forbidden" 403
+}

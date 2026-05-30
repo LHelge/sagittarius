@@ -379,6 +379,18 @@ the blocklist set are matched as exact domains (a single `HashSet` lookup).
 Subdomain / parent-label blocking is future scope — it is the feature that would
 motivate the reversed-label trie noted in §3.1 (§12).
 
+**Response codes.** Beyond the synthesized block answers above (`NXDOMAIN` /
+null-IP / custom, per the configured block mode) and authoritative local
+`NODATA`, the pipeline maps failure conditions to standard RCODEs:
+
+- **`FORMERR`** — a malformed but recoverable query (e.g. `QDCOUNT != 1` or a
+  compression pointer in the question) whose transaction ID could still be read.
+- **`REFUSED`** — load-shed by the protective `tower` layers: per-client rate
+  limiting (§11) or backpressure rejection.
+- **`SERVFAIL`** — the inner resolver could not produce an answer: the per-query
+  timeout elapsed or every upstream in the failover budget failed (§7).
+  `SERVFAIL` responses are not cached.
+
 ---
 
 ## 6. Blocklists
@@ -414,6 +426,9 @@ motivate the reversed-label trie noted in §3.1 (§12).
   transport details; the receive-side codec remains custom (§2.1).
 - Default seeded upstreams are Cloudflare `1.1.1.1` / `1.0.0.1` (§4), changeable
   via the admin UI.
+- **No DNSSEC in v0.1.** Forwarded queries set the EDNS `DO` bit to `0`
+  (`edns_set_dnssec_ok = false`); Sagittarius does not request or validate
+  DNSSEC records. Validation is future scope (§12).
 
 ---
 
@@ -430,8 +445,8 @@ motivate the reversed-label trie noted in §3.1 (§12).
   the **TTL fields** at the recorded offsets (decremented by elapsed time). No
   parse, no allocation, no re-serialization.
 - Caches both **positive** answers and **negative** responses (`NXDOMAIN` /
-  `NODATA`) using the SOA-derived negative TTL where available; SOA-less
-  negative responses are served but not cached.
+  `NODATA`) using the SOA-derived negative TTL ([RFC 2308](https://www.rfc-editor.org/rfc/rfc2308))
+  where available; SOA-less negative responses are served but not cached.
 - Keyed by `(qname, qtype, qclass)`.
 - Bounded by a configurable maximum size; eviction handled by `moka`.
 
