@@ -8,13 +8,16 @@
 //!
 //! Scalar counters use [`std::sync::atomic::AtomicU64`] with `Relaxed` ordering
 //! (counter increments do not need to synchronise with other memory accesses;
-//! only eventual visibility is required).  Per-domain and per-client maps use
-//! `std::sync::Mutex<HashMap<…>>` — correctness over lock-free in v0.1.
+//! only eventual visibility is required).  Per-domain and per-client top-N
+//! accumulators are sharded and capacity-bounded to keep the DNS hot path from
+//! contending on one global lock or growing without limit.
 //!
 //! [`Stats`] is `Send + Sync` and intended to be shared via [`std::sync::Arc`].
 
 use std::{
     collections::HashMap,
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     net::IpAddr,
     sync::{
         Mutex,
@@ -24,6 +27,10 @@ use std::{
 
 use super::event::QueryEvent;
 use crate::resolver::pipeline::Outcome;
+
+const STATS_SHARDS: usize = 16;
+const MAX_TRACKED_DOMAINS: usize = 4096;
+const MAX_TRACKED_CLIENTS: usize = 2048;
 
 // ── StatsSnapshot ─────────────────────────────────────────────────────────────
 
@@ -59,9 +66,9 @@ pub struct Stats {
     cached: AtomicU64,
     forwarded: AtomicU64,
     /// Per-domain query count (keyed by the FQDN string).
-    domains: Mutex<HashMap<String, u64>>,
+    domains: ShardedCounts<String>,
     /// Per-client IP query count.
-    clients: Mutex<HashMap<IpAddr, u64>>,
+    clients: ShardedCounts<IpAddr>,
 }
 
 impl Stats {
@@ -72,8 +79,8 @@ impl Stats {
             blocked: AtomicU64::new(0),
             cached: AtomicU64::new(0),
             forwarded: AtomicU64::new(0),
-            domains: Mutex::new(HashMap::new()),
-            clients: Mutex::new(HashMap::new()),
+            domains: ShardedCounts::new(MAX_TRACKED_DOMAINS),
+            clients: ShardedCounts::new(MAX_TRACKED_CLIENTS),
         }
     }
 
@@ -99,17 +106,8 @@ impl Stats {
             _ => {}
         }
 
-        // Per-domain map.
-        {
-            let mut map = self.domains.lock().expect("domains mutex poisoned");
-            *map.entry(event.qname.to_string()).or_insert(0) += 1;
-        }
-
-        // Per-client map.
-        {
-            let mut map = self.clients.lock().expect("clients mutex poisoned");
-            *map.entry(event.client.ip()).or_insert(0) += 1;
-        }
+        self.domains.record(event.qname.to_string());
+        self.clients.record(event.client.ip());
     }
 
     /// Take a point-in-time snapshot of the counters and top-N lists.
@@ -133,23 +131,15 @@ impl Stats {
             blocked as f64 / total as f64
         };
 
-        let top_domains = {
-            let map = self.domains.lock().expect("domains mutex poisoned");
-            let mut pairs: Vec<(String, u64)> = map.iter().map(|(k, &v)| (k.clone(), v)).collect();
-            // Sort: primary = descending count; secondary = ascending name (deterministic).
-            pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            pairs.truncate(top_n);
-            pairs
-        };
+        let mut top_domains = self.domains.snapshot();
+        // Sort: primary = descending count; secondary = ascending name (deterministic).
+        top_domains.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top_domains.truncate(top_n);
 
-        let top_clients = {
-            let map = self.clients.lock().expect("clients mutex poisoned");
-            let mut pairs: Vec<(IpAddr, u64)> = map.iter().map(|(k, &v)| (*k, v)).collect();
-            // Sort: primary = descending count; secondary = ascending IP (deterministic).
-            pairs.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            pairs.truncate(top_n);
-            pairs
-        };
+        let mut top_clients = self.clients.snapshot();
+        // Sort: primary = descending count; secondary = ascending IP (deterministic).
+        top_clients.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top_clients.truncate(top_n);
 
         StatsSnapshot {
             total,
@@ -160,6 +150,62 @@ impl Stats {
             top_domains,
             top_clients,
         }
+    }
+}
+
+struct ShardedCounts<K> {
+    shards: Vec<Mutex<HashMap<K, u64>>>,
+    max_per_shard: usize,
+}
+
+impl<K> ShardedCounts<K>
+where
+    K: Clone + Eq + Hash,
+{
+    fn new(max_entries: usize) -> Self {
+        let max_per_shard = (max_entries / STATS_SHARDS).max(1);
+        let shards = (0..STATS_SHARDS)
+            .map(|_| Mutex::new(HashMap::with_capacity(max_per_shard)))
+            .collect();
+
+        Self {
+            shards,
+            max_per_shard,
+        }
+    }
+
+    fn record(&self, key: K) {
+        let shard = self.shard_for(&key);
+        let mut map = self.shards[shard]
+            .lock()
+            .expect("stats shard mutex poisoned");
+
+        if let Some(count) = map.get_mut(&key) {
+            *count += 1;
+            return;
+        }
+
+        if map.len() < self.max_per_shard {
+            map.insert(key, 1);
+        }
+    }
+
+    fn snapshot(&self) -> Vec<(K, u64)> {
+        self.shards
+            .iter()
+            .flat_map(|shard| {
+                let map = shard.lock().expect("stats shard mutex poisoned");
+                map.iter()
+                    .map(|(key, &count)| (key.clone(), count))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn shard_for(&self, key: &K) -> usize {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % self.shards.len()
     }
 }
 
@@ -330,5 +376,27 @@ mod tests {
         // "apple.test." sorts before "zebra.test." when counts are equal.
         assert_eq!(snap.top_domains[0].0, "apple.test.");
         assert_eq!(snap.top_domains[1].0, "zebra.test.");
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct SameShard(&'static str);
+
+    impl Hash for SameShard {
+        fn hash<H: Hasher>(&self, state: &mut H) {
+            0u8.hash(state);
+        }
+    }
+
+    #[test]
+    fn sharded_counts_are_bounded_but_keep_existing_keys() {
+        let counts = ShardedCounts::new(1);
+
+        counts.record(SameShard("first"));
+        counts.record(SameShard("second"));
+        counts.record(SameShard("first"));
+
+        let snapshot = counts.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0], (SameShard("first"), 2));
     }
 }
