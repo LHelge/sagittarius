@@ -546,7 +546,12 @@ null-IP / custom, per the configured block mode) and authoritative local
   granted capability (`CAP_NET_BIND_SERVICE` on Linux); the listen port is
   configurable for unprivileged setups.
 - **Process management.** Intended to run under systemd (or a container) as a
-  long-lived service.
+  long-lived service. Example deployment files ship in `deploy/` (a hardened
+  systemd unit, a Caddy reverse-proxy snippet, and a Docker Compose file).
+- **Distribution.** Tagged releases publish prebuilt Linux `x86_64`/`aarch64`
+  binaries (GitHub Releases), the `sagittarius` crate (crates.io, for
+  `cargo install`), and a multi-arch container image
+  (`ghcr.io/lhelge/sagittarius`). See `RELEASING.md`.
 - **Graceful shutdown.** On `SIGTERM`/`SIGINT` the process stops accepting new
   queries, lets in-flight ones drain within a bounded timeout, and closes the
   SQLite connection cleanly before exiting.
