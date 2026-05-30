@@ -18,7 +18,7 @@ use axum::{extract::State, response::IntoResponse};
 
 use crate::{
     telemetry::StatsSnapshot,
-    web::{AppState, Chrome, auth::CurrentUser},
+    web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay},
 };
 
 /// How many entries to show in the top-domains / top-clients tables.
@@ -67,7 +67,7 @@ impl DashboardTemplate {
             top_domains: snap
                 .top_domains
                 .into_iter()
-                .map(|(d, c)| (d, group(c)))
+                .map(|(d, c)| (d.display_domain().to_owned(), group(c)))
                 .collect(),
             top_clients: snap
                 .top_clients
@@ -133,8 +133,9 @@ mod tests {
         assert!(html.contains("blocked: 382"));
         // Blocklist size is server-formatted.
         assert!(html.contains("65,432"));
-        // Top tables rendered.
-        assert!(html.contains("ads.example.com."));
+        // Top tables rendered without the canonical trailing dot.
+        assert!(html.contains("ads.example.com"));
+        assert!(!html.contains("ads.example.com."));
         assert!(html.contains("192.168.1.10"));
     }
 }

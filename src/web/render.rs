@@ -104,6 +104,28 @@ fn error_page(status: StatusCode, heading: &str, detail: &str) -> String {
     )
 }
 
+/// Presentation helper for domain names shown in the admin UI.
+///
+/// Internally domains are kept in their canonical, fully-qualified form with a
+/// trailing dot (the [`Name`](crate::codec::name::Name) normalization).  That
+/// form is unconventional to show to a human, so the web layer strips the
+/// trailing dot at the display boundary while leaving the stored value intact.
+pub(crate) trait DomainDisplay {
+    /// The domain without its canonical trailing dot, for human-facing display.
+    ///
+    /// The root zone (`"."`) is returned unchanged so it never renders blank.
+    fn display_domain(&self) -> &str;
+}
+
+impl DomainDisplay for str {
+    fn display_domain(&self) -> &str {
+        match self.strip_suffix('.') {
+            Some(stripped) if !stripped.is_empty() => stripped,
+            _ => self,
+        }
+    }
+}
+
 /// Minimal HTML-escaping for the few interpolated strings on the error page
 /// and in dynamically-built fragments (e.g. the toast).
 pub(crate) fn html_escape(s: &str) -> String {
@@ -126,6 +148,15 @@ pub(crate) fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_domain_strips_trailing_dot() {
+        assert_eq!("ads.example.com.".display_domain(), "ads.example.com");
+        // Already bare (or never normalized) names are untouched.
+        assert_eq!("router.home.lan".display_domain(), "router.home.lan");
+        // The root zone stays visible rather than rendering blank.
+        assert_eq!(".".display_domain(), ".");
+    }
 
     #[test]
     fn html_escape_escapes_metacharacters() {

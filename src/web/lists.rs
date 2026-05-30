@@ -34,7 +34,12 @@ use crate::{
     storage::lists::{
         AllowlistRepository, BlacklistRepository, SqliteAllowlistRepo, SqliteBlacklistRepo,
     },
-    web::{AppState, auth::CurrentUser, live_log::ActionButton, render::WebError},
+    web::{
+        AppState,
+        auth::CurrentUser,
+        live_log::ActionButton,
+        render::{DomainDisplay, WebError},
+    },
 };
 
 impl AppState {
@@ -105,7 +110,7 @@ impl AppState {
                 &q,
                 format!(
                     "Added {} to the allowlist — it resolves on the next query.",
-                    q.domain
+                    q.domain.display_domain()
                 ),
             ),
             Err(e) => e.into_response(),
@@ -123,7 +128,7 @@ impl AppState {
                 "allow",
                 false,
                 &q,
-                format!("Removed {} from the allowlist.", q.domain),
+                format!("Removed {} from the allowlist.", q.domain.display_domain()),
             ),
             Err(e) => e.into_response(),
         }
@@ -142,7 +147,7 @@ impl AppState {
                 &q,
                 format!(
                     "Added {} to the blacklist — it is blocked on the next query.",
-                    q.domain
+                    q.domain.display_domain()
                 ),
             ),
             Err(e) => e.into_response(),
@@ -160,7 +165,7 @@ impl AppState {
                 "deny",
                 false,
                 &q,
-                format!("Removed {} from the blacklist.", q.domain),
+                format!("Removed {} from the blacklist.", q.domain.display_domain()),
             ),
             Err(e) => e.into_response(),
         }
@@ -221,7 +226,12 @@ impl AppState {
                     .await?
             }
         };
-        Ok(entries.into_iter().map(|e| e.domain).collect())
+        // Show (and round-trip on remove) the bare domain; the stored value keeps
+        // its canonical trailing dot.
+        Ok(entries
+            .into_iter()
+            .map(|e| e.domain.display_domain().to_owned())
+            .collect())
     }
 
     async fn list_add(&self, kind: ListKind, domain: &str) -> Result<(), WebError> {

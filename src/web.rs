@@ -962,7 +962,7 @@ mod tests {
         assert_eq!(r.headers().get("location").unwrap(), "/blacklist");
         assert!(app.resolver.blacklist().contains(&dom));
 
-        // The page lists the entry.
+        // The page lists the entry, shown without the canonical trailing dot.
         let page = client
             .get(format!("{base}/blacklist"))
             .header("cookie", &cookie)
@@ -972,7 +972,8 @@ mod tests {
             .text()
             .await
             .unwrap();
-        assert!(page.contains("ads.example.com."));
+        assert!(page.contains("ads.example.com"));
+        assert!(!page.contains("ads.example.com."));
 
         // A form missing the CSRF token is rejected.
         let r = client
