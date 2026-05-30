@@ -1,0 +1,82 @@
+name: Fuzz
+
+# Continuous fuzzing of the hand-rolled DNS codec. Each push and PR runs a short
+# time-boxed session per target so regressions in the untrusted-input parsers
+# surface quickly; the corpus is cached so coverage compounds across runs.
+#
+# For a longer ad-hoc run, trigger this workflow manually (Actions -> Fuzz ->
+# "Run workflow") and override the per-target duration.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Seconds to fuzz each target"
+        required: false
+        default: "60"
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't let one target's crash cancel the other — we want both signals.
+      fail-fast: false
+      matrix:
+        target: [parse, parse_structured]
+    env:
+      # The fuzz crate pulls in the full `sagittarius` crate, which has
+      # compile-time sqlx queries; build against the committed .sqlx/ cache.
+      SQLX_OFFLINE: "true"
+      # Per-target budget. Overridable via workflow_dispatch; 60s on push/PR.
+      FUZZ_SECONDS: ${{ github.event.inputs.duration || '60' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # libfuzzer-sys requires nightly (sanitizer + coverage instrumentation).
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      # Cache the isolated fuzz workspace's build artifacts (fuzz/target).
+      - name: Cache cargo + fuzz build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      # Restore the most recent corpus for this target so coverage compounds.
+      # The run_id in the key makes every run save a fresh, growing entry.
+      - name: Restore fuzz corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      # Seed from the committed wire-format fixtures without clobbering any
+      # corpus entries restored from cache (-n = no-clobber).
+      - name: Seed corpus from committed fixtures
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          cp -n fixtures/*.bin "fuzz/corpus/${{ matrix.target }}/"
+
+      - name: Run fuzzer for ${{ env.FUZZ_SECONDS }}s
+        run: cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time="${FUZZ_SECONDS}"
+
+      # On a crash, libFuzzer writes the reproducer under fuzz/artifacts/<target>.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

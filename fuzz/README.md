@@ -81,11 +81,17 @@ cargo +nightly fuzz run parse fuzz/artifacts/parse/crash-<hash>
 
 ## CI integration
 
-Running the fuzzer in CI (e.g. GitHub Actions) is optional/forward-looking.
-A typical setup runs each target for a fixed time budget (e.g. 60–300 s) on
-nightly, then uploads the corpus as a CI artifact.
+Continuous fuzzing runs in `.github/workflows/fuzz.yml` on every push to `main`
+and every pull request. A matrix job fuzzes each target for a short time budget
+(60 s by default) on nightly, seeding from the committed `fixtures/` and caching
+`fuzz/corpus/<target>/` so coverage **compounds across runs**. A crash fails the
+job and uploads the reproducer from `fuzz/artifacts/<target>/` as a CI artifact.
+
+For a longer ad-hoc run, trigger the workflow manually (Actions → Fuzz → "Run
+workflow") and override the per-target `duration` input.
 
 The build isolation guarantee (the `[workspace]` table in `Cargo.toml`) means
+this nightly/libfuzzer job is fully separate from the stable `CI` workflow —
 adding this crate does **not** break stable CI.
 
 ## Stability on stable Rust
