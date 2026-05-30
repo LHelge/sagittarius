@@ -7,6 +7,8 @@
 //! A normalized, validated domain name.  Normalization is:
 //! - ASCII letters are lowercased (DNS names are case-insensitive, RFC 4343).
 //! - A trailing dot (root label) is always present in the canonical form.
+//! - Labels use Sagittarius' supported domain syntax: ASCII letters, digits,
+//!   and interior hyphens.
 //!
 //! So `"Example.COM"` and `"example.com."` both normalize to `"example.com."`.
 //! The [`Display`] representation is the fully-qualified form with trailing dot.
@@ -183,8 +185,10 @@ impl Name {
                 return Err(Error::NameTooLong(wire_len));
             }
 
-            // Read the label bytes and append to the normalized string.
+            // Read the label bytes, validate supported domain syntax, and append
+            // to the normalized string.
             let label_bytes = reader.read_slice(label_len)?;
+            Self::validate_label(label_bytes.as_ref())?;
             for &b in label_bytes.iter() {
                 normalized.push(b.to_ascii_lowercase() as char);
             }
@@ -473,6 +477,7 @@ impl FromStr for Name {
             if label_len > MAX_LABEL_LEN {
                 return Err(Error::LabelTooLong(label_len));
             }
+            Self::validate_label(label.as_bytes())?;
 
             wire_len = wire_len
                 .checked_add(1 + label_len)
@@ -488,6 +493,22 @@ impl FromStr for Name {
         }
 
         Ok(Self::from_normalized(normalized))
+    }
+}
+
+impl Name {
+    fn validate_label(label: &[u8]) -> Result<(), Error> {
+        if label.first() == Some(&b'-') || label.last() == Some(&b'-') {
+            return Err(Error::InvalidLabelByte(b'-'));
+        }
+
+        for &b in label {
+            if !(b.is_ascii_alphanumeric() || b == b'-') {
+                return Err(Error::InvalidLabelByte(b));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -637,6 +658,33 @@ mod tests {
         assert!(matches!(err, Error::EmptyLabel), "unexpected error: {err}");
     }
 
+    #[test]
+    fn non_ascii_from_str_is_error() {
+        let err = Name::from_str("münchen.example").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidLabelByte(_)),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn underscore_from_str_is_error() {
+        let err = Name::from_str("_service.example").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidLabelByte(b'_')),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn edge_hyphen_from_str_is_error() {
+        let leading = Name::from_str("-bad.example").unwrap_err();
+        let trailing = Name::from_str("bad-.example").unwrap_err();
+
+        assert!(matches!(leading, Error::InvalidLabelByte(b'-')));
+        assert!(matches!(trailing, Error::InvalidLabelByte(b'-')));
+    }
+
     // ── Wire round-trip ───────────────────────────────────────────────────────
 
     #[test]
@@ -688,6 +736,26 @@ mod tests {
         let mut r = Reader::new(wire);
         let decoded = Name::read_question(&mut r).unwrap();
         assert_eq!(decoded.to_string(), "upper.case.");
+    }
+
+    #[test]
+    fn wire_non_ascii_label_byte_is_error() {
+        let mut r = reader_from(&[0x01, 0xFF, 0x00]);
+        let err = Name::read_question(&mut r).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidLabelByte(0xFF)),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn wire_underscore_label_byte_is_error() {
+        let mut r = reader_from(&[0x04, b'_', b's', b'v', b'c', 0x00]);
+        let err = Name::read_question(&mut r).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidLabelByte(b'_')),
+            "unexpected error: {err}"
+        );
     }
 
     // ── Compression pointer in question → error ───────────────────────────────
