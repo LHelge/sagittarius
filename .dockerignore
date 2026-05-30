@@ -1,0 +1,4 @@
+# The image only consumes prebuilt binaries staged under binaries/; keep the
+# build context tiny and reproducible.
+*
+!binaries/

@@ -1,10 +1,10 @@
 ---
 id: prt
 title: E9.7 · Multi-arch Docker image → ghcr.io
-status: open
+status: done
 priority: P2
 created: 2026-05-30T13:09:44.258449197Z
-updated: 2026-05-30T13:09:44.258449197Z
+updated: 2026-05-30T13:59:29.360745294Z
 tags:
 - release
 - ci
