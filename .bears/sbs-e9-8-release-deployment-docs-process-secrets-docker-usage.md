@@ -1,10 +1,10 @@
 ---
 id: sbs
 title: E9.8 · Release & deployment docs (process, secrets, Docker usage)
-status: open
+status: done
 priority: P2
 created: 2026-05-30T13:09:48.698678287Z
-updated: 2026-05-30T13:09:48.698678287Z
+updated: 2026-05-30T14:01:13.035927887Z
 tags:
 - release
 - docs

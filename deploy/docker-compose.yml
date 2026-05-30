@@ -1,0 +1,21 @@
+# Example Docker Compose deployment for Sagittarius.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# The image runs as root so it can bind port 53 inside the container; the host
+# isolates it. The admin UI is published on loopback only — front it with a
+# reverse proxy (see deploy/Caddyfile) for TLS / remote access.
+services:
+  sagittarius:
+    image: ghcr.io/lhelge/sagittarius:latest
+    container_name: sagittarius
+    restart: unless-stopped
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - sagittarius-data:/data
+
+volumes:
+  sagittarius-data:

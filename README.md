@@ -61,6 +61,34 @@ milestone.
 
 The full design is documented in [`SPEC.md`](SPEC.md).
 
+## Install
+
+Pick whichever fits; all three give the same single binary.
+
+**Prebuilt binary.** Download a Linux `x86_64` or `aarch64` tarball from the
+[latest release](https://github.com/LHelge/sagittarius/releases/latest), verify
+its `.sha256`, unpack, and run `./sagittarius`.
+
+**From crates.io.**
+
+```sh
+cargo install sagittarius
+```
+
+**Docker** (multi-arch `amd64` / `arm64`, published to GHCR):
+
+```sh
+docker run -d --name sagittarius \
+  -p 53:53/udp -p 53:53/tcp \
+  -p 127.0.0.1:8080:8080 \
+  -v sagittarius-data:/data \
+  ghcr.io/lhelge/sagittarius:latest
+```
+
+The admin UI is published on loopback above; front it with a reverse proxy for
+remote access. A ready-made Compose file is at
+[`deploy/docker-compose.yml`](deploy/docker-compose.yml).
+
 ## Building
 
 Requires a recent Rust toolchain (edition 2024).

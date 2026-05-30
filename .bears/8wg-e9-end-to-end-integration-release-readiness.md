@@ -2,10 +2,10 @@
 id: 8wg
 title: E9 · End-to-end integration & release readiness
 type: epic
-status: open
+status: done
 priority: P2
 created: 2026-05-28T22:38:41.470521457Z
-updated: 2026-05-28T22:44:50.972615424Z
+updated: 2026-05-30T14:01:13.036100725Z
 tags:
 - integration
 depends_on:
