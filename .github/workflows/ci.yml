@@ -68,3 +68,25 @@ jobs:
 
       - name: Verify .sqlx offline cache is current
         run: cargo sqlx prepare --check -- --all-targets
+
+  package:
+    name: crate packages cleanly
+    runs-on: ubuntu-latest
+    # Catch packaging regressions (missing migrations / embedded assets /
+    # license files, or a crate that won't build from its packaged tarball)
+    # on every PR, long before a release tag triggers the real publish.
+    env:
+      SQLX_OFFLINE: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Dry-run publish
+        run: cargo publish --dry-run --locked

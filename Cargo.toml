@@ -5,7 +5,10 @@ edition = "2024"
 description = "A fast, self-hosted DNS sinkhole in a single Rust binary"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/LHelge/sagittarius"
+homepage = "https://github.com/LHelge/sagittarius"
 readme = "README.md"
+keywords = ["dns", "sinkhole", "adblock", "pi-hole", "resolver"]
+categories = ["network-programming", "command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.102"
