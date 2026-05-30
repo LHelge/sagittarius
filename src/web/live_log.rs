@@ -44,7 +44,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::{
     resolver::pipeline::Outcome,
     telemetry::{QueryEvent, Stats},
-    web::{AppState, Chrome, auth::CurrentUser},
+    web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay},
 };
 
 impl AppState {
@@ -154,7 +154,8 @@ static ROW_SEQ: AtomicU64 = AtomicU64::new(0);
 impl LogRowView {
     fn from_event(ev: &QueryEvent) -> Self {
         let (cat, class) = categorize(ev.outcome);
-        let qname = ev.qname.to_string();
+        // Display the bare domain; the canonical trailing dot stays internal.
+        let qname = ev.qname.to_string().display_domain().to_owned();
         let client = ev.client.ip().to_string();
         let search = format!("{} {}", qname.to_lowercase(), client);
         let action_kind = if ev.outcome.offers_whitelist() {
@@ -238,7 +239,9 @@ mod tests {
         let html = LogRowView::from_event(&event("ads.example.com", Outcome::BlockedByBlocklist))
             .render()
             .expect("render row");
-        assert!(html.contains("ads.example.com."));
+        // Displayed without the canonical trailing dot.
+        assert!(html.contains("ads.example.com"));
+        assert!(!html.contains("ads.example.com."));
         assert!(html.contains("192.168.1.5"));
         assert!(html.contains("sgt-badge--blocked"));
         // Carries the filter category and the data-show expression.
@@ -247,7 +250,7 @@ mod tests {
         assert!(html.contains("7 ms"));
         // A blocklist-blocked row offers the one-click Whitelist action.
         assert!(html.contains("Whitelist"));
-        assert!(html.contains("/log/whitelist?domain=ads.example.com."));
+        assert!(html.contains("/log/whitelist?domain=ads.example.com&amp;"));
     }
 
     #[test]
@@ -257,7 +260,7 @@ mod tests {
             .render()
             .unwrap();
         assert!(cached.contains("Blacklist"));
-        assert!(cached.contains("/log/blacklist?domain=good.example.com."));
+        assert!(cached.contains("/log/blacklist?domain=good.example.com&amp;"));
 
         // Admin-blocked and local rows offer no one-click action.
         for o in [
