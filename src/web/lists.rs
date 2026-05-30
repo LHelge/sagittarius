@@ -7,14 +7,15 @@
 //! [`ResolverState`](crate::resolver::state::ResolverState) (E4.4), so the
 //! change takes effect on the very next query.
 //!
-//! E8.7 wires the **one-click** actions from the live query log:
-//! - a blocklist-blocked row offers *Whitelist* (add to the allowlist),
-//! - a forwarded/cached resolved row offers *Blacklist* (add to the admin
-//!   blacklist).
-//!
-//! Rows whose outcome would make the action ineffective (admin-blacklist blocks,
-//! local answers) do not render an action — see
-//! [`Outcome`](crate::resolver::pipeline::Outcome).
+//! The **one-click** actions from the live query log are keyed purely on each
+//! row's [`Outcome`](crate::resolver::pipeline::Outcome) (not on the domain's
+//! current list membership):
+//! - a resolved row (cached/forwarded) offers *Block* (add to the admin
+//!   blacklist),
+//! - a blocked row offers *Unblock* — [`AppState::unblock`] removes it from the
+//!   admin blacklist if present, otherwise allowlists it to suppress a blocklist
+//!   hit,
+//! - every other outcome (local answers, errors) renders no action.
 //!
 //! The full management screens (add/remove/list pages) build on the same core
 //! helpers in E8.8.
@@ -31,13 +32,13 @@ use datastar::prelude::PatchElements;
 use serde::Deserialize;
 
 use crate::{
+    codec::name::Name,
     storage::lists::{
         AllowlistRepository, BlacklistRepository, SqliteAllowlistRepo, SqliteBlacklistRepo,
     },
     web::{
         AppState,
         auth::CurrentUser,
-        live_log::ActionButton,
         render::{DomainDisplay, WebError},
     },
 };
@@ -95,78 +96,55 @@ impl AppState {
         self.reload_allowlist().await
     }
 
+    /// Make `domain` resolve again.
+    ///
+    /// If it sits on the admin blacklist we remove it; otherwise it was blocked
+    /// by an aggregated blocklist, which the allowlist suppresses.  This keeps a
+    /// single Unblock action correct for both kinds of block.
+    pub(crate) async fn unblock(&self, domain: &str) -> Result<(), WebError> {
+        let on_blacklist = domain
+            .parse::<Name>()
+            .is_ok_and(|n| self.resolver.blacklist().contains(&n));
+        if on_blacklist {
+            self.remove_from_blacklist(domain).await
+        } else {
+            self.add_to_allowlist(domain).await
+        }
+    }
+
     // ── One-click handlers (from the live log) ────────────────────────────────
 
-    /// `POST /log/whitelist?domain=…&row=…` — allowlist a blocklist-blocked domain.
-    pub async fn log_whitelist(
-        _user: CurrentUser,
-        State(state): State<AppState>,
-        Query(q): Query<ActionQuery>,
-    ) -> Response {
-        match state.add_to_allowlist(&q.domain).await {
-            Ok(()) => action_sse(
-                "allow",
-                true,
-                &q,
-                format!(
-                    "Added {} to the allowlist — it resolves on the next query.",
-                    q.domain.display_domain()
-                ),
-            ),
-            Err(e) => e.into_response(),
-        }
-    }
-
-    /// `POST /log/unwhitelist?domain=…&row=…` — remove a domain from the allowlist.
-    pub async fn log_unwhitelist(
-        _user: CurrentUser,
-        State(state): State<AppState>,
-        Query(q): Query<ActionQuery>,
-    ) -> Response {
-        match state.remove_from_allowlist(&q.domain).await {
-            Ok(()) => action_sse(
-                "allow",
-                false,
-                &q,
-                format!("Removed {} from the allowlist.", q.domain.display_domain()),
-            ),
-            Err(e) => e.into_response(),
-        }
-    }
-
-    /// `POST /log/blacklist?domain=…&row=…` — blacklist a resolved domain.
-    pub async fn log_blacklist(
+    /// `POST /log/block?domain=…` — block a currently-resolving domain by adding
+    /// it to the admin blacklist.
+    pub async fn log_block(
         _user: CurrentUser,
         State(state): State<AppState>,
         Query(q): Query<ActionQuery>,
     ) -> Response {
         match state.add_to_blacklist(&q.domain).await {
-            Ok(()) => action_sse(
-                "deny",
-                true,
-                &q,
-                format!(
-                    "Added {} to the blacklist — it is blocked on the next query.",
-                    q.domain.display_domain()
-                ),
-            ),
+            Ok(()) => toast(format!(
+                "Blocked {} — it is blocked on the next query.",
+                q.domain.display_domain()
+            )),
             Err(e) => e.into_response(),
         }
     }
 
-    /// `POST /log/unblacklist?domain=…&row=…` — remove a domain from the blacklist.
-    pub async fn log_unblacklist(
+    /// `POST /log/unblock?domain=…` — make a blocked domain resolve again.
+    ///
+    /// If the domain sits on the admin blacklist we remove it; otherwise it was
+    /// blocked by an aggregated blocklist, which the allowlist suppresses.  This
+    /// keeps a single Unblock action correct for both kinds of block.
+    pub async fn log_unblock(
         _user: CurrentUser,
         State(state): State<AppState>,
         Query(q): Query<ActionQuery>,
     ) -> Response {
-        match state.remove_from_blacklist(&q.domain).await {
-            Ok(()) => action_sse(
-                "deny",
-                false,
-                &q,
-                format!("Removed {} from the blacklist.", q.domain.display_domain()),
-            ),
+        match state.unblock(&q.domain).await {
+            Ok(()) => toast(format!(
+                "Unblocked {} — it resolves on the next query.",
+                q.domain.display_domain()
+            )),
             Err(e) => e.into_response(),
         }
     }
@@ -363,42 +341,24 @@ struct ListPageTemplate {
     error: Option<String>,
 }
 
-/// Query parameters for the one-click actions: the target `domain` and the
-/// optional originating row id (so the clicked button can be toggled in place).
+/// Query parameters for the one-click log actions: just the target `domain`.
 #[derive(Debug, Deserialize)]
 pub struct ActionQuery {
     pub domain: String,
-    pub row: Option<u64>,
 }
 
-/// Build the one-shot Datastar SSE response for a one-click list action:
-/// morph the originating row's button to its toggled state (when a `row` id is
-/// present) and show a `#sgt-toast` confirmation.
-fn action_sse(kind: &'static str, added: bool, q: &ActionQuery, message: String) -> Response {
-    let mut events: Vec<Event> = Vec::new();
-
-    if let Some(row_id) = q.row {
-        let button = ActionButton {
-            kind,
-            added,
-            domain: q.domain.clone(),
-            row_id,
-        }
-        .render()
-        .unwrap_or_default();
-        events.push(PatchElements::new(button).write_as_axum_sse_event());
-    }
-
-    let toast = format!(
+/// Build the one-shot Datastar SSE response confirming a one-click action by
+/// patching the `#sgt-toast` notice.  The button itself is not touched — its
+/// action is fixed by the row's outcome, and the toast is the click feedback.
+fn toast(message: String) -> Response {
+    let html = format!(
         r#"<div id="sgt-toast" class="sgt-toast sgt-notice--ok" role="status">{}</div>"#,
         crate::web::render::html_escape(&message)
     );
-    events.push(PatchElements::new(toast).write_as_axum_sse_event());
+    let event = PatchElements::new(html).write_as_axum_sse_event();
 
     Sse::new(async_stream::stream! {
-        for event in events {
-            yield Ok::<Event, Infallible>(event);
-        }
+        yield Ok::<Event, Infallible>(event);
     })
     .into_response()
 }
@@ -451,5 +411,31 @@ mod tests {
         let (_d, st) = state().await;
         let err = st.add_to_blacklist("not..valid").await.unwrap_err();
         assert!(matches!(err, WebError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn unblock_removes_an_admin_blacklisted_domain() {
+        let (_d, st) = state().await;
+        st.add_to_blacklist("ads.example.com").await.expect("add");
+        assert!(st.resolver.blacklist().contains(&name("ads.example.com")));
+
+        st.unblock("ads.example.com").await.expect("unblock");
+
+        // Removed from the blacklist; not shunted onto the allowlist.
+        assert!(!st.resolver.blacklist().contains(&name("ads.example.com")));
+        assert!(!st.resolver.allowlist().contains(&name("ads.example.com")));
+    }
+
+    #[tokio::test]
+    async fn unblock_allowlists_a_blocklist_blocked_domain() {
+        let (_d, st) = state().await;
+        // Not on the admin blacklist → unblock suppresses the blocklist hit via
+        // the allowlist.
+        st.unblock("tracker.example.com").await.expect("unblock");
+        assert!(
+            st.resolver
+                .allowlist()
+                .contains(&name("tracker.example.com"))
+        );
     }
 }

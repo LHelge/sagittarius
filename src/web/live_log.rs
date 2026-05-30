@@ -18,13 +18,7 @@
 //! [`Outcome`] category, which E8.7 uses to show only effective one-click
 //! actions.
 
-use std::{
-    convert::Infallible,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{convert::Infallible, sync::Arc};
 
 use askama::Template;
 use askama_web::WebTemplate;
@@ -42,6 +36,7 @@ use datastar::{
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
+    resolver::pipeline::LogAction,
     telemetry::{QueryEvent, Stats},
     web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay},
 };
@@ -131,33 +126,15 @@ struct LogRowView {
     action_html: String,
 }
 
-/// Monotonic id for each rendered log row, so a one-click action can target the
-/// exact button that was clicked (E8.7) — even for repeated queries to the same
-/// domain.
-static ROW_SEQ: AtomicU64 = AtomicU64::new(0);
-
 impl LogRowView {
     fn from_event(ev: &QueryEvent) -> Self {
         // Display the bare domain; the canonical trailing dot stays internal.
         let qname = ev.qname.to_string().display_domain().to_owned();
         let client = ev.client.ip().to_string();
         let search = format!("{} {}", qname.to_lowercase(), client);
-        let action_kind = if ev.outcome.offers_whitelist() {
-            "allow"
-        } else if ev.outcome.offers_blacklist() {
-            "deny"
-        } else {
-            ""
-        };
-        let row_id = ROW_SEQ.fetch_add(1, Ordering::Relaxed);
-        let action_html = ActionButton {
-            kind: action_kind,
-            added: false,
-            domain: qname.clone(),
-            row_id,
-        }
-        .render()
-        .unwrap_or_default();
+        let action_html = ActionButton::for_outcome(ev.outcome.log_action(), qname.clone())
+            .render()
+            .unwrap_or_default();
         Self {
             client,
             qname,
@@ -171,18 +148,37 @@ impl LogRowView {
     }
 }
 
-/// The one-click action cell for a log row.  Toggles between the add action
-/// (Whitelist / Blacklist) and the corresponding remove action once applied,
-/// patched in place by the action handlers via its `act-{row_id}` id (E8.7).
+/// The one-click action cell for a log row.  The action is fixed by the row's
+/// outcome (Block / Unblock / none) and does not change when clicked — the
+/// toast confirms the click instead.
 #[derive(Template, WebTemplate)]
 #[template(path = "log_action.html")]
 pub(crate) struct ActionButton {
-    /// `"allow"`, `"deny"`, or `""` (no effective action).
-    pub kind: &'static str,
-    /// Whether the domain is now on the list (renders the remove variant).
-    pub added: bool,
-    pub domain: String,
-    pub row_id: u64,
+    /// Button label (`"Block"` / `"Unblock"`); empty string renders a dash.
+    label: &'static str,
+    /// The endpoint the button posts to.
+    endpoint: &'static str,
+    /// Extra Pico button class (e.g. `"secondary"`); empty for the primary look.
+    class: &'static str,
+    /// The (bare) domain the action targets.
+    domain: String,
+}
+
+impl ActionButton {
+    /// Build the action cell for a row's [`LogAction`].
+    fn for_outcome(action: Option<LogAction>, domain: String) -> Self {
+        let (label, endpoint, class) = match action {
+            Some(LogAction::Block) => ("Block", "/log/block", "secondary"),
+            Some(LogAction::Unblock) => ("Unblock", "/log/unblock", ""),
+            None => ("", "", ""),
+        };
+        Self {
+            label,
+            endpoint,
+            class,
+            domain,
+        }
+    }
 }
 
 /// The query-log page.
@@ -222,37 +218,38 @@ mod tests {
         assert!(html.contains("blocked"));
         assert!(html.contains("data-show"));
         assert!(html.contains("7 ms"));
-        // A blocklist-blocked row offers the one-click Whitelist action.
-        assert!(html.contains("Whitelist"));
-        assert!(html.contains("/log/whitelist?domain=ads.example.com&amp;"));
+        // A blocked row offers the one-click Unblock action.
+        assert!(html.contains("Unblock"));
+        assert!(html.contains("/log/unblock?domain=ads.example.com"));
     }
 
     #[test]
-    fn row_action_varies_by_outcome() {
-        // Resolved rows offer Blacklist.
-        let cached = LogRowView::from_event(&event("good.example.com", Outcome::Cached))
-            .render()
-            .unwrap();
-        assert!(cached.contains("Blacklist"));
-        assert!(cached.contains("/log/blacklist?domain=good.example.com&amp;"));
+    fn row_action_is_keyed_on_outcome() {
+        // Resolved rows (cached/forwarded) offer Block.
+        for o in [Outcome::Cached, Outcome::Forwarded] {
+            let html = LogRowView::from_event(&event("good.example.com", o))
+                .render()
+                .unwrap();
+            assert!(html.contains("Block"), "{o:?} must offer block");
+            assert!(html.contains("/log/block?domain=good.example.com"));
+        }
 
-        // Admin-blocked and local rows offer no one-click action.
-        for o in [
-            Outcome::BlockedByAdmin,
-            Outcome::Local,
-            Outcome::LocalNoData,
-        ] {
+        // Both kinds of blocked row offer Unblock.
+        for o in [Outcome::BlockedByAdmin, Outcome::BlockedByBlocklist] {
+            let html = LogRowView::from_event(&event("ads.example.com", o))
+                .render()
+                .unwrap();
+            assert!(html.contains("Unblock"), "{o:?} must offer unblock");
+            assert!(html.contains("/log/unblock?domain=ads.example.com"));
+        }
+
+        // Local / error rows offer no action (rendered as a dash).
+        for o in [Outcome::Local, Outcome::LocalNoData, Outcome::Servfail] {
             let html = LogRowView::from_event(&event("x.example.com", o))
                 .render()
                 .unwrap();
-            assert!(
-                !html.contains("Whitelist"),
-                "{o:?} must not offer whitelist"
-            );
-            assert!(
-                !html.contains("Blacklist"),
-                "{o:?} must not offer blacklist"
-            );
+            assert!(!html.contains("Block"), "{o:?} must offer no action");
+            assert!(!html.contains("Unblock"), "{o:?} must offer no action");
         }
     }
 
