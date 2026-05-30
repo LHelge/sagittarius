@@ -40,21 +40,24 @@
   <fieldset>
     <legend><strong>Blocking</strong></legend>
     <label>Mode
-      <select name="blocking_mode">
+      <select name="blocking_mode" data-bind="blocking_mode">
         <option value="nxdomain"{% if blocking_mode == "nxdomain" %} selected{% endif %}>NXDOMAIN</option>
         <option value="null-ip"{% if blocking_mode == "null-ip" %} selected{% endif %}>Null IP (0.0.0.0 / ::)</option>
         <option value="custom"{% if blocking_mode == "custom" %} selected{% endif %}>Custom IP</option>
       </select>
     </label>
-    <div class="grid">
-      <label>Custom IPv4
-        <input type="text" name="custom_block_ipv4" value="{{ custom_block_ipv4 }}" placeholder="(optional)" />
-      </label>
-      <label>Custom IPv6
-        <input type="text" name="custom_block_ipv6" value="{{ custom_block_ipv6 }}" placeholder="(optional)" />
-      </label>
+    <!-- Custom IPs only apply in “Custom IP” mode, so reveal them only then. -->
+    <div data-show="$blocking_mode === 'custom'"{% if blocking_mode != "custom" %} style="display: none"{% endif %}>
+      <div class="grid">
+        <label>Custom IPv4
+          <input type="text" name="custom_block_ipv4" value="{{ custom_block_ipv4 }}" placeholder="(optional)" />
+        </label>
+        <label>Custom IPv6
+          <input type="text" name="custom_block_ipv6" value="{{ custom_block_ipv6 }}" placeholder="(optional)" />
+        </label>
+      </div>
+      <small class="sgt-muted">Returned to clients in answers for blocked domains.</small>
     </div>
-    <small class="sgt-muted">Custom IPs are used only when mode is “Custom IP”.</small>
   </fieldset>
 
   <fieldset>
