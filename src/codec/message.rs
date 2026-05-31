@@ -99,6 +99,19 @@ impl From<Qtype> for u16 {
     }
 }
 
+impl std::fmt::Display for Qtype {
+    /// Canonical presentation form: the mnemonic for known types, and the
+    /// RFC 3597 generic `TYPE<n>` representation for unknown ones. This is the
+    /// single rendering used by the query log and admin UI.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::A => f.write_str("A"),
+            Self::Aaaa => f.write_str("AAAA"),
+            Self::Other(v) => write!(f, "TYPE{v}"),
+        }
+    }
+}
+
 // ── Qclass ────────────────────────────────────────────────────────────────────
 
 /// DNS QCLASS field (RFC 1035 §3.2.5 / §3.2.4).
@@ -490,6 +503,14 @@ mod tests {
         // MX = 15
         assert_eq!(Qtype::from(15u16), Qtype::Other(15));
         assert_eq!(u16::from(Qtype::Other(15)), 15u16);
+    }
+
+    #[test]
+    fn qtype_display_uses_mnemonic_and_rfc3597_generic() {
+        assert_eq!(Qtype::A.to_string(), "A");
+        assert_eq!(Qtype::Aaaa.to_string(), "AAAA");
+        // Unknown types render as the RFC 3597 generic form.
+        assert_eq!(Qtype::Other(15).to_string(), "TYPE15");
     }
 
     #[test]

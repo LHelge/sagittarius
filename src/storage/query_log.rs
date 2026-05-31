@@ -15,7 +15,7 @@
 use sqlx::SqlitePool;
 
 use super::Error;
-use crate::{codec::message::Qtype, resolver::pipeline::Outcome, telemetry::QueryEvent};
+use crate::{resolver::pipeline::Outcome, telemetry::QueryEvent};
 
 // ── Result alias ────────────────────────────────────────────────────────────
 
@@ -50,21 +50,6 @@ pub struct QueryLogRecord {
     pub latency_ms: i64,
 }
 
-impl QueryLogRecord {
-    /// Render a [`Qtype`] as its on-disk text form.
-    ///
-    /// Known types use their mnemonic; unknown types use the RFC 3597
-    /// `TYPE<n>` generic representation so the value round-trips losslessly as
-    /// human-readable text.
-    fn qtype_text(qtype: Qtype) -> String {
-        match qtype {
-            Qtype::A => "A".to_owned(),
-            Qtype::Aaaa => "AAAA".to_owned(),
-            Qtype::Other(v) => format!("TYPE{v}"),
-        }
-    }
-}
-
 impl From<&QueryEvent> for QueryLogRecord {
     fn from(ev: &QueryEvent) -> Self {
         Self {
@@ -72,7 +57,9 @@ impl From<&QueryEvent> for QueryLogRecord {
             ts: ev.ts,
             client: ev.client.ip().to_string(),
             qname: ev.qname.to_string(),
-            qtype: Self::qtype_text(ev.qtype),
+            // `Qtype`'s Display is the single canonical rendering (mnemonic or
+            // RFC 3597 `TYPE<n>`), shared with the live log row.
+            qtype: ev.qtype.to_string(),
             outcome: ev.outcome,
             rcode: ev.rcode.map(|rc| i64::from(u8::from(rc))),
             upstream: ev.upstream.map(|u| u.to_string()),
@@ -404,14 +391,6 @@ mod tests {
         assert_eq!(record.rcode, Some(0));
         assert_eq!(record.upstream.as_deref(), Some("9.9.9.9:53"));
         assert_eq!(record.latency_ms, 17);
-    }
-
-    #[test]
-    fn qtype_text_renders_unknown_as_generic() {
-        use crate::codec::message::Qtype;
-        assert_eq!(QueryLogRecord::qtype_text(Qtype::A), "A");
-        assert_eq!(QueryLogRecord::qtype_text(Qtype::Aaaa), "AAAA");
-        assert_eq!(QueryLogRecord::qtype_text(Qtype::Other(15)), "TYPE15");
     }
 
     // ── insert_batch + page ───────────────────────────────────────────────────
