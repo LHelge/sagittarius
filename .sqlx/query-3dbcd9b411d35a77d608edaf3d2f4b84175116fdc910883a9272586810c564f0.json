@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                id          AS \"id!\",\n                ts          AS \"ts!\",\n                client,\n                qname,\n                qtype,\n                outcome,\n                rcode,\n                upstream,\n                latency_ms  AS \"latency_ms!\"\n            FROM query_log\n            WHERE (? IS NULL OR id < ?)\n            ORDER BY id DESC\n            LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "ts!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "client",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "qname",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "qtype",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "outcome",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "rcode",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "upstream",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "latency_ms!",
+        "ordinal": 8,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "3dbcd9b411d35a77d608edaf3d2f4b84175116fdc910883a9272586810c564f0"
+}

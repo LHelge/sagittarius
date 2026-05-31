@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                COUNT(*) AS \"total!: i64\",\n                COALESCE(SUM(\n                    CASE WHEN outcome IN ('blocked-admin', 'blocked-blocklist')\n                         THEN 1 ELSE 0 END), 0) AS \"blocked!: i64\",\n                COALESCE(SUM(\n                    CASE WHEN outcome = 'cached' THEN 1 ELSE 0 END), 0) AS \"cached!: i64\",\n                COALESCE(SUM(\n                    CASE WHEN outcome = 'forwarded' THEN 1 ELSE 0 END), 0) AS \"forwarded!: i64\"\n            FROM query_log\n            WHERE ts >= ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "total!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "blocked!: i64",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cached!: i64",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "forwarded!: i64",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bf73533c6d0cd35358d99c706fc0327fdb5c83436d4ee0b41f68ac829e6c80dd"
+}

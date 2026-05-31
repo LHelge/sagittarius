@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT client, COUNT(*) AS \"n!: i64\"\n            FROM query_log\n            WHERE ts >= ?\n            GROUP BY client\n            ORDER BY COUNT(*) DESC, client ASC\n            LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "client",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "0728d8ff59241389c399cc198d3f6e7a086113ce0d56bfe543fb72329a4606ab"
+}

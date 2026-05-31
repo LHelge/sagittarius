@@ -20,6 +20,7 @@
 //! | [`blocklists`] | Blocklist source + offline cache: [`blocklists::BlocklistRepository`] + [`blocklists::SqliteBlocklistRepo`] |
 //! | [`lists`] | Blacklist + allowlist repos: [`lists::BlacklistRepository`] + [`lists::AllowlistRepository`] |
 //! | [`local_records`] | Local DNS record rows: [`local_records::LocalRecordRepository`] + [`local_records::SqliteLocalRecordRepo`] |
+//! | [`query_log`] | Durable per-query history: [`query_log::QueryLogRepository`] + [`query_log::SqliteQueryLogRepo`] |
 //! | [`settings`] | Singleton settings row: [`settings::SettingsRepository`] + [`settings::SqliteSettingsRepo`] |
 //! | [`upstreams`] | Upstream resolver rows: [`upstreams::UpstreamRepository`] + [`upstreams::SqliteUpstreamRepo`] |
 
@@ -27,6 +28,7 @@ pub mod admin_users;
 pub mod blocklists;
 pub mod lists;
 pub mod local_records;
+pub mod query_log;
 pub mod sessions;
 pub mod settings;
 pub mod upstreams;

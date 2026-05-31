@@ -1,10 +1,10 @@
 ---
 id: 6f3
 title: E10.3 · query_log repository (insert, paginate, purge, aggregate)
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:32:11.831532822Z
-updated: 2026-05-30T19:32:11.831532822Z
+updated: 2026-05-31T15:45:26.080717146Z
 tags:
 - storage
 depends_on:

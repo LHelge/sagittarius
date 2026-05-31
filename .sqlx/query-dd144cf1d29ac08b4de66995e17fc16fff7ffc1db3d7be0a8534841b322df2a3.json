@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT qname, COUNT(*) AS \"n!: i64\"\n            FROM query_log\n            WHERE ts >= ?\n            GROUP BY qname\n            ORDER BY COUNT(*) DESC, qname ASC\n            LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "qname",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "n!: i64",
+        "ordinal": 1,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "dd144cf1d29ac08b4de66995e17fc16fff7ffc1db3d7be0a8534841b322df2a3"
+}
