@@ -3,12 +3,12 @@
 {% block content %}
 <hgroup>
   <h1>Query log</h1>
-  <p class="sgt-muted">Live stream of resolved queries. Newest first; history is kept in memory only.</p>
+  <p class="sgt-muted">Resolved queries, newest first. History is persisted; the newest rows stream live.</p>
 </hgroup>
 
 <div
   class="sgt-actions"
-  data-signals="{f_outcome: '', f_text: '', queries: 0, blocked: 0, cached: 0, forwarded: 0}"
+  data-signals="{f_outcome: '', f_text: '', queries: 0, blocked: 0, cached: 0, forwarded: 0, oldest: {{ oldest }}}"
   data-init="@get('/events')"
 >
   <select data-bind="f_outcome" aria-label="Filter by outcome">
@@ -38,5 +38,11 @@
       {% for row in rows %}{{ row|safe }}{% endfor %}
     </tbody>
   </table>
+</div>
+
+<div class="sgt-actions">
+  <button class="secondary" data-show="$oldest > 0" data-on-click="@get('/log/older?before=' + $oldest)">
+    Load older
+  </button>
 </div>
 {% endblock %}

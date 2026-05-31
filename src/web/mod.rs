@@ -191,6 +191,7 @@ impl AppState {
             .route("/", get(Self::dashboard))
             // Live query log + the shared SSE stream (log + dashboard counters).
             .route("/log", get(Self::query_log))
+            .route("/log/older", get(Self::query_log_older))
             .route("/events", get(Self::events))
             // One-click block / unblock actions from the live log.
             .route("/log/block", post(Self::log_block))
@@ -811,6 +812,129 @@ mod tests {
         assert!(body.contains("sgt-badge--blocked"));
 
         drop(resp);
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn query_log_history_seeds_from_db_and_scrolls_back() {
+        use crate::{
+            resolver::pipeline::Outcome,
+            storage::{
+                admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+                query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+            },
+            web::auth::Password,
+        };
+        use reqwest::redirect::Policy;
+
+        let (_dir, state) = test_state().await;
+        SqliteAdminUserRepo::new(state.db.pool().clone())
+            .create("admin", Password::hash("s3cret").unwrap().as_str())
+            .await
+            .unwrap();
+
+        // Seed three persisted rows; ascending ts → ascending ids (1, 2, 3).
+        let repo = SqliteQueryLogRepo::new(state.db.pool().clone());
+        for (ts, name) in [(1, "a.test."), (2, "b.test."), (3, "c.test.")] {
+            repo.insert_batch(&[QueryLogRecord {
+                id: 0,
+                ts,
+                client: "10.0.0.9".to_owned(),
+                qname: name.to_owned(),
+                qtype: "A".to_owned(),
+                outcome: Outcome::Forwarded,
+                rcode: Some(0),
+                upstream: None,
+                latency_ms: 1,
+            }])
+            .await
+            .unwrap();
+        }
+
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { server.serve(c2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        // The initial page renders all three rows from the DB, newest-first, and
+        // seeds the scroll-back cursor with the smallest id (1).
+        let page = client
+            .get(format!("{base}/log"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains("a.test"));
+        assert!(page.contains("c.test"));
+        let c_pos = page.find("c.test").unwrap();
+        let a_pos = page.find("a.test").unwrap();
+        assert!(c_pos < a_pos, "newest (c) must render before oldest (a)");
+        assert!(page.contains("oldest: 1"), "cursor seeded to smallest id");
+        assert!(page.contains("Load older"));
+
+        // Scroll back from id 2 → only the older row (id 1, a.test) appended.
+        let older = client
+            .get(format!("{base}/log/older?before=2"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(older.contains("datastar-patch-elements"));
+        assert!(older.contains("log-body"));
+        assert!(older.contains("a.test"));
+        assert!(!older.contains("b.test"), "no overlap with the seen page");
+        assert!(!older.contains("c.test"));
+        assert!(older.contains(r#""oldest":1"#), "cursor advances to id 1");
+
+        // Past the start: nothing to append, cursor resets to 0 (hides control).
+        let empty = client
+            .get(format!("{base}/log/older?before=1"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(empty.contains(r#""oldest":0"#));
+        assert!(!empty.contains("datastar-patch-elements"));
+
         cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)
             .await

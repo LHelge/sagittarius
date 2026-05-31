@@ -1,10 +1,10 @@
 ---
 id: 8w6
 title: E10.7 · DB-backed live log with scroll-back; remove ring buffer
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:33:25.264031947Z
-updated: 2026-05-30T19:33:25.264031947Z
+updated: 2026-05-31T16:04:29.419863520Z
 tags:
 - web
 depends_on:
