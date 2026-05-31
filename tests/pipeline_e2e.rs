@@ -280,7 +280,7 @@ async fn blocked_by_blocklist() {
     tokio::time::timeout(TEST_TIMEOUT, async {
         let h = build_harness(|state| {
             let target: Name = "tracker.blocklist.example".parse().unwrap();
-            state.blocklist().store([target].into_iter().collect());
+            state.blocklist().store([(target, 1)].into_iter().collect());
         })
         .await;
 

@@ -38,7 +38,7 @@ use crate::{
         self,
         cache::DnsCache,
         local::{LocalMatcher, LocalRecords, RecordData},
-        matchset::MatchSet,
+        matchset::{AttributedSet, MatchSet},
     },
     storage::{
         Db,
@@ -144,8 +144,11 @@ pub struct ResolverState {
     allowlist: MatchSet,
     /// Aggregated blocklist from external sources (filled by E7 on refresh).
     ///
-    /// Starts empty at hydration; E7 installs the first set asynchronously.
-    blocklist: MatchSet,
+    /// A `Name → primary blocklist_id` map ([`AttributedSet`]) so blocks can be
+    /// attributed to a source (E11); the decision layer still treats it as a
+    /// presence check.  Starts empty at hydration; E7 installs the first set
+    /// asynchronously.
+    blocklist: AttributedSet,
     /// Authoritative local-record matcher.
     local: LocalMatcher,
     /// Raw-bytes DNS response cache.
@@ -175,13 +178,14 @@ impl ResolverState {
         &self.allowlist
     }
 
-    /// The aggregated blocklist [`MatchSet`].
+    /// The aggregated blocklist [`AttributedSet`].
     ///
     /// Starts empty at hydration.
-    /// E6 reads `blocklist().contains(name)`.
-    /// E7 installs refreshed sets via `blocklist().store(new_set)`.
+    /// E6 reads `blocklist().contains(name)` (presence only).
+    /// E7 installs refreshed maps via the aggregator's `install`.
+    /// E11.3 reads `blocklist().primary_source(name)` to attribute a block.
     #[must_use]
-    pub fn blocklist(&self) -> &MatchSet {
+    pub fn blocklist(&self) -> &AttributedSet {
         &self.blocklist
     }
 
@@ -287,7 +291,7 @@ impl ResolverState {
         let allowlist = allowlist_names.into_iter().collect::<MatchSet>();
 
         // Blocklist starts empty; E7 fills it on first refresh.
-        let blocklist = MatchSet::empty();
+        let blocklist = AttributedSet::empty();
 
         // ── Local records ─────────────────────────────────────────────────────
         let local_rows = db

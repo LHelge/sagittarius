@@ -171,7 +171,7 @@ impl BlocklistScheduler {
     /// [`load_from_cache`](Self::load_from_cache) and
     /// [`refresh_once`](Self::refresh_once).
     fn decode_and_add(
-        aggregator: &mut Aggregator<i64>,
+        aggregator: &mut Aggregator,
         source_id: i64,
         format: crate::storage::blocklists::BlocklistFormat,
         content: &[u8],
@@ -184,7 +184,7 @@ impl BlocklistScheduler {
     async fn refresh_source(
         &self,
         source: &Blocklist,
-        aggregator: &mut Aggregator<i64>,
+        aggregator: &mut Aggregator,
         summary: &mut RefreshSummary,
     ) -> SourceRefresh {
         let validators = Validators {
@@ -212,7 +212,7 @@ impl BlocklistScheduler {
         source: &Blocklist,
         body: bytes::Bytes,
         validators: Validators,
-        aggregator: &mut Aggregator<i64>,
+        aggregator: &mut Aggregator,
         summary: &mut RefreshSummary,
     ) -> SourceRefresh {
         let text = String::from_utf8_lossy(&body);
@@ -256,7 +256,7 @@ impl BlocklistScheduler {
     async fn handle_not_modified(
         &self,
         source: &Blocklist,
-        aggregator: &mut Aggregator<i64>,
+        aggregator: &mut Aggregator,
         summary: &mut RefreshSummary,
     ) -> SourceRefresh {
         let result = self.add_cached_source(source, aggregator, "304").await;
@@ -276,7 +276,7 @@ impl BlocklistScheduler {
         &self,
         source: &Blocklist,
         error: &crate::blocklist::fetch::FetchError,
-        aggregator: &mut Aggregator<i64>,
+        aggregator: &mut Aggregator,
         summary: &mut RefreshSummary,
     ) -> SourceRefresh {
         warn!(
@@ -293,7 +293,7 @@ impl BlocklistScheduler {
     async fn add_cached_source(
         &self,
         source: &Blocklist,
-        aggregator: &mut Aggregator<i64>,
+        aggregator: &mut Aggregator,
         context: &'static str,
     ) -> SourceRefresh {
         match self.repo.load_cache(source.id).await {
@@ -340,7 +340,7 @@ impl BlocklistScheduler {
             }
         };
 
-        let mut aggregator: Aggregator<i64> = Aggregator::new();
+        let mut aggregator: Aggregator = Aggregator::new();
         let mut loaded = 0usize;
 
         for source in &sources {
@@ -389,7 +389,7 @@ impl BlocklistScheduler {
     pub async fn refresh_once(&self) -> Result<RefreshSummary, RefreshError> {
         let sources = self.repo.list_enabled().await?;
 
-        let mut aggregator: Aggregator<i64> = Aggregator::new();
+        let mut aggregator: Aggregator = Aggregator::new();
         let mut summary = RefreshSummary::default();
         let mut complete_snapshot = true;
 
@@ -831,7 +831,7 @@ mod tests {
         let previous: crate::codec::name::Name = "previous.example.com".parse().unwrap();
         state
             .blocklist()
-            .store([previous.clone()].into_iter().collect());
+            .store([(previous.clone(), 1)].into_iter().collect());
 
         repo.insert(NewBlocklist {
             url: format!("{}/good.txt", server.uri()),

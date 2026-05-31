@@ -339,7 +339,7 @@ mod tests {
             .store([target.clone()].into_iter().collect());
         state
             .blocklist()
-            .store([target.clone()].into_iter().collect());
+            .store([(target.clone(), 1)].into_iter().collect());
 
         let raw = build_a_query(0x0002, "safe.example.com");
         let req = make_request(raw);
@@ -369,7 +369,7 @@ mod tests {
             .store([target.clone()].into_iter().collect());
         state
             .blocklist()
-            .store([target.clone()].into_iter().collect());
+            .store([(target.clone(), 1)].into_iter().collect());
 
         // Install a local A record.
         let mut b = LocalRecords::builder();
@@ -431,7 +431,7 @@ mod tests {
         let target = name("tracker.bad.example");
         state
             .blocklist()
-            .store([target.clone()].into_iter().collect());
+            .store([(target.clone(), 1)].into_iter().collect());
 
         let raw = build_a_query(0x0005, "tracker.bad.example");
         let req = make_request(raw);
@@ -487,7 +487,7 @@ mod tests {
         let target = name("blocked.example");
         state
             .blocklist()
-            .store([target.clone()].into_iter().collect());
+            .store([(target.clone(), 1)].into_iter().collect());
 
         let query_id: u16 = 0x1234;
         let raw = build_a_query(query_id, "blocked.example");
