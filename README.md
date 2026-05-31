@@ -34,7 +34,9 @@ traffic disappear.
   plus manual allow/deny lists. Exact-domain matching in v0.1.
 - 📊 **Live query log and dashboard** — block ratio, top domains, top clients,
   and a live query log streamed over SSE, with one-click allow/deny straight
-  from the log.
+  from the log. The log and dashboard are backed by a **persistent query log**
+  (configurable retention, default 30 days; an enable/disable toggle and a
+  clear-now action), so history and windowed figures survive a restart.
 - 🔒 **Encrypted upstreams** — forward to resolvers over DNS-over-HTTPS (DoH) and
   DNS-over-TLS (DoT).
 - 🏠 **Local DNS records** — define names for your own network, including
@@ -51,7 +53,7 @@ milestone.
 | Service middleware (rate limiting, backpressure) | [`tower`](https://docs.rs/tower) |
 | DNS wire format | Custom lazy parser/serializer over [`bytes`](https://docs.rs/bytes) — shallow parse + raw passthrough |
 | Upstream transport | [`hickory`](https://github.com/hickory-dns/hickory-dns) — UDP/TCP/DoT/DoH |
-| Persistent storage | SQLite via [`sqlx`](https://docs.rs/sqlx) — compile-time-checked queries, embedded migrations (config only, no query history yet) |
+| Persistent storage | SQLite via [`sqlx`](https://docs.rs/sqlx) — compile-time-checked queries, embedded migrations; stores config and the durable query-log history |
 | Logging | [`tracing`](https://docs.rs/tracing) to stdout; live log streamed to the UI over SSE |
 | CLI / config | [`clap`](https://docs.rs/clap) flags (bind addresses, db path) with sane defaults |
 | Hot-path state | `HashSet` blacklist/allowlist/blocklist + `HashMap` local records, hot-swapped via [`arc-swap`](https://docs.rs/arc-swap); [`moka`](https://docs.rs/moka) cache with per-entry TTL |

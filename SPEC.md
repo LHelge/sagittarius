@@ -53,7 +53,7 @@ interface all included.
 | Upstream transport client | [`hickory`](https://github.com/hickory-dns/hickory-dns) | Scoped to upstream UDP/TCP/**DoT/DoH** transport, not receive-side parsing |
 | Upstream selection | [`rand`](https://docs.rs/rand) | Random upstream choice per query, with failover (§7) |
 | Blocklist fetching | [`reqwest`](https://docs.rs/reqwest) (rustls) | HTTP(S) client for blocklist sources with conditional `ETag`/`Last-Modified` requests (§6) |
-| Persistent storage | SQLite via [`sqlx`](https://docs.rs/sqlx) | System of record for config, credentials, lists, local records (no query history in v0.1). Compile-time-checked queries (`query!`/`query_as!`); migrations embedded in the binary via the `sqlx::migrate!` macro |
+| Persistent storage | SQLite via [`sqlx`](https://docs.rs/sqlx) | System of record for config, credentials, lists, local records, and the durable query-log history. Compile-time-checked queries (`query!`/`query_as!`); migrations embedded in the binary via the `sqlx::migrate!` macro |
 | Logging / telemetry | [`tracing`](https://docs.rs/tracing) + [`tracing-subscriber`](https://docs.rs/tracing-subscriber) | Structured app + query logging to stdout; operator handles retention externally |
 | CLI arguments | [`clap`](https://docs.rs/clap) | Operational flags (bind addresses, database path) with env fallbacks and sane defaults |
 | In-memory blocking sets | `HashSet` | Admin blacklist, allowlist, and aggregated blocklist set (§3.1) |
@@ -189,25 +189,30 @@ DoT/DoH); it is not used to deserialize received messages on the hot path.
 
    The following are **runtime-only** (not loaded from or written to SQLite) and
    reset on restart:
-   - **Live-log buffer** — a bounded in-memory ring buffer of recent query
-     events plus a `tokio::sync::broadcast` channel that the admin SSE endpoint
-     subscribes to. Feeds the live log without any database write.
+   - **Live-log tail** — a `tokio::sync::broadcast` channel that the admin SSE
+     endpoint subscribes to for the real-time tail. Durable history lives in the
+     `query_log` table (§4); the admin log page seeds from the DB and then
+     streams the broadcast for "now" forward (the in-memory ring buffer is gone).
    - **Runtime stats** — lightweight in-memory counters/aggregates (total
      queries, blocked count/ratio, top domains, top clients) maintained as
-     queries flow. Since-startup only for v0.1.
+     queries flow. These are the *since-startup* live figures; the dashboard also
+     shows a restart-surviving window computed from `query_log` (§9).
 
 5. **Upstream client** — forwards cache-miss, non-blocked, non-local queries to
    configured upstream resolvers over plain UDP/TCP and encrypted DoT/DoH.
 
 6. **Storage (SQLite)** — durable system of record (§4). At startup the relevant
-   tables are read into the in-memory structures; updates via the admin UI write
-   through to SQLite and refresh memory. For v0.1 it holds *configuration only* —
-   query history is not persisted (§4, §9).
+   configuration tables are read into the in-memory structures; updates via the
+   admin UI write through to SQLite and refresh memory. It also holds the durable
+   **`query_log`** table — per-query history written off the hot path (§4, §9).
 
 7. **Telemetry** — every resolved query is (a) emitted as a structured event via
    `tracing` to stdout, where the operator can route it (journald, file, log
-   shipper) for any retention they want, and (b) pushed to the in-memory live-log
-   buffer for the admin UI. No query history is stored in the database in v0.1.
+   shipper) for any retention they want, (b) pushed to the in-memory live-log
+   broadcast for the admin UI tail, and (c) — when query logging is enabled —
+   enqueued onto a bounded channel that a dedicated writer task batches into the
+   `query_log` table. The enqueue never blocks the response path: a full channel
+   drops (and counts) the event rather than awaiting (§3.2, §9).
 
 8. **Web admin (axum + askama)** — configuration, list management, live query
    log, and dashboards. Always authenticated; serves plain HTTP behind a reverse
@@ -235,8 +240,11 @@ path) and occasional writers (admin edits, blocklist refresh):
 - **Stats.** Runtime counters are atomics (top-N may use a sharded/relaxed
   structure); the dashboard reads a consistent-enough snapshot.
 - **Live-log.** Query events are published to a `tokio::sync::broadcast` channel
-  (one receiver per SSE subscriber); the bounded ring buffer seeds a freshly
-  opened log view with recent history.
+  (one receiver per SSE subscriber) for the real-time tail. History is no longer
+  kept in memory: a freshly opened log view seeds from the `query_log` table
+  (keyset-paginated, newest-first) and then streams the broadcast. Persistence is
+  decoupled via a bounded `mpsc` channel drained by a batching writer task, so
+  the hot path never waits on a DB write.
 - **Runtime settings / upstream pool.** Runtime settings and the active upstream
   pool are replaced as whole immutable snapshots when the admin changes them.
   Cache capacity is the exception: `moka` capacity is fixed when the cache is
@@ -253,14 +261,15 @@ in-memory snapshot**, keeping the durable store and memory in agreement.
 
 The exact schema will be defined in migrations; this is the conceptual model.
 
-For v0.1 the database holds **configuration only** — there is no persisted query
-history (see the note below).
+The database holds global configuration **and** the durable per-query history
+(`query_log`, below).
 
 - **settings** — a typed single-row table for global configuration: cache
   sizing and TTL bounds (including the negative-TTL cap), blocking
-  mode/response, blocklist refresh interval, and UI preferences. (Network bind
-  addresses, the database file path, and cookie-security policy are CLI/env
-  operational settings, not stored here — see §10.)
+  mode/response, blocklist refresh interval, UI preferences, and the query-log
+  controls (`query_log_enabled`, default on; `query_log_retention_days`, default
+  30). (Network bind addresses, the database file path, and cookie-security
+  policy are CLI/env operational settings, not stored here — see §10.)
 - **upstreams** — resolver definitions: address, transport (`udp`, `tcp`,
   `dot`, `doh`), optional TLS server name, enabled flag, and sort order.
 - **admin_users** — admin credentials for the web UI: username, password hash
@@ -277,16 +286,20 @@ history (see the note below).
   single domain be permitted without editing a multi-thousand-entry blocklist.
 - **local_records** — local DNS entries: name (incl. wildcard), type, value,
   TTL; resolved authoritatively without contacting upstreams.
+- **query_log** — durable per-query history, one row per resolved query: `id`
+  (autoincrement; chronological order + pagination cursor), `ts` (receipt time,
+  epoch **milliseconds**), `client` (IP), `qname`, `qtype`, `outcome` (a stable
+  token), nullable `rcode` and `upstream`, and `latency_ms`. Indexed on `ts` for
+  the retention purge; pagination uses the primary key. Writes are batched off
+  the hot path by a dedicated writer task; an hourly purge deletes rows older
+  than the retention window and runs `PRAGMA incremental_vacuum` to return freed
+  pages (the pool sets `auto_vacuum = INCREMENTAL` for fresh databases).
+
 **Deferred to post-MVP** *(future)*:
 
-- **query_log** — durable per-query records (timestamp, client, qname, qtype,
-  action, upstream, latency, rcode) with a configurable retention window. For
-  v0.1, queries are emitted to stdout via `tracing` and kept transiently in the
-  in-memory live-log buffer instead (§3.1, §9); the operator handles any
-  retention externally.
-- **stats** — materialized aggregates for historical dashboards/charts. For
-  v0.1, dashboard figures come from the in-memory runtime counters (since-startup
-  only).
+- **stats** — materialized aggregates for historical dashboards/charts. The
+  dashboard's persisted window is currently computed from `query_log` aggregates
+  on demand (no charts yet); a materialized table would back time-series charts.
 
 Blocklist *contents* are expanded into the in-memory blocklist set during the
 blocklist scheduler's offline-start phase; SQLite stores the source definitions
@@ -467,14 +480,17 @@ null-IP / custom, per the configured block mode) and authoritative local
   stylesheet, images, and favicon — are **vendored into the repository and
   compiled into the binary** via `include_str!` / `include_bytes!`. No external
   CDN fetches at runtime and no Node build step.
-- **Capabilities (v0.1):**
-  - Dashboard: total queries, blocked count/ratio, top blocked domains, top
-    clients — from the in-memory runtime counters (since-startup; non-persistent
-    in v0.1). *(Historical/time-series charts are deferred to post-MVP, together
-    with durable query storage.)*
-  - Live query log streamed over SSE from the in-memory live-log buffer (no
-    database), with filtering and **one-click list management**: rows blocked by
-    the blocklist expose a *Whitelist* action (add to the allowlist), and
+- **Capabilities:**
+  - Dashboard: two sections of figures (no charts). The **live (since-startup)**
+    cards — total queries, blocked count/ratio, top blocked domains, top clients
+    — come from the in-memory runtime counters and update over SSE. A **last-24h
+    (persisted)** section is computed from `query_log` aggregates and so survives
+    restart. *(Historical/time-series charts remain deferred to post-MVP.)*
+  - Live query log: the page seeds the newest page of history from the
+    `query_log` table and then streams the real-time tail over SSE, with
+    **scroll-back** (`Load older` paginates further back by row id) and
+    client-side filtering. **One-click list management**: rows blocked by the
+    blocklist expose a *Whitelist* action (add to the allowlist), and
     forwarded/cached resolved rows expose a *Blacklist* action (add to the admin
     blacklist). Rows whose outcome would make the action ineffective (for
     example local-record answers, or admin-blacklist blocks that the allowlist
@@ -484,7 +500,9 @@ null-IP / custom, per the configured block mode) and authoritative local
   - Manual blacklist / whitelist editing.
   - Local DNS record management (including wildcards).
   - Upstream resolver configuration.
-  - Settings.
+  - Settings — including the **query-log controls**: an enable/disable toggle
+    (logging on by default), a retention window in days (default 30), and a
+    *Clear query log now* action that purges all stored history.
 - **Auth.** Admin login backed by `admin_users`; passwords hashed with
   **Argon2id**. Session cookies hold opaque random tokens; SQLite stores only a
   hash of each token. The admin interface is never exposed unauthenticated. On
@@ -577,10 +595,17 @@ null-IP / custom, per the configured block mode) and authoritative local
 - When deployed behind a reverse proxy, forwarded scheme/host headers used for
   secure-cookie `auto` mode and CSRF origin checks must come only from a trusted
   proxy. Direct public plain-HTTP admin exposure is not a safe deployment.
-- Query events may contain sensitive browsing data. In v0.1 they are only
-  emitted to stdout via `tracing` and held transiently in the in-memory live-log
-  buffer — nothing is persisted by the application, so retention (and its
-  privacy implications) is the operator's choice. Log verbosity is configurable.
+- Query events may contain sensitive browsing data. They are emitted to stdout
+  via `tracing` and, **when query logging is enabled (the default), persisted to
+  the `query_log` table** with their client IP, queried name, and outcome. This
+  is a deliberate privacy trade-off for a useful, restart-surviving log and
+  dashboard — and it is operator-controllable: logging can be **disabled**
+  entirely (settings toggle), the **retention window** is configurable (default
+  30 days, enforced by an hourly purge), and a **Clear query log now** action
+  wipes stored history on demand. Operators handling others' traffic should set
+  retention deliberately, or disable logging, to match their privacy obligations;
+  the database file itself should be protected like any store of personal data.
+  Log verbosity (the stdout stream) remains independently configurable.
 
 ---
 
