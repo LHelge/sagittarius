@@ -673,6 +673,66 @@ mod tests {
         }
     }
 
+    // ── query_log.blocklist_id migration (E11.2) ──────────────────────────────
+
+    /// The blocklist_id attribution column must exist and be nullable.
+    #[tokio::test]
+    async fn query_log_blocklist_id_column_exists_and_nullable() {
+        let (_dir, db) = open_temp_db().await;
+
+        let notnull: Option<i64> = sqlx::query_scalar(
+            "SELECT \"notnull\" FROM pragma_table_info('query_log') WHERE name = 'blocklist_id'",
+        )
+        .fetch_optional(db.pool())
+        .await
+        .expect("pragma_table_info for query_log.blocklist_id");
+
+        assert_eq!(
+            notnull,
+            Some(0),
+            "query_log.blocklist_id must exist and be nullable"
+        );
+    }
+
+    /// The down migration must drop only the blocklist_id column, leaving the
+    /// rest of the query_log table intact.
+    #[tokio::test]
+    async fn query_log_blocklist_id_down_migration_is_clean_inverse() {
+        let (_dir, db) = open_temp_db().await;
+
+        let down_sql =
+            include_str!("../../migrations/20260529130934_query_log_blocklist_id.down.sql");
+        sqlx::raw_sql(down_sql)
+            .execute(db.pool())
+            .await
+            .expect("apply blocklist_id down migration");
+
+        let col_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('query_log') WHERE name = 'blocklist_id'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("pragma_table_info after down");
+        assert_eq!(col_count, 0, "blocklist_id column must be dropped");
+
+        // The table itself and its other columns must survive the down.
+        let table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'query_log'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for query_log after down");
+        assert_eq!(table_count, 1, "query_log table must remain");
+
+        let qname_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('query_log') WHERE name = 'qname'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("pragma_table_info for query_log.qname after down");
+        assert_eq!(qname_count, 1, "other query_log columns must remain");
+    }
+
     #[tokio::test]
     async fn foreign_keys_are_enforced() {
         let (_dir, db) = open_temp_db().await;
