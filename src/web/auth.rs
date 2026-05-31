@@ -61,7 +61,7 @@ use crate::{
         AppState, Chrome,
         crypto::{ConstantTimeEq, ToHex},
         origin,
-        render::WebError,
+        render::{WebError, WebResult},
     },
 };
 
@@ -91,7 +91,7 @@ pub struct Password(String);
 
 impl Password {
     /// Hash a plaintext password into a new [`Password`] (random per-hash salt).
-    pub fn hash(plain: &str) -> Result<Self, WebError> {
+    pub fn hash(plain: &str) -> WebResult<Self> {
         let mut salt_bytes = [0u8; 16];
         rand::rng().fill_bytes(&mut salt_bytes);
         let salt = SaltString::encode_b64(&salt_bytes)
@@ -328,7 +328,7 @@ impl AppState {
     }
 
     /// Create a session for `user_id` and return the `Set-Cookie` header value.
-    async fn begin_session(&self, headers: &HeaderMap, user_id: i64) -> Result<String, WebError> {
+    async fn begin_session(&self, headers: &HeaderMap, user_id: i64) -> WebResult<String> {
         let cookie = SessionCookie::issue();
         let expires_at = Clock::now_secs() + IDLE_SECS;
 
@@ -364,7 +364,7 @@ impl AppState {
         State(state): State<AppState>,
         headers: HeaderMap,
         axum::Form(form): axum::Form<LoginForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         let user = state
             .db
             .admin_users()

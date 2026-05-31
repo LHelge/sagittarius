@@ -29,12 +29,16 @@ use crate::{
         UpstreamPool,
     },
     storage::upstreams::{NewUpstream, Transport, Upstream, UpstreamRepository},
-    web::{AppState, Chrome, auth::CurrentUser, render::WebError},
+    web::{
+        AppState, Chrome,
+        auth::CurrentUser,
+        render::{WebError, WebResult},
+    },
 };
 
 impl AppState {
     /// Rebuild the live upstream pool from the enabled rows and swap it in.
-    async fn rebuild_upstream_pool(&self) -> Result<(), WebError> {
+    async fn rebuild_upstream_pool(&self) -> WebResult<()> {
         let rows = self.db.upstreams().list_enabled().await?;
         let configs: Vec<_> = rows
             .iter()
@@ -56,7 +60,7 @@ impl AppState {
         &self,
         user: &CurrentUser,
         error: Option<String>,
-    ) -> Result<UpstreamsPageTemplate, WebError> {
+    ) -> WebResult<UpstreamsPageTemplate> {
         let upstreams = self
             .db
             .upstreams()
@@ -82,7 +86,7 @@ impl AppState {
     pub async fn upstreams_page(
         user: CurrentUser,
         State(state): State<AppState>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         Ok(state.render_upstreams(&user, None).await?.into_response())
     }
 
@@ -91,7 +95,7 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<AddUpstreamForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         match state.add_upstream(form).await {
             Ok(()) => Ok(Redirect::to("/upstreams").into_response()),
             // A validation error re-renders the form with the message and a 400.
@@ -103,7 +107,7 @@ impl AppState {
         }
     }
 
-    async fn add_upstream(&self, form: AddUpstreamForm) -> Result<(), WebError> {
+    async fn add_upstream(&self, form: AddUpstreamForm) -> WebResult<()> {
         let transport: Transport = form
             .transport
             .parse()
@@ -154,7 +158,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<UpstreamIdForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.db.upstreams().delete(form.id).await?;
         state.rebuild_upstream_pool().await?;
         Ok(Redirect::to("/upstreams").into_response())
@@ -165,7 +169,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<ToggleUpstreamForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state
             .db
             .upstreams()

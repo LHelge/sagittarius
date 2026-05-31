@@ -32,7 +32,11 @@ use crate::{
         query_log::QueryLogRepository,
         settings::{BlockingMode, Settings, SettingsRepository},
     },
-    web::{AppState, Chrome, auth::CurrentUser, render::WebError},
+    web::{
+        AppState, Chrome,
+        auth::CurrentUser,
+        render::{WebError, WebResult},
+    },
 };
 
 impl AppState {
@@ -41,7 +45,7 @@ impl AppState {
         user: &CurrentUser,
         error: Option<String>,
         notice: Option<String>,
-    ) -> Result<SettingsPageTemplate, WebError> {
+    ) -> WebResult<SettingsPageTemplate> {
         let s = self.db.settings().get().await?;
         Ok(SettingsPageTemplate {
             chrome: self.chrome("settings", user).await,
@@ -71,7 +75,7 @@ impl AppState {
     pub async fn settings_page(
         user: CurrentUser,
         State(state): State<AppState>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         Ok(state
             .render_settings(&user, None, None)
             .await?
@@ -83,7 +87,7 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<SettingsForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         match state.apply_settings(form).await {
             Ok(()) => Ok(state
                 .render_settings(&user, None, Some("Settings saved.".to_owned()))
@@ -102,7 +106,7 @@ impl AppState {
     pub async fn settings_clear_log(
         user: CurrentUser,
         State(state): State<AppState>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.db.query_log().clear_all().await?;
         Ok(state
             .render_settings(&user, None, Some("Query log cleared.".to_owned()))
@@ -111,7 +115,7 @@ impl AppState {
     }
 
     /// Validate and persist a settings form, then refresh the live snapshot.
-    async fn apply_settings(&self, form: SettingsForm) -> Result<(), WebError> {
+    async fn apply_settings(&self, form: SettingsForm) -> WebResult<()> {
         let settings = form.into_settings()?;
         self.db.settings().update(&settings).await?;
         // Apply to the live snapshot (capacity needs a restart; see module doc).
@@ -143,7 +147,7 @@ pub struct SettingsForm {
 
 impl SettingsForm {
     /// Validate the raw form into a typed [`Settings`].
-    fn into_settings(self) -> Result<Settings, WebError> {
+    fn into_settings(self) -> WebResult<Settings> {
         if self.cache_min_ttl > self.cache_max_ttl {
             return Err(WebError::bad_request(
                 "Minimum cache TTL must not exceed the maximum.",
