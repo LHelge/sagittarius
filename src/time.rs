@@ -20,6 +20,18 @@ impl Clock {
             .unwrap_or_default()
             .as_secs() as i64
     }
+
+    /// Current Unix time in whole milliseconds.
+    ///
+    /// Used for the persistent query log (E10), where sub-second ordering of a
+    /// high-rate event stream matters. Saturates to `0` before the epoch, like
+    /// [`Clock::now_secs`].
+    pub fn now_millis() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64
+    }
 }
 
 #[cfg(test)]
@@ -32,5 +44,21 @@ mod tests {
         let b = Clock::now_secs();
         assert!(a > 1_700_000_000, "clock should be well past 2023: {a}");
         assert!(b >= a, "time should not go backwards within a test");
+    }
+
+    #[test]
+    fn now_millis_is_positive_and_consistent_with_secs() {
+        let millis = Clock::now_millis();
+        let secs = Clock::now_secs();
+        assert!(
+            millis > 1_700_000_000_000,
+            "millis clock should be well past 2023: {millis}"
+        );
+        // The two clocks must agree to within a second of each other.
+        assert!(
+            (millis / 1000 - secs).abs() <= 1,
+            "now_millis/1000 ({}) must track now_secs ({secs})",
+            millis / 1000
+        );
     }
 }

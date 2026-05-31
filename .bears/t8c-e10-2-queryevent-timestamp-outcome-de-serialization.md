@@ -1,10 +1,10 @@
 ---
 id: t8c
 title: E10.2 · QueryEvent timestamp + Outcome (de)serialization
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:31:57.026376849Z
-updated: 2026-05-30T19:31:57.026376849Z
+updated: 2026-05-31T15:31:22.055239812Z
 tags:
 - telemetry
 parent: 55z

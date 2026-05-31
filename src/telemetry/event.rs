@@ -13,6 +13,7 @@ use std::{net::SocketAddr, time::Duration};
 use crate::{
     codec::{header::Rcode, message::Qtype, name::Name},
     resolver::pipeline::Outcome,
+    time::Clock,
 };
 
 // ── QueryEvent ────────────────────────────────────────────────────────────────
@@ -24,6 +25,11 @@ use crate::{
 /// [`TelemetrySink::record`].
 #[derive(Debug, Clone)]
 pub struct QueryEvent {
+    /// Receipt time as epoch milliseconds (see [`Clock::now_millis`]).
+    ///
+    /// Captured when the query arrives, so the persisted query log (E10)
+    /// orders rows by arrival rather than by when the response completed.
+    pub ts: i64,
     /// The client that sent the query.
     pub client: SocketAddr,
     /// The queried domain name.
@@ -46,10 +52,14 @@ pub struct QueryEvent {
 impl QueryEvent {
     /// Create a new [`QueryEvent`] with the mandatory fields.
     ///
-    /// The optional fields default to `None` / `Duration::ZERO`; use the
-    /// `with_*` builder methods to populate them.
+    /// `ts` defaults to the current wall-clock time ([`Clock::now_millis`]); the
+    /// pipeline overrides it with the receipt timestamp via [`QueryEvent::with_ts`]
+    /// so the recorded time reflects arrival rather than construction. The other
+    /// optional fields default to `None` / `Duration::ZERO`; use the `with_*`
+    /// builder methods to populate them.
     pub fn new(client: SocketAddr, qname: Name, qtype: Qtype, outcome: Outcome) -> Self {
         Self {
+            ts: Clock::now_millis(),
             client,
             qname,
             qtype,
@@ -58,6 +68,15 @@ impl QueryEvent {
             upstream: None,
             latency: Duration::ZERO,
         }
+    }
+
+    /// Set the receipt timestamp (epoch milliseconds).
+    ///
+    /// Captured at request start so the persisted log orders by arrival time.
+    #[must_use]
+    pub fn with_ts(mut self, ts: i64) -> Self {
+        self.ts = ts;
+        self
     }
 
     /// Set the DNS response code.
@@ -197,6 +216,23 @@ mod tests {
         assert!(event.rcode.is_none());
         assert!(event.upstream.is_none());
         assert_eq!(event.latency, Duration::ZERO);
+    }
+
+    #[test]
+    fn new_carries_nonzero_ts() {
+        // The pipeline relies on every event arriving with a real receipt time.
+        let event = make_event(Outcome::Cached);
+        assert!(
+            event.ts > 1_700_000_000_000,
+            "ts must default to a real epoch-ms timestamp: {}",
+            event.ts
+        );
+    }
+
+    #[test]
+    fn with_ts_overrides_ts() {
+        let event = make_event(Outcome::Cached).with_ts(42);
+        assert_eq!(event.ts, 42);
     }
 
     // ── TelemetrySink.record ──────────────────────────────────────────────────
