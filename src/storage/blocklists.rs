@@ -25,21 +25,23 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// The file format of a subscribed blocklist source.
 ///
 /// Maps to/from the `format` TEXT column values `'hosts'` and `'domain-list'`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum BlocklistFormat {
     /// A `hosts`-style file (`0.0.0.0 ads.example.com` or `127.0.0.1 …`).
+    #[strum(serialize = "hosts")]
     Hosts,
     /// A plain-text domain list — one domain per line.
+    #[strum(serialize = "domain-list")]
     DomainList,
 }
 
 impl BlocklistFormat {
     /// Returns the canonical TEXT representation stored in the database.
+    ///
+    /// Driven by `#[strum(serialize)]` ([`strum::IntoStaticStr`]); the
+    /// value-carrying [`FromStr`] below is the inverse.
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Hosts => "hosts",
-            Self::DomainList => "domain-list",
-        }
+        self.into()
     }
 }
 

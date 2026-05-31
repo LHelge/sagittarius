@@ -25,24 +25,26 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// Maps to/from the `blocking_mode` TEXT column values `'nxdomain'`,
 /// `'null-ip'`, and `'custom'`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum BlockingMode {
     /// Reply with `NXDOMAIN` (domain does not exist).
+    #[strum(serialize = "nxdomain")]
     NxDomain,
     /// Reply with `0.0.0.0` / `::` (null IP addresses).
+    #[strum(serialize = "null-ip")]
     NullIp,
     /// Reply with the admin-configured custom IP addresses.
+    #[strum(serialize = "custom")]
     Custom,
 }
 
 impl BlockingMode {
     /// Returns the canonical TEXT representation stored in the database.
+    ///
+    /// Driven by `#[strum(serialize)]` ([`strum::IntoStaticStr`]); the
+    /// value-carrying [`FromStr`] below is the inverse.
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::NxDomain => "nxdomain",
-            Self::NullIp => "null-ip",
-            Self::Custom => "custom",
-        }
+        self.into()
     }
 }
 
