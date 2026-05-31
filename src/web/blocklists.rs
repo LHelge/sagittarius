@@ -24,7 +24,12 @@ use serde::Deserialize;
 use crate::{
     storage::blocklists::{BlocklistFormat, BlocklistRepository, NewBlocklist},
     time::Clock,
-    web::{AppState, Chrome, auth::CurrentUser, dashboard::group, render::WebError},
+    web::{
+        AppState, Chrome,
+        auth::CurrentUser,
+        dashboard::group,
+        render::{WebError, WebResult},
+    },
 };
 
 impl AppState {
@@ -33,7 +38,7 @@ impl AppState {
         user: &CurrentUser,
         error: Option<String>,
         notice: Option<String>,
-    ) -> Result<BlocklistsPageTemplate, WebError> {
+    ) -> WebResult<BlocklistsPageTemplate> {
         let now = Clock::now_secs();
         let sources = self
             .db
@@ -64,7 +69,7 @@ impl AppState {
     pub async fn blocklists_page(
         user: CurrentUser,
         State(state): State<AppState>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         Ok(state
             .render_blocklists(&user, None, None)
             .await?
@@ -76,7 +81,7 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<AddBlocklistForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         match state.add_blocklist(&form.url, &form.format).await {
             Ok(()) => Ok(Redirect::to("/blocklists").into_response()),
             // A validation error re-renders the form with the message and a 400.
@@ -88,7 +93,7 @@ impl AppState {
         }
     }
 
-    async fn add_blocklist(&self, url: &str, format: &str) -> Result<(), WebError> {
+    async fn add_blocklist(&self, url: &str, format: &str) -> WebResult<()> {
         let format: BlocklistFormat = format
             .parse()
             .map_err(|_| WebError::bad_request("Format must be hosts or domain-list."))?;
@@ -122,7 +127,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<BlocklistIdForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.db.blocklists().remove(form.id).await?;
         // Drop the removed source's domains from the live set.
         state.refresh.trigger();
@@ -134,7 +139,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<ToggleBlocklistForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state
             .db
             .blocklists()
@@ -148,7 +153,7 @@ impl AppState {
     pub async fn blocklist_refresh(
         user: CurrentUser,
         State(state): State<AppState>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.refresh.trigger();
         Ok(state
             .render_blocklists(

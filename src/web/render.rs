@@ -57,6 +57,13 @@ impl std::fmt::Display for WebError {
 
 impl std::error::Error for WebError {}
 
+/// Result alias for admin request handlers and their helpers.
+///
+/// Handlers return `WebResult<Response>` and use `?`; `WebError` implements
+/// [`IntoResponse`] and `From<storage::Error>`, so axum renders the error and
+/// storage failures convert automatically.
+pub type WebResult<T> = std::result::Result<T, WebError>;
+
 impl From<crate::storage::Error> for WebError {
     fn from(e: crate::storage::Error) -> Self {
         match e {

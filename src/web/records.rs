@@ -27,13 +27,13 @@ use crate::{
     web::{
         AppState, Chrome,
         auth::CurrentUser,
-        render::{DomainDisplay, WebError},
+        render::{DomainDisplay, WebError, WebResult},
     },
 };
 
 impl AppState {
     /// Rebuild the in-memory local-record snapshot from the database.
-    async fn reload_local_records(&self) -> Result<(), WebError> {
+    async fn reload_local_records(&self) -> WebResult<()> {
         let rows = self.db.local_records().load_all().await?;
         let records = build_local_records(rows).map_err(|e| WebError::internal(e.to_string()))?;
         self.resolver.local().store(records);
@@ -47,7 +47,7 @@ impl AppState {
         record_type: RecordType,
         value: &str,
         ttl: u32,
-    ) -> Result<(), WebError> {
+    ) -> WebResult<()> {
         validate_local(name, record_type, value, ttl)?;
         self.db
             .local_records()
@@ -70,7 +70,7 @@ impl AppState {
     }
 
     /// Remove a local record by id (write through, swap).
-    async fn remove_local_record(&self, id: i64) -> Result<(), WebError> {
+    async fn remove_local_record(&self, id: i64) -> WebResult<()> {
         self.db.local_records().remove(id).await?;
         self.reload_local_records().await
     }
@@ -79,7 +79,7 @@ impl AppState {
         &self,
         user: &CurrentUser,
         error: Option<String>,
-    ) -> Result<LocalPageTemplate, WebError> {
+    ) -> WebResult<LocalPageTemplate> {
         let records = self
             .db
             .local_records()
@@ -106,7 +106,7 @@ impl AppState {
     pub async fn local_page(
         user: CurrentUser,
         State(state): State<AppState>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         Ok(state.render_local(&user, None).await?.into_response())
     }
 
@@ -115,7 +115,7 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<AddLocalForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         let record_type = form
             .record_type
             .parse::<RecordType>()
@@ -139,7 +139,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<RemoveLocalForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.remove_local_record(form.id).await?;
         Ok(Redirect::to("/local").into_response())
     }
@@ -148,12 +148,7 @@ impl AppState {
 /// Validate a new local record without touching the database: the value must
 /// parse as the right IP type, and the builder must accept the name (this is
 /// the only place wildcard names are checked before insert).
-fn validate_local(
-    name: &str,
-    record_type: RecordType,
-    value: &str,
-    ttl: u32,
-) -> Result<(), WebError> {
+fn validate_local(name: &str, record_type: RecordType, value: &str, ttl: u32) -> WebResult<()> {
     let data = match record_type {
         RecordType::A => RecordData::A(value.parse().map_err(|_| {
             WebError::bad_request(format!("'{value}' is not a valid IPv4 address."))

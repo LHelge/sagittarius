@@ -35,7 +35,7 @@ use crate::{
     web::{
         AppState,
         auth::CurrentUser,
-        render::{DomainDisplay, WebError, datastar_response},
+        render::{DomainDisplay, WebError, WebResult, datastar_response},
     },
 };
 
@@ -43,39 +43,39 @@ impl AppState {
     // ── Write-through + snapshot-swap core ────────────────────────────────────
 
     /// Rebuild the in-memory admin blacklist snapshot from the database.
-    async fn reload_blacklist(&self) -> Result<(), WebError> {
+    async fn reload_blacklist(&self) -> WebResult<()> {
         let names = self.db.blacklist().load_all().await?;
         self.resolver.blacklist().store(names.into_iter().collect());
         Ok(())
     }
 
     /// Rebuild the in-memory allowlist snapshot from the database.
-    async fn reload_allowlist(&self) -> Result<(), WebError> {
+    async fn reload_allowlist(&self) -> WebResult<()> {
         let names = self.db.allowlist().load_all().await?;
         self.resolver.allowlist().store(names.into_iter().collect());
         Ok(())
     }
 
     /// Add `domain` to the admin blacklist (write-through, then swap).
-    pub(crate) async fn add_to_blacklist(&self, domain: &str) -> Result<(), WebError> {
+    pub(crate) async fn add_to_blacklist(&self, domain: &str) -> WebResult<()> {
         self.db.blacklist().add(domain).await?;
         self.reload_blacklist().await
     }
 
     /// Remove `domain` from the admin blacklist (write-through, then swap).
-    pub(crate) async fn remove_from_blacklist(&self, domain: &str) -> Result<(), WebError> {
+    pub(crate) async fn remove_from_blacklist(&self, domain: &str) -> WebResult<()> {
         self.db.blacklist().remove(domain).await?;
         self.reload_blacklist().await
     }
 
     /// Add `domain` to the allowlist (write-through, then swap).
-    pub(crate) async fn add_to_allowlist(&self, domain: &str) -> Result<(), WebError> {
+    pub(crate) async fn add_to_allowlist(&self, domain: &str) -> WebResult<()> {
         self.db.allowlist().add(domain).await?;
         self.reload_allowlist().await
     }
 
     /// Remove `domain` from the allowlist (write-through, then swap).
-    pub(crate) async fn remove_from_allowlist(&self, domain: &str) -> Result<(), WebError> {
+    pub(crate) async fn remove_from_allowlist(&self, domain: &str) -> WebResult<()> {
         self.db.allowlist().remove(domain).await?;
         self.reload_allowlist().await
     }
@@ -85,7 +85,7 @@ impl AppState {
     /// If it sits on the admin blacklist we remove it; otherwise it was blocked
     /// by an aggregated blocklist, which the allowlist suppresses.  This keeps a
     /// single Unblock action correct for both kinds of block.
-    pub(crate) async fn unblock(&self, domain: &str) -> Result<(), WebError> {
+    pub(crate) async fn unblock(&self, domain: &str) -> WebResult<()> {
         let on_blacklist = domain
             .parse::<Name>()
             .is_ok_and(|n| self.resolver.blacklist().contains(&n));
@@ -104,7 +104,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         Query(q): Query<ActionQuery>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.add_to_blacklist(&q.domain).await?;
         Ok(toast(format!(
             "Blocked {} — it is blocked on the next query.",
@@ -121,7 +121,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         Query(q): Query<ActionQuery>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.unblock(&q.domain).await?;
         Ok(toast(format!(
             "Unblocked {} — it resolves on the next query.",
@@ -184,14 +184,14 @@ impl AppState {
             .collect())
     }
 
-    async fn list_add(&self, kind: ListKind, domain: &str) -> Result<(), WebError> {
+    async fn list_add(&self, kind: ListKind, domain: &str) -> WebResult<()> {
         match kind {
             ListKind::Blacklist => self.add_to_blacklist(domain).await,
             ListKind::Allowlist => self.add_to_allowlist(domain).await,
         }
     }
 
-    async fn list_remove(&self, kind: ListKind, domain: &str) -> Result<(), WebError> {
+    async fn list_remove(&self, kind: ListKind, domain: &str) -> WebResult<()> {
         match kind {
             ListKind::Blacklist => self.remove_from_blacklist(domain).await,
             ListKind::Allowlist => self.remove_from_allowlist(domain).await,
@@ -204,7 +204,7 @@ impl AppState {
         user: &CurrentUser,
         kind: ListKind,
         error: Option<String>,
-    ) -> Result<ListPageTemplate, WebError> {
+    ) -> WebResult<ListPageTemplate> {
         Ok(ListPageTemplate {
             chrome: self.chrome(kind.active(), user).await,
             title: kind.title(),
@@ -216,7 +216,7 @@ impl AppState {
     }
 
     /// Shared GET handler body for a list page.
-    async fn list_page(&self, user: &CurrentUser, kind: ListKind) -> Result<Response, WebError> {
+    async fn list_page(&self, user: &CurrentUser, kind: ListKind) -> WebResult<Response> {
         Ok(self.render_list(user, kind, None).await?.into_response())
     }
 
@@ -227,7 +227,7 @@ impl AppState {
         user: &CurrentUser,
         kind: ListKind,
         domain: &str,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         match self.list_add(kind, domain).await {
             Ok(()) => Ok(Redirect::to(kind.base_path()).into_response()),
             // A bad domain re-renders the page with the message and a 400.
@@ -240,11 +240,7 @@ impl AppState {
     }
 
     /// Shared POST-remove body: write through, then PRG-redirect.
-    async fn list_remove_handler(
-        &self,
-        kind: ListKind,
-        domain: &str,
-    ) -> Result<Response, WebError> {
+    async fn list_remove_handler(&self, kind: ListKind, domain: &str) -> WebResult<Response> {
         self.list_remove(kind, domain).await?;
         Ok(Redirect::to(kind.base_path()).into_response())
     }
@@ -253,7 +249,7 @@ impl AppState {
     pub async fn blacklist_page(
         user: CurrentUser,
         State(state): State<AppState>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.list_page(&user, ListKind::Blacklist).await
     }
     /// `POST /blacklist/add`.
@@ -261,7 +257,7 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<DomainForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state
             .list_add_handler(&user, ListKind::Blacklist, &form.domain)
             .await
@@ -271,7 +267,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<DomainForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state
             .list_remove_handler(ListKind::Blacklist, &form.domain)
             .await
@@ -280,7 +276,7 @@ impl AppState {
     pub async fn allowlist_page(
         user: CurrentUser,
         State(state): State<AppState>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state.list_page(&user, ListKind::Allowlist).await
     }
     /// `POST /allowlist/add`.
@@ -288,7 +284,7 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<DomainForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state
             .list_add_handler(&user, ListKind::Allowlist, &form.domain)
             .await
@@ -298,7 +294,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<DomainForm>,
-    ) -> Result<Response, WebError> {
+    ) -> WebResult<Response> {
         state
             .list_remove_handler(ListKind::Allowlist, &form.domain)
             .await
