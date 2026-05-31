@@ -214,6 +214,7 @@ impl AppState {
                 "/settings",
                 get(Self::settings_page).post(Self::settings_save),
             )
+            .route("/settings/clear-log", post(Self::settings_clear_log))
             // Blocklist source management + manual refresh (E8.10).
             .route("/blocklists", get(Self::blocklists_page))
             .route("/blocklists/add", post(Self::blocklist_add))
@@ -1082,7 +1083,8 @@ mod tests {
         let body = format!(
             "csrf_token={csrf}&cache_min_ttl=10&cache_max_ttl=3600&cache_negative_ttl_cap=300\
              &cache_capacity=50000&blocking_mode=nxdomain&custom_block_ipv4=&custom_block_ipv6=\
-             &blocklist_refresh_interval=7200&ui_theme=dark"
+             &blocklist_refresh_interval=7200&ui_theme=dark\
+             &query_log_enabled=1&query_log_retention_days=30"
         );
         let r = client
             .post(format!("{base}/settings"))
@@ -1098,6 +1100,120 @@ mod tests {
         // The live runtime snapshot reflects the change immediately.
         assert_eq!(app.resolver.settings().block_mode, BlockMode::NxDomain);
         assert_eq!(app.resolver.settings().cache_max_ttl, 3600);
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn query_log_controls_render_and_clear_over_http() {
+        use crate::{
+            resolver::pipeline::Outcome,
+            storage::{
+                admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+                query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+            },
+            web::auth::Password,
+        };
+        use reqwest::redirect::Policy;
+
+        let (_dir, state) = test_state().await;
+        SqliteAdminUserRepo::new(state.db.pool().clone())
+            .create("admin", Password::hash("s3cret").unwrap().as_str())
+            .await
+            .unwrap();
+        let app = state.clone();
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { server.serve(c2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
+
+        // The settings page renders the query-log toggle and retention input.
+        let page = client
+            .get(format!("{base}/settings"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains("name=\"query_log_enabled\""));
+        assert!(page.contains("name=\"query_log_retention_days\""));
+        assert!(page.contains("/settings/clear-log"));
+
+        // Seed a query-log row to be cleared.
+        SqliteQueryLogRepo::new(app.db.pool().clone())
+            .insert_batch(&[QueryLogRecord {
+                id: 0,
+                ts: 1,
+                client: "10.0.0.1".to_owned(),
+                qname: "x.test.".to_owned(),
+                qtype: "A".to_owned(),
+                outcome: Outcome::Forwarded,
+                rcode: Some(0),
+                upstream: None,
+                latency_ms: 1,
+            }])
+            .await
+            .unwrap();
+
+        // Without the CSRF token the clear action is rejected.
+        let r = client
+            .post(format!("{base}/settings/clear-log"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403, "clear-log without CSRF must be rejected");
+
+        // With the token it succeeds and empties the log.
+        let r = client
+            .post(format!("{base}/settings/clear-log"))
+            .header("cookie", &cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("csrf_token={csrf}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(r.text().await.unwrap().contains("Query log cleared"));
+
+        let remaining = SqliteQueryLogRepo::new(app.db.pool().clone())
+            .page(None, 10)
+            .await
+            .unwrap();
+        assert!(remaining.is_empty(), "clear-log must empty the table");
 
         cancel.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)

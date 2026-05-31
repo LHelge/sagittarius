@@ -90,6 +90,12 @@ pub struct Settings {
     pub blocklist_refresh_interval: u32,
     /// UI colour-scheme preference (e.g. `"auto"`, `"light"`, `"dark"`).
     pub ui_theme: String,
+    /// Whether per-query events are persisted to the query log (E10). When
+    /// `false` the writer task drops events without enqueuing them.
+    pub query_log_enabled: bool,
+    /// How many days of query-log history to retain before the hourly purge
+    /// removes older rows (E10).
+    pub query_log_retention_days: u32,
 }
 
 // ── Private row struct ────────────────────────────────────────────────────────
@@ -106,6 +112,8 @@ struct SettingsRow {
     custom_block_ipv6: Option<String>,
     blocklist_refresh_interval: i64,
     ui_theme: String,
+    query_log_enabled: i64,
+    query_log_retention_days: i64,
 }
 
 /// Narrow a non-negative `i64` DB value to `u32`, returning a decode error
@@ -161,6 +169,11 @@ impl TryFrom<SettingsRow> for Settings {
                 "blocklist_refresh_interval",
             )?,
             ui_theme: row.ui_theme,
+            query_log_enabled: row.query_log_enabled != 0,
+            query_log_retention_days: narrow_u32(
+                row.query_log_retention_days,
+                "query_log_retention_days",
+            )?,
         })
     }
 }
@@ -211,7 +224,9 @@ impl SettingsRepository for SqliteSettingsRepo {
                 custom_block_ipv4,
                 custom_block_ipv6,
                 blocklist_refresh_interval,
-                ui_theme
+                ui_theme,
+                query_log_enabled,
+                query_log_retention_days
             FROM settings
             WHERE id = 1"#
         )
@@ -230,6 +245,8 @@ impl SettingsRepository for SqliteSettingsRepo {
         let cache_negative_ttl_cap = settings.cache_negative_ttl_cap as i64;
         let cache_capacity = settings.cache_capacity as i64;
         let blocklist_refresh_interval = settings.blocklist_refresh_interval as i64;
+        let query_log_enabled = settings.query_log_enabled as i64;
+        let query_log_retention_days = settings.query_log_retention_days as i64;
 
         sqlx::query!(
             r#"UPDATE settings SET
@@ -241,7 +258,9 @@ impl SettingsRepository for SqliteSettingsRepo {
                 custom_block_ipv4           = ?,
                 custom_block_ipv6           = ?,
                 blocklist_refresh_interval  = ?,
-                ui_theme                    = ?
+                ui_theme                    = ?,
+                query_log_enabled           = ?,
+                query_log_retention_days    = ?
             WHERE id = 1"#,
             cache_min_ttl,
             cache_max_ttl,
@@ -252,6 +271,8 @@ impl SettingsRepository for SqliteSettingsRepo {
             custom_block_ipv6,
             blocklist_refresh_interval,
             settings.ui_theme,
+            query_log_enabled,
+            query_log_retention_days,
         )
         .execute(&self.pool)
         .await?;
@@ -328,6 +349,8 @@ mod tests {
         assert!(settings.custom_block_ipv6.is_none());
         assert_eq!(settings.blocklist_refresh_interval, 86400u32);
         assert_eq!(settings.ui_theme, "auto");
+        assert!(settings.query_log_enabled, "query log enabled by default");
+        assert_eq!(settings.query_log_retention_days, 30u32);
     }
 
     // ── update() round-trips ──────────────────────────────────────────────────
@@ -344,11 +367,15 @@ mod tests {
         settings.custom_block_ipv6 = Some("2001:db8::1".parse().unwrap());
         settings.cache_max_ttl = 43200;
         settings.ui_theme = "dark".to_owned();
+        settings.query_log_enabled = false;
+        settings.query_log_retention_days = 14;
 
         repo.update(&settings).await.expect("update");
 
         let fetched = repo.get().await.expect("re-get");
         assert_eq!(fetched.blocking_mode, BlockingMode::Custom);
+        assert!(!fetched.query_log_enabled);
+        assert_eq!(fetched.query_log_retention_days, 14u32);
         assert_eq!(
             fetched.custom_block_ipv4,
             Some("203.0.113.1".parse().unwrap())

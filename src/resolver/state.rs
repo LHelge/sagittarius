@@ -88,6 +88,15 @@ pub struct RuntimeSettings {
     ///
     /// Takes effect immediately on a swap.
     pub blocklist_refresh_interval: u32,
+    /// Whether per-query events are persisted to the query log (E10).
+    ///
+    /// Read on the hot path by the telemetry sink so the writer can be gated
+    /// cheaply without a DB round-trip. Takes effect immediately on a swap.
+    pub query_log_enabled: bool,
+    /// Query-log retention window in days (E10).
+    ///
+    /// Read by the hourly purge task from the live snapshot.
+    pub query_log_retention_days: u32,
 }
 
 impl From<&Settings> for RuntimeSettings {
@@ -116,6 +125,8 @@ impl From<&Settings> for RuntimeSettings {
             negative_ttl_cap: s.cache_negative_ttl_cap,
             block_mode,
             blocklist_refresh_interval: s.blocklist_refresh_interval,
+            query_log_enabled: s.query_log_enabled,
+            query_log_retention_days: s.query_log_retention_days,
         }
     }
 }
@@ -407,6 +418,8 @@ mod tests {
             custom_block_ipv6: None,
             blocklist_refresh_interval: 86400,
             ui_theme: "auto".to_owned(),
+            query_log_enabled: true,
+            query_log_retention_days: 30,
         }
     }
 
@@ -426,6 +439,16 @@ mod tests {
         let s = base_settings();
         let rs = RuntimeSettings::from(&s);
         assert_eq!(rs.block_mode, BlockMode::null_ip());
+    }
+
+    #[test]
+    fn runtime_settings_carries_query_log_fields() {
+        let mut s = base_settings();
+        s.query_log_enabled = false;
+        s.query_log_retention_days = 7;
+        let rs = RuntimeSettings::from(&s);
+        assert!(!rs.query_log_enabled);
+        assert_eq!(rs.query_log_retention_days, 7);
     }
 
     #[test]

@@ -1,10 +1,10 @@
 ---
 id: 5xc
 title: 'E10.6 · Settings: enable toggle, retention, clear-log action'
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:32:19.319060564Z
-updated: 2026-05-30T19:33:10.380747784Z
+updated: 2026-05-31T15:50:56.268801129Z
 tags:
 - web
 depends_on:
