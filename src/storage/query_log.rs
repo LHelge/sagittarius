@@ -580,6 +580,30 @@ mod tests {
         assert_eq!(counts, QueryLogCounts::default());
     }
 
+    /// `counts_since` hardcodes the outcome tokens it buckets as blocked / cached
+    /// / forwarded directly in SQL. This guards that those literals stay in sync
+    /// with `Outcome`'s `#[strum(serialize)]` tokens — rename a token and this
+    /// fails, pointing here instead of silently miscounting the dashboard.
+    #[test]
+    fn counts_since_sql_tokens_match_outcome_mapping() {
+        use std::collections::BTreeSet;
+        use strum::IntoEnumIterator as _;
+
+        // The SQL's `outcome IN ('blocked-admin', 'blocked-blocklist')` must be
+        // exactly the variants whose category() is "blocked".
+        let blocked: BTreeSet<&str> = Outcome::iter()
+            .filter(|o| o.category() == "blocked")
+            .map(|o| o.as_str())
+            .collect();
+        assert_eq!(
+            blocked,
+            BTreeSet::from(["blocked-admin", "blocked-blocklist"]),
+            "blocked-bucket tokens drifted from counts_since SQL"
+        );
+        assert_eq!(Outcome::Cached.as_str(), "cached");
+        assert_eq!(Outcome::Forwarded.as_str(), "forwarded");
+    }
+
     #[tokio::test]
     async fn top_domains_and_clients_rank_within_window() {
         let (_dir, repo) = open_repo().await;
