@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM query_log\n            WHERE id IN (\n                SELECT id FROM query_log WHERE ts < ? ORDER BY id LIMIT ?\n            )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d126cea1431409a6eb6447bf11d7ffc486d5b49571263224897ca9e96b78b308"
+}
