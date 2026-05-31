@@ -1,10 +1,10 @@
 ---
 id: gr3
 title: 'E11.2 · Migration: query_log.blocklist_id column'
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:54:38.261265749Z
-updated: 2026-05-30T19:54:38.261265749Z
+updated: 2026-05-31T22:22:22.307644517Z
 tags:
 - storage
 depends_on:
