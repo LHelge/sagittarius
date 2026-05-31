@@ -6,8 +6,8 @@
   <p class="sgt-muted">Global configuration. Most changes apply immediately; exceptions are noted.</p>
 </hgroup>
 
-{% if saved %}
-<p class="sgt-notice sgt-notice--ok" role="status">Settings saved.</p>
+{% if let Some(notice) = notice %}
+<p class="sgt-notice sgt-notice--ok" role="status">{{ notice }}</p>
 {% endif %}
 {% if let Some(error) = error %}
 <p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
@@ -79,6 +79,28 @@
     </label>
   </fieldset>
 
+  <fieldset>
+    <legend><strong>Query log</strong></legend>
+    <label>
+      <input type="checkbox" name="query_log_enabled" value="1"{% if query_log_enabled %} checked{% endif %} />
+      Enable query logging
+    </label>
+    <small class="sgt-muted">Persists per-query history for the log and dashboard. Disable for privacy.</small>
+    <label>Retention (days)
+      <input type="number" name="query_log_retention_days" value="{{ query_log_retention_days }}" min="1" required />
+      <small>Older entries are purged hourly.</small>
+    </label>
+  </fieldset>
+
   <button type="submit">Save settings</button>
 </form>
+
+<article>
+  <header><strong>Clear query log</strong></header>
+  <p class="sgt-muted">Permanently delete all stored query history. This cannot be undone.</p>
+  <form method="post" action="/settings/clear-log">
+    <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+    <button type="submit" class="secondary">Clear query log now</button>
+  </form>
+</article>
 {% endblock %}

@@ -28,7 +28,10 @@ use serde::Deserialize;
 
 use crate::{
     resolver::state::RuntimeSettings,
-    storage::settings::{BlockingMode, Settings, SettingsRepository, SqliteSettingsRepo},
+    storage::{
+        query_log::{QueryLogRepository, SqliteQueryLogRepo},
+        settings::{BlockingMode, Settings, SettingsRepository, SqliteSettingsRepo},
+    },
     web::{AppState, Chrome, auth::CurrentUser, render::WebError},
 };
 
@@ -37,7 +40,7 @@ impl AppState {
         &self,
         user: &CurrentUser,
         error: Option<String>,
-        saved: bool,
+        notice: Option<String>,
     ) -> Result<SettingsPageTemplate, WebError> {
         let s = SqliteSettingsRepo::new(self.db.pool().clone())
             .get()
@@ -59,14 +62,16 @@ impl AppState {
                 .unwrap_or_default(),
             blocklist_refresh_interval: s.blocklist_refresh_interval,
             ui_theme: s.ui_theme,
+            query_log_enabled: s.query_log_enabled,
+            query_log_retention_days: s.query_log_retention_days,
             error,
-            saved,
+            notice,
         })
     }
 
     /// `GET /settings`.
     pub async fn settings_page(user: CurrentUser, State(state): State<AppState>) -> Response {
-        match state.render_settings(&user, None, false).await {
+        match state.render_settings(&user, None, None).await {
             Ok(t) => t.into_response(),
             Err(e) => e.into_response(),
         }
@@ -79,16 +84,36 @@ impl AppState {
         axum::Form(form): axum::Form<SettingsForm>,
     ) -> Response {
         match state.apply_settings(form).await {
-            Ok(()) => match state.render_settings(&user, None, true).await {
+            Ok(()) => match state
+                .render_settings(&user, None, Some("Settings saved.".to_owned()))
+                .await
+            {
                 Ok(t) => t.into_response(),
                 Err(e) => e.into_response(),
             },
             Err(WebError::BadRequest(msg)) => {
-                match state.render_settings(&user, Some(msg), false).await {
+                match state.render_settings(&user, Some(msg), None).await {
                     Ok(t) => (StatusCode::BAD_REQUEST, t).into_response(),
                     Err(e) => e.into_response(),
                 }
             }
+            Err(e) => e.into_response(),
+        }
+    }
+
+    /// `POST /settings/clear-log` — delete all persisted query-log history.
+    pub async fn settings_clear_log(user: CurrentUser, State(state): State<AppState>) -> Response {
+        if let Err(e) = SqliteQueryLogRepo::new(state.db.pool().clone())
+            .clear_all()
+            .await
+        {
+            return WebError::from(e).into_response();
+        }
+        match state
+            .render_settings(&user, None, Some("Query log cleared.".to_owned()))
+            .await
+        {
+            Ok(t) => t.into_response(),
             Err(e) => e.into_response(),
         }
     }
@@ -120,6 +145,10 @@ pub struct SettingsForm {
     custom_block_ipv6: String,
     blocklist_refresh_interval: u32,
     ui_theme: String,
+    /// HTML checkbox: present (any value) when ticked, absent when unticked.
+    #[serde(default)]
+    query_log_enabled: Option<String>,
+    query_log_retention_days: u32,
 }
 
 impl SettingsForm {
@@ -158,6 +187,12 @@ impl SettingsForm {
             return Err(WebError::bad_request("Theme must be auto, light, or dark."));
         }
 
+        if self.query_log_retention_days == 0 {
+            return Err(WebError::bad_request(
+                "Query-log retention must be at least 1 day.",
+            ));
+        }
+
         Ok(Settings {
             cache_min_ttl: self.cache_min_ttl,
             cache_max_ttl: self.cache_max_ttl,
@@ -168,6 +203,8 @@ impl SettingsForm {
             custom_block_ipv6,
             blocklist_refresh_interval: self.blocklist_refresh_interval,
             ui_theme: self.ui_theme,
+            query_log_enabled: self.query_log_enabled.is_some(),
+            query_log_retention_days: self.query_log_retention_days,
         })
     }
 }
@@ -197,8 +234,10 @@ struct SettingsPageTemplate {
     custom_block_ipv6: String,
     blocklist_refresh_interval: u32,
     ui_theme: String,
+    query_log_enabled: bool,
+    query_log_retention_days: u32,
     error: Option<String>,
-    saved: bool,
+    notice: Option<String>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -226,6 +265,8 @@ mod tests {
             custom_block_ipv6: String::new(),
             blocklist_refresh_interval: 7200,
             ui_theme: "dark".to_owned(),
+            query_log_enabled: Some("on".to_owned()),
+            query_log_retention_days: 30,
         }
     }
 
@@ -326,5 +367,64 @@ mod tests {
             st.apply_settings(f).await,
             Err(WebError::BadRequest(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn query_log_fields_round_trip() {
+        let (_d, st) = state().await;
+        let mut f = base_form();
+        // Unticked checkbox → None → disabled; custom retention window.
+        f.query_log_enabled = None;
+        f.query_log_retention_days = 7;
+        st.apply_settings(f).await.expect("apply");
+
+        let s = SqliteSettingsRepo::new(st.db.pool().clone())
+            .get()
+            .await
+            .unwrap();
+        assert!(!s.query_log_enabled, "unticked checkbox disables logging");
+        assert_eq!(s.query_log_retention_days, 7);
+
+        // The live snapshot is updated too, so the writer gate sees it at once.
+        assert!(!st.resolver.settings().query_log_enabled);
+        assert_eq!(st.resolver.settings().query_log_retention_days, 7);
+    }
+
+    #[tokio::test]
+    async fn zero_retention_is_rejected() {
+        let (_d, st) = state().await;
+        let mut f = base_form();
+        f.query_log_retention_days = 0;
+        assert!(matches!(
+            st.apply_settings(f).await,
+            Err(WebError::BadRequest(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn clear_log_empties_the_table() {
+        use crate::{
+            resolver::pipeline::Outcome,
+            storage::query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+        };
+
+        let (_d, st) = state().await;
+        let repo = SqliteQueryLogRepo::new(st.db.pool().clone());
+        repo.insert_batch(&[QueryLogRecord {
+            id: 0,
+            ts: 1,
+            client: "10.0.0.1".to_owned(),
+            qname: "x.test.".to_owned(),
+            qtype: "A".to_owned(),
+            outcome: Outcome::Forwarded,
+            rcode: Some(0),
+            upstream: None,
+            latency_ms: 1,
+        }])
+        .await
+        .expect("seed a row");
+
+        repo.clear_all().await.expect("clear");
+        assert!(repo.page(None, 10).await.expect("page").is_empty());
     }
 }
