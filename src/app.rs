@@ -35,9 +35,10 @@ use crate::{
     storage::{
         Db,
         blocklists::SqliteBlocklistRepo,
+        query_log::SqliteQueryLogRepo,
         upstreams::{SqliteUpstreamRepo, UpstreamRepository},
     },
-    telemetry::{LiveLog, Stats, TelemetrySink},
+    telemetry::{LiveLog, QUERY_LOG_CHANNEL_CAPACITY, QueryLogWriter, Stats, TelemetrySink},
     web::{AdminServer, AppState},
 };
 
@@ -205,10 +206,13 @@ impl App {
             .await,
         ));
 
-        let telemetry = Arc::new(TelemetrySink::new(
-            Arc::new(LiveLog::default()),
-            Arc::new(Stats::new()),
-        ));
+        // Persist query events off the hot path: the sink `try_send`s onto a
+        // bounded channel that a dedicated writer task drains into SQLite.
+        let (query_log_tx, query_log_rx) = tokio::sync::mpsc::channel(QUERY_LOG_CHANNEL_CAPACITY);
+        let telemetry = Arc::new(
+            TelemetrySink::new(Arc::new(LiveLog::default()), Arc::new(Stats::new()))
+                .with_query_log(query_log_tx, Arc::clone(&state)),
+        );
 
         // ── Web admin shared state ────────────────────────────────────────────
         // Built from clones before the originals are moved into the engine, so
@@ -250,6 +254,13 @@ impl App {
 
         self.spawn_subsystem("blocklist-refresh", move |token| async move {
             scheduler.run(token).await;
+        });
+
+        // Drain persisted query events into SQLite, decoupled from the hot path.
+        let query_log_writer =
+            QueryLogWriter::new(query_log_rx, SqliteQueryLogRepo::new(db.pool().clone()));
+        self.spawn_subsystem("query-log-writer", move |token| async move {
+            query_log_writer.run(token).await;
         });
 
         // Close the tracker so `wait()` can complete once tracked tasks drain.
