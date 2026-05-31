@@ -1,10 +1,10 @@
 ---
 id: 6jr
 title: 'E10.9 · Docs: SPEC + README for persistent query log'
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:33:35.741115467Z
-updated: 2026-05-30T19:33:35.741115467Z
+updated: 2026-05-31T16:10:41.191976848Z
 tags:
 - docs
 depends_on:

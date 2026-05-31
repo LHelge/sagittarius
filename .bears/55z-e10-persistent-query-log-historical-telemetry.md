@@ -2,10 +2,10 @@
 id: 55z
 title: E10 · Persistent query log & historical telemetry
 type: epic
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:31:36.273077353Z
-updated: 2026-05-30T19:31:36.273077353Z
+updated: 2026-05-31T16:10:41.192119719Z
 tags:
 - telemetry
 - storage
