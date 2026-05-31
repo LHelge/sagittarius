@@ -199,6 +199,29 @@ impl Outcome {
         }
     }
 
+    /// The stable persistence token for this outcome, used as the on-disk
+    /// `query_log.outcome` value (E10).
+    ///
+    /// Unlike [`Display`](std::fmt::Display) (human labels for the UI, which may
+    /// change) these tokens are a wire format: kebab-case, distinct per variant,
+    /// and the exact inverse of [`FromStr`](std::str::FromStr). Never rename a
+    /// token once shipped — old rows would fail to decode.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::LocalNoData => "local-nodata",
+            Self::BlockedByAdmin => "blocked-admin",
+            Self::BlockedByBlocklist => "blocked-blocklist",
+            Self::Cached => "cached",
+            Self::Forwarded => "forwarded",
+            Self::Refused => "refused",
+            Self::Formerr => "formerr",
+            Self::Servfail => "servfail",
+            Self::Error => "error",
+        }
+    }
+
     /// The coarse category used to group outcomes in the live query log
     /// (filtering and badge styling): `blocked`, `cached`, `forwarded`,
     /// `local`, or `other`.
@@ -229,6 +252,42 @@ impl std::fmt::Display for Outcome {
             Self::Error => "error",
         };
         f.write_str(s)
+    }
+}
+
+/// Error returned by [`Outcome`]'s [`FromStr`](std::str::FromStr) when the input
+/// is not one of the stable [`Outcome::as_str`] tokens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseOutcomeError(String);
+
+impl std::fmt::Display for ParseOutcomeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown outcome token: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for ParseOutcomeError {}
+
+impl std::str::FromStr for Outcome {
+    type Err = ParseOutcomeError;
+
+    /// Parse a stable persistence token (the exact inverse of
+    /// [`Outcome::as_str`]). Human [`Display`](std::fmt::Display) labels are
+    /// *not* accepted.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "local" => Ok(Self::Local),
+            "local-nodata" => Ok(Self::LocalNoData),
+            "blocked-admin" => Ok(Self::BlockedByAdmin),
+            "blocked-blocklist" => Ok(Self::BlockedByBlocklist),
+            "cached" => Ok(Self::Cached),
+            "forwarded" => Ok(Self::Forwarded),
+            "refused" => Ok(Self::Refused),
+            "formerr" => Ok(Self::Formerr),
+            "servfail" => Ok(Self::Servfail),
+            "error" => Ok(Self::Error),
+            other => Err(ParseOutcomeError(other.to_owned())),
+        }
     }
 }
 
@@ -363,6 +422,53 @@ mod tests {
         assert_eq!(Outcome::Refused.category(), "other");
         assert_eq!(Outcome::Servfail.category(), "other");
         assert_eq!(Outcome::Error.category(), "other");
+    }
+
+    /// Every `Outcome` variant, for exhaustive table-driven tests. A `match` in
+    /// `as_str` keeps this honest: adding a variant without updating it fails to
+    /// compile, prompting an addition here too.
+    const ALL_OUTCOMES: &[Outcome] = &[
+        Outcome::Local,
+        Outcome::LocalNoData,
+        Outcome::BlockedByAdmin,
+        Outcome::BlockedByBlocklist,
+        Outcome::Cached,
+        Outcome::Forwarded,
+        Outcome::Refused,
+        Outcome::Formerr,
+        Outcome::Servfail,
+        Outcome::Error,
+    ];
+
+    #[test]
+    fn outcome_as_str_from_str_round_trips_every_variant() {
+        use std::str::FromStr as _;
+        for &outcome in ALL_OUTCOMES {
+            let token = outcome.as_str();
+            let parsed = Outcome::from_str(token)
+                .unwrap_or_else(|e| panic!("token {token:?} must parse back: {e}"));
+            assert_eq!(parsed, outcome, "round-trip mismatch for {token:?}");
+        }
+    }
+
+    #[test]
+    fn outcome_as_str_tokens_are_distinct() {
+        let mut tokens: Vec<&str> = ALL_OUTCOMES.iter().map(|o| o.as_str()).collect();
+        let count = tokens.len();
+        tokens.sort_unstable();
+        tokens.dedup();
+        assert_eq!(tokens.len(), count, "as_str tokens must all be distinct");
+    }
+
+    #[test]
+    fn outcome_from_str_rejects_unknown() {
+        use std::str::FromStr as _;
+        // An unknown token and a human Display label must both be rejected.
+        assert!(Outcome::from_str("nonsense").is_err());
+        assert!(
+            Outcome::from_str("blocked (admin)").is_err(),
+            "Display labels are not the persistence format"
+        );
     }
 
     #[test]

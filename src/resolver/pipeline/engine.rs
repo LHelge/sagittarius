@@ -41,6 +41,7 @@ use crate::{
     },
     storage::upstreams::{Transport, Upstream},
     telemetry::{QueryEvent, TelemetrySink},
+    time::Clock,
 };
 
 // ── TelemetryLayer ────────────────────────────────────────────────────────────
@@ -99,6 +100,7 @@ where
 
     fn call(&mut self, req: DnsRequest) -> Self::Future {
         let start = Instant::now();
+        let ts = Clock::now_millis();
         let client = req.client();
         let qname = req.question().name.clone();
         let qtype = req.question().qtype;
@@ -121,7 +123,9 @@ where
                 }
             };
 
-            let mut ev = QueryEvent::new(client, qname, qtype, outcome).with_latency(latency);
+            let mut ev = QueryEvent::new(client, qname, qtype, outcome)
+                .with_ts(ts)
+                .with_latency(latency);
             if let Some(rc) = rcode {
                 ev = ev.with_rcode(rc);
             }
