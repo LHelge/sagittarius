@@ -47,7 +47,11 @@ use crate::{
     resolver::pipeline::LogAction,
     storage::query_log::{QueryLogRecord, QueryLogRepository},
     telemetry::{QueryEvent, Stats},
-    web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay, render::WebError},
+    web::{
+        AppState, Chrome,
+        auth::CurrentUser,
+        render::{DomainDisplay, WebError, datastar_response},
+    },
 };
 
 /// How many rows to render per page (initial seed and each scroll-back step).
@@ -101,22 +105,20 @@ impl AppState {
             .filter_map(|r| LogRowView::from_record(r).render().ok())
             .collect();
 
-        let signal =
-            PatchSignals::new(format!(r#"{{"oldest":{new_oldest}}}"#)).write_as_axum_sse_event();
-        let rows_event = (!html.is_empty()).then(|| {
-            PatchElements::new(html)
-                .selector("#log-body")
-                .mode(ElementPatchMode::Append)
-                .write_as_axum_sse_event()
-        });
-
-        Sse::new(async_stream::stream! {
-            if let Some(rows) = rows_event {
-                yield Ok::<Event, Infallible>(rows);
-            }
-            yield Ok(signal);
-        })
-        .into_response()
+        // Append the older rows (if any), then update the scroll-back cursor.
+        let mut events = Vec::new();
+        if !html.is_empty() {
+            events.push(
+                PatchElements::new(html)
+                    .selector("#log-body")
+                    .mode(ElementPatchMode::Append)
+                    .write_as_axum_sse_event(),
+            );
+        }
+        events.push(
+            PatchSignals::new(format!(r#"{{"oldest":{new_oldest}}}"#)).write_as_axum_sse_event(),
+        );
+        datastar_response(events)
     }
 
     /// `GET /events` — the shared SSE stream feeding the log and dashboard.
