@@ -4,7 +4,7 @@
 //! implementation.  All DB interaction uses compile-time-checked `sqlx` macros
 //! against the `upstreams` table defined in the schema migration.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, future::Future, str::FromStr};
 
 use sqlx::SqlitePool;
 
@@ -144,33 +144,34 @@ fn rows_to_upstreams(rows: Vec<UpstreamRow>) -> Result<Vec<Upstream>> {
 
 /// Repository for reading and writing upstream resolver rows.
 ///
-/// # Note on `async_fn_in_trait`
+/// # `impl Future` instead of `async fn`
 ///
-/// We use `async fn` directly in the trait.  All implementations are in this
-/// crate, so we control the full `impl` surface and have no need for
-/// `Send`-bound flexibility across dynamic dispatch.  The lint is suppressed
-/// here rather than desugaring to `impl Future`.
-#[allow(async_fn_in_trait)]
+/// The repository traits declare methods as `fn(…) -> impl Future<Output = …>`
+/// rather than `async fn`. The two are equivalent for callers and the `impl`
+/// blocks still write `async fn`, but the explicit form avoids the
+/// `async_fn_in_trait` lint without committing every implementation to a `Send`
+/// bound. All call sites are concrete, so `Send` still leaks through where it is
+/// needed (axum handlers, spawned subsystems).
 pub trait UpstreamRepository {
     /// List all upstreams ordered by `sort_order`.
-    async fn list(&self) -> Result<Vec<Upstream>>;
+    fn list(&self) -> impl Future<Output = Result<Vec<Upstream>>>;
 
     /// List only enabled upstreams ordered by `sort_order`.
     ///
     /// This is the hot-path read used by the resolver (Epic E5).
-    async fn list_enabled(&self) -> Result<Vec<Upstream>>;
+    fn list_enabled(&self) -> impl Future<Output = Result<Vec<Upstream>>>;
 
     /// Insert a new upstream and return the inserted row (including the new `id`).
-    async fn insert(&self, upstream: NewUpstream) -> Result<Upstream>;
+    fn insert(&self, upstream: NewUpstream) -> impl Future<Output = Result<Upstream>>;
 
     /// Persist all mutable fields of an existing upstream row.
-    async fn update(&self, upstream: &Upstream) -> Result<()>;
+    fn update(&self, upstream: &Upstream) -> impl Future<Output = Result<()>>;
 
     /// Delete the upstream with the given `id`.
-    async fn delete(&self, id: i64) -> Result<()>;
+    fn delete(&self, id: i64) -> impl Future<Output = Result<()>>;
 
     /// Set the `enabled` flag on the upstream with the given `id`.
-    async fn set_enabled(&self, id: i64, enabled: bool) -> Result<()>;
+    fn set_enabled(&self, id: i64, enabled: bool) -> impl Future<Output = Result<()>>;
 }
 
 // ── SqliteUpstreamRepo ────────────────────────────────────────────────────────

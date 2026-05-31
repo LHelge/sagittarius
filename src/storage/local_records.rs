@@ -18,7 +18,7 @@
 //! consistent comparison with the resolver's `HashSet<Name>` lookups for
 //! normal labels.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, future::Future, str::FromStr};
 
 use sqlx::SqlitePool;
 
@@ -165,13 +165,8 @@ fn normalize_local_name(name: &str) -> String {
 
 /// Repository for reading and writing local DNS records.
 ///
-/// # Note on `async_fn_in_trait`
-///
-/// We use `async fn` directly in the trait.  All implementations live in this
-/// crate, so we control the full `impl` surface and have no need for
-/// `Send`-bound flexibility across dynamic dispatch.  The lint is suppressed
-/// here rather than desugaring to `impl Future`.
-#[allow(async_fn_in_trait)]
+/// See [`UpstreamRepository`](super::upstreams::UpstreamRepository) for why the
+/// methods return `impl Future` rather than `async fn`.
 pub trait LocalRecordRepository {
     /// Insert a new local record and return the full inserted row (including
     /// the auto-assigned `id`).
@@ -184,17 +179,17 @@ pub trait LocalRecordRepository {
     /// `UNIQUE (name, record_type)` constraint violation if a record with the
     /// same normalized name **and** the same type already exists.  A record
     /// with the same name but a **different** type succeeds.
-    async fn add(&self, record: NewLocalRecord) -> Result<LocalRecord>;
+    fn add(&self, record: NewLocalRecord) -> impl Future<Output = Result<LocalRecord>>;
 
     /// Delete the local record with the given `id`.
     ///
     /// If no row with that `id` exists, the call succeeds silently (no-op).
-    async fn remove(&self, id: i64) -> Result<()>;
+    fn remove(&self, id: i64) -> impl Future<Output = Result<()>>;
 
     /// List all local records ordered by name, then record type.
     ///
     /// Intended for the admin UI.
-    async fn list(&self) -> Result<Vec<LocalRecord>>;
+    fn list(&self) -> impl Future<Output = Result<Vec<LocalRecord>>>;
 
     /// Load all local records (same as [`list`](Self::list)).
     ///
@@ -202,7 +197,7 @@ pub trait LocalRecordRepository {
     /// to hydrate its in-memory data structures.  Provided as a separate
     /// method to clearly signal the hydration intent and allow future
     /// specialization (e.g. a subset filter).
-    async fn load_all(&self) -> Result<Vec<LocalRecord>>;
+    fn load_all(&self) -> impl Future<Output = Result<Vec<LocalRecord>>>;
 }
 
 // ── SqliteLocalRecordRepo ─────────────────────────────────────────────────────
