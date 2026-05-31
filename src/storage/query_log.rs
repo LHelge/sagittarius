@@ -40,7 +40,8 @@ pub struct QueryLogRecord {
     pub client: String,
     /// Queried name (canonical form, with trailing dot).
     pub qname: String,
-    /// Query type rendered as text (`A`, `AAAA`, or `TYPE<n>` for unknowns).
+    /// Query type rendered as text — an IANA mnemonic (`A`, `AAAA`, `HTTPS`, …)
+    /// or the RFC 3597 `TYPE<n>` form for unrecognized types.
     pub qtype: String,
     /// How the query was resolved.
     pub outcome: Outcome,

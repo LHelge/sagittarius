@@ -99,6 +99,40 @@ impl From<Qtype> for u16 {
     }
 }
 
+impl Qtype {
+    /// IANA mnemonic for a well-known QTYPE number, or `None` if unrecognized.
+    ///
+    /// Purely a presentation aid: the engine only answers `A`/`AAAA`
+    /// authoritatively and forwards everything else as raw bytes, so these
+    /// extra types are *not* enum variants — they're named here only so the
+    /// query log shows `HTTPS` rather than `TYPE65` for the records modern
+    /// clients query most. Anything not listed falls back to RFC 3597 `TYPE<n>`.
+    fn well_known_name(value: u16) -> Option<&'static str> {
+        Some(match value {
+            2 => "NS",
+            5 => "CNAME",
+            6 => "SOA",
+            12 => "PTR",
+            15 => "MX",
+            16 => "TXT",
+            33 => "SRV",
+            35 => "NAPTR",
+            39 => "DNAME",
+            43 => "DS",
+            46 => "RRSIG",
+            47 => "NSEC",
+            48 => "DNSKEY",
+            50 => "NSEC3",
+            52 => "TLSA",
+            64 => "SVCB",
+            65 => "HTTPS",
+            255 => "ANY",
+            257 => "CAA",
+            _ => return None,
+        })
+    }
+}
+
 impl std::fmt::Display for Qtype {
     /// Canonical presentation form: the mnemonic for known types, and the
     /// RFC 3597 generic `TYPE<n>` representation for unknown ones. This is the
@@ -107,7 +141,10 @@ impl std::fmt::Display for Qtype {
         match self {
             Self::A => f.write_str("A"),
             Self::Aaaa => f.write_str("AAAA"),
-            Self::Other(v) => write!(f, "TYPE{v}"),
+            Self::Other(v) => match Self::well_known_name(*v) {
+                Some(name) => f.write_str(name),
+                None => write!(f, "TYPE{v}"),
+            },
         }
     }
 }
@@ -509,8 +546,13 @@ mod tests {
     fn qtype_display_uses_mnemonic_and_rfc3597_generic() {
         assert_eq!(Qtype::A.to_string(), "A");
         assert_eq!(Qtype::Aaaa.to_string(), "AAAA");
-        // Unknown types render as the RFC 3597 generic form.
-        assert_eq!(Qtype::Other(15).to_string(), "TYPE15");
+        // Well-known types render with their IANA mnemonic.
+        assert_eq!(Qtype::Other(65).to_string(), "HTTPS");
+        assert_eq!(Qtype::Other(64).to_string(), "SVCB");
+        assert_eq!(Qtype::Other(5).to_string(), "CNAME");
+        assert_eq!(Qtype::Other(15).to_string(), "MX");
+        // Genuinely unknown types fall back to the RFC 3597 generic form.
+        assert_eq!(Qtype::Other(1000).to_string(), "TYPE1000");
     }
 
     #[test]
