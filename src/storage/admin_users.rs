@@ -242,14 +242,10 @@ impl AdminUserRepository for SqliteAdminUserRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::Db;
     use tempfile::TempDir;
 
     async fn open_repo() -> (TempDir, SqliteAdminUserRepo) {
-        let dir = TempDir::new().expect("temp dir");
-        let db = Db::connect(dir.path().join("test.db"))
-            .await
-            .expect("connect");
+        let (dir, db) = crate::test_support::temp_db().await;
         (dir, SqliteAdminUserRepo::new(db.pool().clone()))
     }
 

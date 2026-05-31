@@ -206,13 +206,11 @@ mod tests {
     use crate::{
         codec::{message::Qtype, name::Name},
         resolver::local::LocalMatch,
-        storage::Db,
     };
     use tempfile::TempDir;
 
     async fn state() -> (TempDir, AppState) {
-        let dir = TempDir::new().unwrap();
-        let db = Db::connect(dir.path().join("t.db")).await.unwrap();
+        let (dir, db) = crate::test_support::temp_db().await;
         let st = AppState::for_test(db).await;
         (dir, st)
     }

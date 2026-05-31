@@ -351,10 +351,7 @@ mod tests {
 
     /// Build an [`AppState`] backed by a fresh temp database for tests.
     async fn test_state() -> (TempDir, AppState) {
-        let dir = TempDir::new().expect("temp dir");
-        let db = Db::connect(dir.path().join("test.db"))
-            .await
-            .expect("connect db");
+        let (dir, db) = crate::test_support::temp_db().await;
         let state = AppState::for_test(db).await;
         (dir, state)
     }

@@ -342,12 +342,11 @@ fn toast(message: String) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{codec::name::Name, storage::Db};
+    use crate::codec::name::Name;
     use tempfile::TempDir;
 
     async fn state() -> (TempDir, AppState) {
-        let dir = TempDir::new().unwrap();
-        let db = Db::connect(dir.path().join("t.db")).await.unwrap();
+        let (dir, db) = crate::test_support::temp_db().await;
         let st = AppState::for_test(db).await;
         (dir, st)
     }

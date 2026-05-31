@@ -160,15 +160,12 @@ impl SessionRepository for SqliteSessionRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Db, admin_users::AdminUserRepository, admin_users::SqliteAdminUserRepo};
+    use crate::storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo};
     use tempfile::TempDir;
 
     /// Open a DB and seed one admin user (sessions FK-reference admin_users).
     async fn open_repo() -> (TempDir, SqliteSessionRepo, i64) {
-        let dir = TempDir::new().expect("temp dir");
-        let db = Db::connect(dir.path().join("test.db"))
-            .await
-            .expect("connect");
+        let (dir, db) = crate::test_support::temp_db().await;
         let user = SqliteAdminUserRepo::new(db.pool().clone())
             .create("admin", "$argon2id$dummy")
             .await

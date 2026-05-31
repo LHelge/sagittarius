@@ -202,14 +202,10 @@ mod tests {
             writer::Writer,
         },
         resolver::state::ResolverState,
-        storage::Db,
     };
 
     async fn hydrate_state() -> (TempDir, Arc<ResolverState>) {
-        let dir = TempDir::new().expect("temp dir");
-        let db = Db::connect(dir.path().join("test.db"))
-            .await
-            .expect("connect");
+        let (dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
         (dir, state)
     }

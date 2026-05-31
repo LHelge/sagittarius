@@ -142,8 +142,7 @@ mod tests {
     };
 
     async fn open_repo() -> (TempDir, SqliteQueryLogRepo, Db) {
-        let dir = TempDir::new().expect("temp dir");
-        let db = Db::connect(dir.path().join("t.db")).await.expect("connect");
+        let (dir, db) = crate::test_support::temp_db().await;
         let repo = db.query_log();
         (dir, repo, db)
     }

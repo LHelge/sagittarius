@@ -239,12 +239,11 @@ struct SettingsPageTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{codec::synth::BlockMode, storage::Db};
+    use crate::codec::synth::BlockMode;
     use tempfile::TempDir;
 
     async fn state() -> (TempDir, AppState) {
-        let dir = TempDir::new().unwrap();
-        let db = Db::connect(dir.path().join("t.db")).await.unwrap();
+        let (dir, db) = crate::test_support::temp_db().await;
         (dir, AppState::for_test(db).await)
     }
 
