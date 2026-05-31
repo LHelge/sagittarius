@@ -35,7 +35,10 @@ use std::{path::Path, time::Duration};
 
 use sqlx::{
     SqlitePool,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+    sqlite::{
+        SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions,
+        SqliteSynchronous,
+    },
 };
 
 // ── Errors ─────────────────────────────────────────────────────────────────
@@ -78,6 +81,11 @@ pub enum Error {
 /// - `synchronous = NORMAL` — safe crash consistency with WAL.
 /// - 5-second busy timeout — appropriate for SQLite's single-writer model.
 /// - Foreign key enforcement enabled.
+/// - Incremental auto-vacuum so the query-log retention purge (E10.5) can
+///   return freed pages to the OS via `PRAGMA incremental_vacuum`. This only
+///   takes effect on a **freshly created** database; an existing DB keeps
+///   whatever auto-vacuum mode it was created with (its space is reused but not
+///   returned, which we accept rather than running a whole-DB `VACUUM`).
 /// - Maximum 5 connections — modest, given SQLite is single-writer.
 #[derive(Debug, Clone)]
 pub struct Db {
@@ -102,6 +110,7 @@ impl Db {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(5))
+            .auto_vacuum(SqliteAutoVacuum::Incremental)
             .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()
@@ -483,6 +492,131 @@ mod tests {
             .await
             .expect("query journal_mode");
         assert_eq!(mode, "wal", "journal_mode must be WAL");
+    }
+
+    #[tokio::test]
+    async fn auto_vacuum_is_incremental_on_fresh_db() {
+        let (_dir, db) = open_temp_db().await;
+        // 0 = NONE, 1 = FULL, 2 = INCREMENTAL.
+        let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum;")
+            .fetch_one(db.pool())
+            .await
+            .expect("query auto_vacuum");
+        assert_eq!(mode, 2, "auto_vacuum must be INCREMENTAL (2) on a fresh DB");
+    }
+
+    // ── query_log migration (E10.1) ───────────────────────────────────────────
+
+    /// The query_log table and all its columns must exist after migration.
+    #[tokio::test]
+    async fn query_log_table_and_columns_exist() {
+        let (_dir, db) = open_temp_db().await;
+
+        let table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'query_log'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for query_log");
+        assert_eq!(table_count, 1, "query_log table must exist");
+
+        let columns = [
+            "id",
+            "ts",
+            "client",
+            "qname",
+            "qtype",
+            "outcome",
+            "rcode",
+            "upstream",
+            "latency_ms",
+        ];
+        for column in columns {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('query_log') WHERE name = ?",
+            )
+            .bind(column)
+            .fetch_one(db.pool())
+            .await
+            .unwrap_or_else(|e| panic!("pragma_table_info for query_log.{column}: {e}"));
+            assert_eq!(count, 1, "column '{column}' must exist in query_log");
+        }
+    }
+
+    /// The retention-purge index on query_log.ts must exist.
+    #[tokio::test]
+    async fn query_log_ts_index_exists() {
+        let (_dir, db) = open_temp_db().await;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'index' AND tbl_name = 'query_log' AND name = 'idx_query_log_ts'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for idx_query_log_ts");
+        assert_eq!(count, 1, "idx_query_log_ts must exist");
+    }
+
+    /// The new settings columns must exist with their seeded defaults (1 / 30).
+    #[tokio::test]
+    async fn query_log_settings_defaults() {
+        let (_dir, db) = open_temp_db().await;
+
+        let enabled: i64 =
+            sqlx::query_scalar("SELECT query_log_enabled FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("query_log_enabled");
+        assert_eq!(enabled, 1, "query_log_enabled must default to 1");
+
+        let retention: i64 =
+            sqlx::query_scalar("SELECT query_log_retention_days FROM settings WHERE id = 1")
+                .fetch_one(db.pool())
+                .await
+                .expect("query_log_retention_days");
+        assert_eq!(retention, 30, "query_log_retention_days must default to 30");
+    }
+
+    /// The down migration must cleanly drop the table, index, and both columns.
+    #[tokio::test]
+    async fn query_log_down_migration_is_clean_inverse() {
+        let (_dir, db) = open_temp_db().await;
+
+        let down_sql = include_str!("../../migrations/20260529130933_query_log.down.sql");
+        sqlx::raw_sql(down_sql)
+            .execute(db.pool())
+            .await
+            .expect("apply query_log down migration");
+
+        let table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'query_log'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for query_log after down");
+        assert_eq!(table_count, 0, "query_log table must be dropped");
+
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_query_log_ts'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for idx after down");
+        assert_eq!(index_count, 0, "idx_query_log_ts must be dropped");
+
+        for column in ["query_log_enabled", "query_log_retention_days"] {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name = ?",
+            )
+            .bind(column)
+            .fetch_one(db.pool())
+            .await
+            .unwrap_or_else(|e| panic!("pragma_table_info for settings.{column}: {e}"));
+            assert_eq!(
+                count, 0,
+                "settings.{column} must be dropped by down migration"
+            );
+        }
     }
 
     #[tokio::test]
