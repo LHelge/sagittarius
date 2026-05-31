@@ -369,10 +369,7 @@ mod tests {
         tempfile::TempDir,
         Arc<crate::resolver::state::ResolverState>,
     ) {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let db = crate::storage::Db::connect(dir.path().join("t.db"))
-            .await
-            .expect("connect");
+        let (dir, db) = crate::test_support::temp_db().await;
         let state = crate::resolver::state::ResolverState::hydrate(&db)
             .await
             .expect("hydrate");

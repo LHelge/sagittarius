@@ -30,3 +30,6 @@ pub mod storage;
 pub mod telemetry;
 pub mod time;
 pub mod web;
+
+#[cfg(test)]
+mod test_support;
