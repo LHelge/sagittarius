@@ -4,7 +4,17 @@
 //! whole seconds since the Unix epoch.  Rather than repeat the `SystemTime`
 //! incantation, they go through [`Clock`].
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// A [`Duration`] of `n` whole days.
+///
+/// Centralizes the day→seconds arithmetic that would otherwise appear as bare
+/// `n * 24 * 3600` / `n * 86_400_000` literals across the retention purge,
+/// dashboard window, and session-timeout constants. `const fn`, so it can seed
+/// `const` values.
+pub const fn days(n: u64) -> Duration {
+    Duration::from_secs(n * 86_400)
+}
 
 /// The system wall clock, expressed as whole seconds since the Unix epoch.
 pub struct Clock;
@@ -32,6 +42,15 @@ impl Clock {
             .unwrap_or_default()
             .as_millis() as i64
     }
+
+    /// Epoch-millisecond cutoff `d` in the past — i.e. `now_millis() - d`.
+    ///
+    /// The single place "now minus a window" is computed for retention/dashboard
+    /// boundaries, so the duration unit is converted once instead of via bare
+    /// `* 86_400_000` arithmetic at each call site.
+    pub fn millis_ago(d: Duration) -> i64 {
+        Self::now_millis() - d.as_millis() as i64
+    }
 }
 
 #[cfg(test)]
@@ -44,6 +63,23 @@ mod tests {
         let b = Clock::now_secs();
         assert!(a > 1_700_000_000, "clock should be well past 2023: {a}");
         assert!(b >= a, "time should not go backwards within a test");
+    }
+
+    #[test]
+    fn days_converts_to_seconds() {
+        assert_eq!(days(0), Duration::ZERO);
+        assert_eq!(days(1).as_secs(), 86_400);
+        assert_eq!(days(30).as_secs(), 2_592_000);
+    }
+
+    #[test]
+    fn millis_ago_subtracts_the_window() {
+        let before = Clock::now_millis();
+        let cutoff = Clock::millis_ago(days(1));
+        let after = Clock::now_millis();
+        // cutoff must be ~one day behind "now", bracketed by readings around it.
+        assert!(cutoff <= before - 86_400_000 + 5);
+        assert!(cutoff >= after - 86_400_000 - 5);
     }
 
     #[test]

@@ -16,18 +16,20 @@ use askama::Template;
 use askama_web::WebTemplate;
 use axum::{extract::State, response::IntoResponse};
 
+use std::time::Duration;
+
 use crate::{
     storage::query_log::{QueryLogCounts, QueryLogRepository, SqliteQueryLogRepo},
     telemetry::StatsSnapshot,
-    time::Clock,
+    time::{self, Clock},
     web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay},
 };
 
 /// How many entries to show in the top-domains / top-clients tables.
 const TOP_N: usize = 10;
 
-/// The persisted-figures window: the last 24 hours, in milliseconds.
-const WINDOW_MS: i64 = 24 * 3_600 * 1_000;
+/// The persisted-figures window: the last 24 hours.
+const WINDOW: Duration = time::days(1);
 
 impl AppState {
     /// `GET /` — the dashboard.
@@ -41,7 +43,7 @@ impl AppState {
         // Persisted 24h window. On a DB error the figures degrade to zeros
         // rather than failing the whole page.
         let repo = SqliteQueryLogRepo::new(state.db.pool().clone());
-        let since = Clock::now_millis() - WINDOW_MS;
+        let since = Clock::millis_ago(WINDOW);
         let window = WindowStats {
             counts: repo.counts_since(since).await.unwrap_or_default(),
             top_domains: repo

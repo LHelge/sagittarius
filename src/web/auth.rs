@@ -68,9 +68,9 @@ use crate::{
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Rolling idle lifetime: a session goes stale this long after its last use.
-const IDLE_SECS: i64 = 7 * 24 * 3600;
+const IDLE_SECS: i64 = crate::time::days(7).as_secs() as i64;
 /// Absolute lifetime: a session cannot live longer than this since creation.
-const ABSOLUTE_SECS: i64 = 30 * 24 * 3600;
+const ABSOLUTE_SECS: i64 = crate::time::days(30).as_secs() as i64;
 /// Only slide the idle-expiry forward (a DB write) when it would extend the
 /// window by more than this, to avoid a write on every single request.
 const RENEW_THRESHOLD_SECS: i64 = 3600;
