@@ -1,10 +1,10 @@
 ---
 id: 5kt
 title: E10.8 · Historical dashboard (windowed, restart-surviving)
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:33:10.373409282Z
-updated: 2026-05-30T19:33:10.373409282Z
+updated: 2026-05-31T16:07:32.751167518Z
 tags:
 - web
 depends_on:
