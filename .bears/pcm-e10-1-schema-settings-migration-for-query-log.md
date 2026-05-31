@@ -1,10 +1,10 @@
 ---
 id: pcm
 title: E10.1 · Schema & settings migration for query log
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:31:49.663136807Z
-updated: 2026-05-30T19:31:49.663136807Z
+updated: 2026-05-31T15:28:08.628617761Z
 tags:
 - storage
 parent: 55z
