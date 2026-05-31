@@ -20,13 +20,11 @@
 //! The full management screens (add/remove/list pages) build on the same core
 //! helpers in E8.8.
 
-use std::convert::Infallible;
-
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
     extract::{Query, State},
-    response::{IntoResponse, Redirect, Response, Sse, sse::Event},
+    response::{IntoResponse, Redirect, Response},
 };
 use datastar::prelude::PatchElements;
 use serde::Deserialize;
@@ -37,7 +35,7 @@ use crate::{
     web::{
         AppState,
         auth::CurrentUser,
-        render::{DomainDisplay, WebError},
+        render::{DomainDisplay, WebError, datastar_response},
     },
 };
 
@@ -340,12 +338,7 @@ fn toast(message: String) -> Response {
         r#"<div id="sgt-toast" class="sgt-toast sgt-notice--ok" role="status">{}</div>"#,
         crate::web::render::html_escape(&message)
     );
-    let event = PatchElements::new(html).write_as_axum_sse_event();
-
-    Sse::new(async_stream::stream! {
-        yield Ok::<Event, Infallible>(event);
-    })
-    .into_response()
+    datastar_response(vec![PatchElements::new(html).write_as_axum_sse_event()])
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
