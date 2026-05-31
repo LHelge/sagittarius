@@ -20,27 +20,29 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// Maps to/from the `transport` TEXT column values `'udp'`, `'tcp'`, `'dot'`,
 /// and `'doh'`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum Transport {
     /// Plain UDP (RFC 1035).
+    #[strum(serialize = "udp")]
     Udp,
     /// Plain TCP (RFC 1035).
+    #[strum(serialize = "tcp")]
     Tcp,
     /// DNS-over-TLS (RFC 7858).
+    #[strum(serialize = "dot")]
     Dot,
     /// DNS-over-HTTPS (RFC 8484).
+    #[strum(serialize = "doh")]
     Doh,
 }
 
 impl Transport {
     /// Returns the canonical TEXT representation stored in the database.
+    ///
+    /// Driven by `#[strum(serialize)]` ([`strum::IntoStaticStr`]); the
+    /// value-carrying [`FromStr`] below is the inverse.
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Udp => "udp",
-            Self::Tcp => "tcp",
-            Self::Dot => "dot",
-            Self::Doh => "doh",
-        }
+        self.into()
     }
 }
 

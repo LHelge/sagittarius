@@ -35,21 +35,23 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Maps to/from the `record_type` TEXT column values `'A'` and `'AAAA'`.
 /// This is a focused subset; it deliberately does not reuse
 /// [`crate::codec::header::Qtype`], which allows arbitrary `Other` values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum RecordType {
     /// IPv4 address record.
+    #[strum(serialize = "A")]
     A,
     /// IPv6 address record.
+    #[strum(serialize = "AAAA")]
     Aaaa,
 }
 
 impl RecordType {
     /// Returns the canonical TEXT representation stored in the database.
+    ///
+    /// Driven by `#[strum(serialize)]` ([`strum::IntoStaticStr`]); the
+    /// value-carrying [`FromStr`] below is the inverse.
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::A => "A",
-            Self::Aaaa => "AAAA",
-        }
+        self.into()
     }
 }
 

@@ -23,20 +23,23 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// The privilege level of an admin user.
 ///
 /// Maps to/from the `role` TEXT column.  v0.1 only defines `admin`; new roles
-/// are added as variants here and to [`Role::as_str`] / [`Role::from_str`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// are added as variants here (with a `#[strum(serialize)]` token) and to
+/// [`Role::from_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, strum::IntoStaticStr)]
 pub enum Role {
     /// Full administrative access (the only role in v0.1).
     #[default]
+    #[strum(serialize = "admin")]
     Admin,
 }
 
 impl Role {
     /// Returns the canonical TEXT representation stored in the database.
+    ///
+    /// Driven by `#[strum(serialize)]` ([`strum::IntoStaticStr`]); the
+    /// value-carrying [`FromStr`] below is the inverse.
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Admin => "admin",
-        }
+        self.into()
     }
 }
 

@@ -113,7 +113,7 @@ impl TryFrom<QueryLogRow> for QueryLogRecord {
             outcome: row
                 .outcome
                 .parse::<Outcome>()
-                .map_err(|e| Error::Decode(e.to_string()))?,
+                .map_err(|_| Error::Decode(format!("unknown outcome token: {:?}", row.outcome)))?,
             rcode: row.rcode,
             upstream: row.upstream,
             latency_ms: row.latency_ms,

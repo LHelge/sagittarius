@@ -153,28 +153,46 @@ pub enum LogAction {
 /// Used for telemetry (E6.6) and admin UI one-click actions (E8).  The
 /// classifier methods [`Outcome::is_blocked`] and [`Outcome::log_action`]
 /// encode the SPEC §9 rules about which action each outcome offers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The `#[strum(serialize = …)]` tokens are the stable on-disk
+/// `query_log.outcome` values: `IntoStaticStr` drives [`Outcome::as_str`] and
+/// `EnumString` drives [`FromStr`](std::str::FromStr) from the same single
+/// source of truth, so the two can never drift. `EnumIter` lets tests iterate
+/// every variant without a hand-maintained list. The human-facing
+/// [`Display`](std::fmt::Display) labels are intentionally *separate* (see below).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum::EnumString, strum::IntoStaticStr, strum::EnumIter,
+)]
 pub enum Outcome {
     /// Answered from an authoritative local record.
+    #[strum(serialize = "local")]
     Local,
     /// Local name exists but has no record for the requested QTYPE
     /// (authoritative NODATA response).
+    #[strum(serialize = "local-nodata")]
     LocalNoData,
     /// Blocked by the admin blacklist; the allowlist cannot override this.
+    #[strum(serialize = "blocked-admin")]
     BlockedByAdmin,
     /// Blocked by an aggregated blocklist entry; the allowlist *can* override.
+    #[strum(serialize = "blocked-blocklist")]
     BlockedByBlocklist,
     /// Served from the moka raw-bytes cache (TTL still valid).
+    #[strum(serialize = "cached")]
     Cached,
     /// Resolved via an upstream resolver.
+    #[strum(serialize = "forwarded")]
     Forwarded,
     /// Rejected by protective middleware (rate-limit / load-shed) — REFUSED.
+    #[strum(serialize = "refused")]
     Refused,
     /// Malformed query with a recoverable transaction ID — FORMERR.
+    #[strum(serialize = "formerr")]
     Formerr,
     /// All upstreams failed or the per-request timeout elapsed — SERVFAIL.
+    #[strum(serialize = "servfail")]
     Servfail,
     /// Internal or other unclassified error.
+    #[strum(serialize = "error")]
     Error,
 }
 
@@ -205,21 +223,10 @@ impl Outcome {
     /// Unlike [`Display`](std::fmt::Display) (human labels for the UI, which may
     /// change) these tokens are a wire format: kebab-case, distinct per variant,
     /// and the exact inverse of [`FromStr`](std::str::FromStr). Never rename a
-    /// token once shipped — old rows would fail to decode.
+    /// `#[strum(serialize)]` token once shipped — old rows would fail to decode.
     #[must_use]
     pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::LocalNoData => "local-nodata",
-            Self::BlockedByAdmin => "blocked-admin",
-            Self::BlockedByBlocklist => "blocked-blocklist",
-            Self::Cached => "cached",
-            Self::Forwarded => "forwarded",
-            Self::Refused => "refused",
-            Self::Formerr => "formerr",
-            Self::Servfail => "servfail",
-            Self::Error => "error",
-        }
+        self.into()
     }
 
     /// The coarse category used to group outcomes in the live query log
@@ -252,42 +259,6 @@ impl std::fmt::Display for Outcome {
             Self::Error => "error",
         };
         f.write_str(s)
-    }
-}
-
-/// Error returned by [`Outcome`]'s [`FromStr`](std::str::FromStr) when the input
-/// is not one of the stable [`Outcome::as_str`] tokens.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseOutcomeError(String);
-
-impl std::fmt::Display for ParseOutcomeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unknown outcome token: {:?}", self.0)
-    }
-}
-
-impl std::error::Error for ParseOutcomeError {}
-
-impl std::str::FromStr for Outcome {
-    type Err = ParseOutcomeError;
-
-    /// Parse a stable persistence token (the exact inverse of
-    /// [`Outcome::as_str`]). Human [`Display`](std::fmt::Display) labels are
-    /// *not* accepted.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "local" => Ok(Self::Local),
-            "local-nodata" => Ok(Self::LocalNoData),
-            "blocked-admin" => Ok(Self::BlockedByAdmin),
-            "blocked-blocklist" => Ok(Self::BlockedByBlocklist),
-            "cached" => Ok(Self::Cached),
-            "forwarded" => Ok(Self::Forwarded),
-            "refused" => Ok(Self::Refused),
-            "formerr" => Ok(Self::Formerr),
-            "servfail" => Ok(Self::Servfail),
-            "error" => Ok(Self::Error),
-            other => Err(ParseOutcomeError(other.to_owned())),
-        }
     }
 }
 
@@ -424,26 +395,11 @@ mod tests {
         assert_eq!(Outcome::Error.category(), "other");
     }
 
-    /// Every `Outcome` variant, for exhaustive table-driven tests. A `match` in
-    /// `as_str` keeps this honest: adding a variant without updating it fails to
-    /// compile, prompting an addition here too.
-    const ALL_OUTCOMES: &[Outcome] = &[
-        Outcome::Local,
-        Outcome::LocalNoData,
-        Outcome::BlockedByAdmin,
-        Outcome::BlockedByBlocklist,
-        Outcome::Cached,
-        Outcome::Forwarded,
-        Outcome::Refused,
-        Outcome::Formerr,
-        Outcome::Servfail,
-        Outcome::Error,
-    ];
-
     #[test]
     fn outcome_as_str_from_str_round_trips_every_variant() {
         use std::str::FromStr as _;
-        for &outcome in ALL_OUTCOMES {
+        use strum::IntoEnumIterator as _;
+        for outcome in Outcome::iter() {
             let token = outcome.as_str();
             let parsed = Outcome::from_str(token)
                 .unwrap_or_else(|e| panic!("token {token:?} must parse back: {e}"));
@@ -453,7 +409,8 @@ mod tests {
 
     #[test]
     fn outcome_as_str_tokens_are_distinct() {
-        let mut tokens: Vec<&str> = ALL_OUTCOMES.iter().map(|o| o.as_str()).collect();
+        use strum::IntoEnumIterator as _;
+        let mut tokens: Vec<&str> = Outcome::iter().map(|o| o.as_str()).collect();
         let count = tokens.len();
         tokens.sort_unstable();
         tokens.dedup();
