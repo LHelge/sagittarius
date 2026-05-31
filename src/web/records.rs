@@ -103,11 +103,11 @@ impl AppState {
     }
 
     /// `GET /local`.
-    pub async fn local_page(user: CurrentUser, State(state): State<AppState>) -> Response {
-        match state.render_local(&user, None).await {
-            Ok(t) => t.into_response(),
-            Err(e) => e.into_response(),
-        }
+    pub async fn local_page(
+        user: CurrentUser,
+        State(state): State<AppState>,
+    ) -> Result<Response, WebError> {
+        Ok(state.render_local(&user, None).await?.into_response())
     }
 
     /// `POST /local/add`.
@@ -115,23 +115,22 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<AddLocalForm>,
-    ) -> Response {
-        let record_type = match form.record_type.parse::<RecordType>() {
-            Ok(t) => t,
-            Err(_) => {
-                return WebError::bad_request("Record type must be A or AAAA.").into_response();
-            }
-        };
+    ) -> Result<Response, WebError> {
+        let record_type = form
+            .record_type
+            .parse::<RecordType>()
+            .map_err(|_| WebError::bad_request("Record type must be A or AAAA."))?;
         match state
             .add_local_record(&form.name, record_type, &form.value, form.ttl)
             .await
         {
-            Ok(()) => Redirect::to("/local").into_response(),
-            Err(WebError::BadRequest(msg)) => match state.render_local(&user, Some(msg)).await {
-                Ok(t) => (StatusCode::BAD_REQUEST, t).into_response(),
-                Err(e) => e.into_response(),
-            },
-            Err(e) => e.into_response(),
+            Ok(()) => Ok(Redirect::to("/local").into_response()),
+            // A validation error re-renders the form with the message and a 400.
+            Err(WebError::BadRequest(msg)) => {
+                let page = state.render_local(&user, Some(msg)).await?;
+                Ok((StatusCode::BAD_REQUEST, page).into_response())
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -140,11 +139,9 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<RemoveLocalForm>,
-    ) -> Response {
-        match state.remove_local_record(form.id).await {
-            Ok(()) => Redirect::to("/local").into_response(),
-            Err(e) => e.into_response(),
-        }
+    ) -> Result<Response, WebError> {
+        state.remove_local_record(form.id).await?;
+        Ok(Redirect::to("/local").into_response())
     }
 }
 

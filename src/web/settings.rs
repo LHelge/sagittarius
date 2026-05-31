@@ -68,11 +68,14 @@ impl AppState {
     }
 
     /// `GET /settings`.
-    pub async fn settings_page(user: CurrentUser, State(state): State<AppState>) -> Response {
-        match state.render_settings(&user, None, None).await {
-            Ok(t) => t.into_response(),
-            Err(e) => e.into_response(),
-        }
+    pub async fn settings_page(
+        user: CurrentUser,
+        State(state): State<AppState>,
+    ) -> Result<Response, WebError> {
+        Ok(state
+            .render_settings(&user, None, None)
+            .await?
+            .into_response())
     }
 
     /// `POST /settings`.
@@ -80,37 +83,31 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<SettingsForm>,
-    ) -> Response {
+    ) -> Result<Response, WebError> {
         match state.apply_settings(form).await {
-            Ok(()) => match state
+            Ok(()) => Ok(state
                 .render_settings(&user, None, Some("Settings saved.".to_owned()))
-                .await
-            {
-                Ok(t) => t.into_response(),
-                Err(e) => e.into_response(),
-            },
+                .await?
+                .into_response()),
+            // A validation error re-renders the form with the message and a 400.
             Err(WebError::BadRequest(msg)) => {
-                match state.render_settings(&user, Some(msg), None).await {
-                    Ok(t) => (StatusCode::BAD_REQUEST, t).into_response(),
-                    Err(e) => e.into_response(),
-                }
+                let page = state.render_settings(&user, Some(msg), None).await?;
+                Ok((StatusCode::BAD_REQUEST, page).into_response())
             }
-            Err(e) => e.into_response(),
+            Err(e) => Err(e),
         }
     }
 
     /// `POST /settings/clear-log` — delete all persisted query-log history.
-    pub async fn settings_clear_log(user: CurrentUser, State(state): State<AppState>) -> Response {
-        if let Err(e) = state.db.query_log().clear_all().await {
-            return WebError::from(e).into_response();
-        }
-        match state
+    pub async fn settings_clear_log(
+        user: CurrentUser,
+        State(state): State<AppState>,
+    ) -> Result<Response, WebError> {
+        state.db.query_log().clear_all().await?;
+        Ok(state
             .render_settings(&user, None, Some("Query log cleared.".to_owned()))
-            .await
-        {
-            Ok(t) => t.into_response(),
-            Err(e) => e.into_response(),
-        }
+            .await?
+            .into_response())
     }
 
     /// Validate and persist a settings form, then refresh the live snapshot.
