@@ -200,7 +200,7 @@ impl LogRowView {
             0,
             client,
             qname,
-            format!("{:?}", ev.qtype),
+            ev.qtype.to_string(),
             ev.outcome.to_string(),
             ev.outcome.category(),
             ev.outcome.log_action(),
