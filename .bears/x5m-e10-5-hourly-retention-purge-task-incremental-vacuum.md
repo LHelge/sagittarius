@@ -1,10 +1,10 @@
 ---
 id: x5m
 title: E10.5 · Hourly retention/purge task + incremental vacuum
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:33:04.686117793Z
-updated: 2026-05-30T19:33:04.686117793Z
+updated: 2026-05-31T15:59:16.739027412Z
 tags:
 - storage
 depends_on:

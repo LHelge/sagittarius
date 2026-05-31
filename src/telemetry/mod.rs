@@ -29,6 +29,7 @@
 
 pub mod event;
 pub mod live_log;
+pub mod query_log_purge;
 pub mod query_log_writer;
 pub mod stats;
 
@@ -36,6 +37,7 @@ pub mod stats;
 
 pub use event::{QUERY_LOG_CHANNEL_CAPACITY, QueryEvent, TelemetrySink};
 pub use live_log::LiveLog;
+pub use query_log_purge::QueryLogPurger;
 pub use query_log_writer::QueryLogWriter;
 pub use stats::{Stats, StatsSnapshot};
 
