@@ -1,16 +1,23 @@
 //! Live query log over SSE (SPEC §9, §3.1).
 //!
-//! The `/log` page renders the recent ring-buffer history server-side (newest
-//! first) and then opens a single SSE stream to `/events`.  That one stream
-//! drives **both** the log and the dashboard:
+//! The `/log` page renders the newest page of **durable** history from the
+//! `query_log` table server-side (newest first) and then opens a single SSE
+//! stream to `/events`.  That one stream drives **both** the log and the
+//! dashboard:
 //!
 //! - [`PatchElements`] prepends each new query as a `<tr>` into `#log-body`,
 //! - [`PatchSignals`] pushes the cumulative runtime counters so the dashboard
 //!   cards update live (SPEC §9: a single stream updates log + dashboard).
 //!
-//! Seeding history server-side (rather than replaying it over SSE) follows the
-//! [`LiveLog`](crate::telemetry::LiveLog) "snapshot then subscribe" contract and
-//! means an SSE reconnect resumes the live tail without duplicating history.
+//! # History / live seam
+//!
+//! History comes from the DB ([`SqliteQueryLogRepo::page`]); the live stream
+//! covers "now" forward via the [`LiveLog`](crate::telemetry::LiveLog) broadcast
+//! ("subscribe-then-render" semantics). The batch writer (E10.4) lags by ~1s, so
+//! the very newest events appear in the broadcast tail before they reach the DB
+//! — they render via the live prepend, and a later refresh shows them from the
+//! DB. **Scroll-back** is served by `GET /log/older?before=<id>`, which appends
+//! the next older page keyed on the smallest currently-visible row `id`.
 //!
 //! Filtering is client-side: each row carries a Datastar `data-show` expression
 //! evaluated against the `f_outcome` / `f_text` filter signals, so narrowing the
@@ -23,9 +30,9 @@ use std::{convert::Infallible, sync::Arc};
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
-    extract::State,
+    extract::{Query, State},
     response::{
-        IntoResponse, Sse,
+        IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
 };
@@ -33,30 +40,84 @@ use datastar::{
     consts::ElementPatchMode,
     prelude::{PatchElements, PatchSignals},
 };
+use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     resolver::pipeline::LogAction,
+    storage::query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
     telemetry::{QueryEvent, Stats},
-    web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay},
+    web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay, render::WebError},
 };
 
+/// How many rows to render per page (initial seed and each scroll-back step).
+const LOG_PAGE_SIZE: i64 = 100;
+
 impl AppState {
-    /// `GET /log` — the live query-log page, seeded with recent history.
-    pub async fn query_log(user: CurrentUser, State(state): State<AppState>) -> impl IntoResponse {
-        // Ring buffer is oldest-first; show newest first.
-        let rows: Vec<String> = state
-            .telemetry
-            .live_log
-            .recent()
+    /// `GET /log` — the query-log page, seeded with the newest page of history.
+    pub async fn query_log(user: CurrentUser, State(state): State<AppState>) -> Response {
+        let records = match SqliteQueryLogRepo::new(state.db.pool().clone())
+            .page(None, LOG_PAGE_SIZE)
+            .await
+        {
+            Ok(records) => records,
+            Err(e) => return WebError::from(e).into_response(),
+        };
+        // page() is newest-first, so the last row carries the smallest id — the
+        // cursor for loading the next older page.
+        let oldest = records.last().map(|r| r.id).unwrap_or(0);
+        let rows: Vec<String> = records
             .iter()
-            .rev()
-            .filter_map(|ev| LogRowView::from_event(ev).render().ok())
+            .filter_map(|r| LogRowView::from_record(r).render().ok())
             .collect();
         LogPageTemplate {
             chrome: state.chrome("log", &user).await,
             rows,
+            oldest,
         }
+        .into_response()
+    }
+
+    /// `GET /log/older?before=<id>` — append the next older page of history.
+    ///
+    /// Returns a one-shot Datastar SSE response that appends the older rows into
+    /// `#log-body` and updates the `oldest` cursor signal so repeated clicks
+    /// paginate further back. An empty result just sets `oldest` to 0, which
+    /// hides the "Load older" control.
+    pub async fn query_log_older(
+        _user: CurrentUser,
+        State(state): State<AppState>,
+        Query(q): Query<OlderQuery>,
+    ) -> Response {
+        let records = match SqliteQueryLogRepo::new(state.db.pool().clone())
+            .page(Some(q.before), LOG_PAGE_SIZE)
+            .await
+        {
+            Ok(records) => records,
+            Err(e) => return WebError::from(e).into_response(),
+        };
+        let new_oldest = records.last().map(|r| r.id).unwrap_or(0);
+        let html: String = records
+            .iter()
+            .filter_map(|r| LogRowView::from_record(r).render().ok())
+            .collect();
+
+        let signal =
+            PatchSignals::new(format!(r#"{{"oldest":{new_oldest}}}"#)).write_as_axum_sse_event();
+        let rows_event = (!html.is_empty()).then(|| {
+            PatchElements::new(html)
+                .selector("#log-body")
+                .mode(ElementPatchMode::Append)
+                .write_as_axum_sse_event()
+        });
+
+        Sse::new(async_stream::stream! {
+            if let Some(rows) = rows_event {
+                yield Ok::<Event, Infallible>(rows);
+            }
+            yield Ok(signal);
+        })
+        .into_response()
     }
 
     /// `GET /events` — the shared SSE stream feeding the log and dashboard.
@@ -113,6 +174,9 @@ fn counters_event(stats: &Stats) -> Event {
 #[derive(Template, WebTemplate)]
 #[template(path = "log_row.html")]
 struct LogRowView {
+    /// Durable DB row id (the scroll-back cursor); `0` for a live-tail row that
+    /// the batch writer has not persisted yet.
+    id: i64,
     client: String,
     qname: String,
     qtype: String,
@@ -127,25 +191,73 @@ struct LogRowView {
 }
 
 impl LogRowView {
+    /// Build a row from a live broadcast [`QueryEvent`] (no DB id yet).
     fn from_event(ev: &QueryEvent) -> Self {
         // Display the bare domain; the canonical trailing dot stays internal.
         let qname = ev.qname.to_string().display_domain().to_owned();
         let client = ev.client.ip().to_string();
+        Self::build(
+            0,
+            client,
+            qname,
+            format!("{:?}", ev.qtype),
+            ev.outcome.to_string(),
+            ev.outcome.category(),
+            ev.outcome.log_action(),
+            ev.latency.as_millis() as u64,
+        )
+    }
+
+    /// Build a row from a persisted [`QueryLogRecord`] (carries its DB id).
+    fn from_record(record: &QueryLogRecord) -> Self {
+        let qname = record.qname.display_domain().to_owned();
+        Self::build(
+            record.id,
+            record.client.clone(),
+            qname,
+            record.qtype.clone(),
+            record.outcome.to_string(),
+            record.outcome.category(),
+            record.outcome.log_action(),
+            record.latency_ms.max(0) as u64,
+        )
+    }
+
+    /// Shared constructor for both the live and history row sources.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        id: i64,
+        client: String,
+        qname: String,
+        qtype: String,
+        outcome_label: String,
+        outcome_cat: &'static str,
+        action: Option<LogAction>,
+        latency_ms: u64,
+    ) -> Self {
         let search = format!("{} {}", qname.to_lowercase(), client);
-        let action_html = ActionButton::for_outcome(ev.outcome.log_action(), qname.clone())
+        let action_html = ActionButton::for_outcome(action, qname.clone())
             .render()
             .unwrap_or_default();
         Self {
+            id,
             client,
             qname,
-            qtype: format!("{:?}", ev.qtype),
-            outcome_label: ev.outcome.to_string(),
-            outcome_cat: ev.outcome.category(),
-            latency_ms: ev.latency.as_millis() as u64,
+            qtype,
+            outcome_label,
+            outcome_cat,
+            latency_ms,
             search,
             action_html,
         }
     }
+}
+
+/// Query string for the scroll-back endpoint.
+#[derive(Debug, Deserialize)]
+pub struct OlderQuery {
+    /// Return rows with `id < before` (the smallest currently-visible row id).
+    before: i64,
 }
 
 /// The one-click action cell for a log row.  The action is fixed by the row's
@@ -187,6 +299,8 @@ impl ActionButton {
 struct LogPageTemplate {
     chrome: Chrome,
     rows: Vec<String>,
+    /// Smallest row id currently rendered — the scroll-back cursor (0 if empty).
+    oldest: i64,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
