@@ -11,7 +11,7 @@
 //! compare equal when loaded via `load_all`.  Invalid domains (empty labels,
 //! labels > 63 bytes, etc.) produce [`Error::InvalidDomain`].
 
-use std::str::FromStr;
+use std::{future::Future, str::FromStr};
 
 use sqlx::SqlitePool;
 
@@ -75,13 +75,8 @@ fn normalize(domain: &str) -> Result<String> {
 
 /// Repository for reading and writing admin-blacklisted domains.
 ///
-/// # Note on `async_fn_in_trait`
-///
-/// We use `async fn` directly in the trait.  All implementations live in this
-/// crate, so we control the full `impl` surface and have no need for
-/// `Send`-bound flexibility across dynamic dispatch.  The lint is suppressed
-/// here rather than desugaring to `impl Future`.
-#[allow(async_fn_in_trait)]
+/// See [`UpstreamRepository`](super::upstreams::UpstreamRepository) for why the
+/// methods return `impl Future` rather than `async fn`.
 pub trait BlacklistRepository {
     /// Add `domain` to the blacklist.
     ///
@@ -93,7 +88,7 @@ pub trait BlacklistRepository {
     ///
     /// Returns [`Error::InvalidDomain`] if `domain` cannot be parsed as a
     /// valid DNS name.  Database errors surface as [`Error::Sqlx`].
-    async fn add(&self, domain: &str) -> Result<()>;
+    fn add(&self, domain: &str) -> impl Future<Output = Result<()>>;
 
     /// Remove `domain` from the blacklist.
     ///
@@ -103,19 +98,19 @@ pub trait BlacklistRepository {
     /// # Errors
     ///
     /// Returns [`Error::InvalidDomain`] if `domain` cannot be parsed.
-    async fn remove(&self, domain: &str) -> Result<()>;
+    fn remove(&self, domain: &str) -> impl Future<Output = Result<()>>;
 
     /// List all blacklisted domains ordered by domain name.
     ///
     /// Returns entries with `id`, normalized `domain`, and `created_at`
     /// (unix epoch seconds) — intended for the admin UI.
-    async fn list(&self) -> Result<Vec<ListEntry>>;
+    fn list(&self) -> impl Future<Output = Result<Vec<ListEntry>>>;
 
     /// Load all blacklisted domain names as parsed [`Name`] values.
     ///
     /// This is the bulk-read entry point used by the resolver (E4) to
     /// hydrate its in-memory `HashSet<Name>`.
-    async fn load_all(&self) -> Result<Vec<Name>>;
+    fn load_all(&self) -> impl Future<Output = Result<Vec<Name>>>;
 }
 
 // ── AllowlistRepository trait ─────────────────────────────────────────────────
@@ -124,19 +119,18 @@ pub trait BlacklistRepository {
 ///
 /// Identical contract to [`BlacklistRepository`] but operates on the separate
 /// `allowlist` table.
-#[allow(async_fn_in_trait)]
 pub trait AllowlistRepository {
     /// Add `domain` to the allowlist (idempotent).
-    async fn add(&self, domain: &str) -> Result<()>;
+    fn add(&self, domain: &str) -> impl Future<Output = Result<()>>;
 
     /// Remove `domain` from the allowlist (no-op if absent).
-    async fn remove(&self, domain: &str) -> Result<()>;
+    fn remove(&self, domain: &str) -> impl Future<Output = Result<()>>;
 
     /// List all allowlisted domains ordered by domain name.
-    async fn list(&self) -> Result<Vec<ListEntry>>;
+    fn list(&self) -> impl Future<Output = Result<Vec<ListEntry>>>;
 
     /// Load all allowlisted domain names as parsed [`Name`] values.
-    async fn load_all(&self) -> Result<Vec<Name>>;
+    fn load_all(&self) -> impl Future<Output = Result<Vec<Name>>>;
 }
 
 // ── SqliteBlacklistRepo ───────────────────────────────────────────────────────

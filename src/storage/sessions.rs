@@ -10,6 +10,8 @@
 //! These queries are added in Epic E8 — after the E3 offline gate — so
 //! `cargo sqlx prepare` must be re-run and the updated `.sqlx/` committed.
 
+use std::future::Future;
+
 use sqlx::SqlitePool;
 
 use super::Error;
@@ -51,28 +53,30 @@ pub struct NewSession {
 // ── SessionRepository trait ─────────────────────────────────────────────────
 
 /// Repository for reading and writing admin sessions.
-#[allow(async_fn_in_trait)]
+///
+/// See [`UpstreamRepository`](super::upstreams::UpstreamRepository) for why the
+/// methods return `impl Future` rather than `async fn`.
 pub trait SessionRepository {
     /// Insert a new session row.  `created_at` is set to the current epoch by
     /// the database default.
-    async fn insert(&self, session: &NewSession) -> Result<()>;
+    fn insert(&self, session: &NewSession) -> impl Future<Output = Result<()>>;
 
     /// Look up a session by its opaque id, or `None` if absent.
-    async fn find(&self, id: &str) -> Result<Option<SessionRecord>>;
+    fn find(&self, id: &str) -> impl Future<Output = Result<Option<SessionRecord>>>;
 
     /// Slide the idle-expiry of a session forward.
-    async fn touch(&self, id: &str, expires_at: i64) -> Result<()>;
+    fn touch(&self, id: &str, expires_at: i64) -> impl Future<Output = Result<()>>;
 
     /// Delete a single session (logout).
-    async fn delete(&self, id: &str) -> Result<()>;
+    fn delete(&self, id: &str) -> impl Future<Output = Result<()>>;
 
     /// Delete every session owned by a user (e.g. password change / lockout).
-    async fn delete_for_user(&self, user_id: i64) -> Result<()>;
+    fn delete_for_user(&self, user_id: i64) -> impl Future<Output = Result<()>>;
 
     /// Delete all sessions whose idle-expiry is at or before `now`.
     ///
     /// Returns the number of rows removed.  Housekeeping; callable on a timer.
-    async fn delete_expired(&self, now: i64) -> Result<u64>;
+    fn delete_expired(&self, now: i64) -> impl Future<Output = Result<u64>>;
 }
 
 // ── SqliteSessionRepo ───────────────────────────────────────────────────────

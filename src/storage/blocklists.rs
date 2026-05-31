@@ -10,7 +10,7 @@
 //! and their offline-cached raw content.  Fetching, parsing, and aggregating
 //! blocklist entries is handled in Epic E7.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, future::Future, str::FromStr};
 
 use sqlx::SqlitePool;
 
@@ -192,54 +192,53 @@ struct CacheRow {
 /// Repository for reading and writing blocklist source definitions and their
 /// offline-cached content.
 ///
-/// # Note on `async_fn_in_trait`
-///
-/// We use `async fn` directly in the trait.  All implementations are in this
-/// crate, so we control the full `impl` surface and have no need for
-/// `Send`-bound flexibility across dynamic dispatch.  The lint is suppressed
-/// here rather than desugaring to `impl Future`.
-#[allow(async_fn_in_trait)]
+/// See [`UpstreamRepository`](super::upstreams::UpstreamRepository) for why the
+/// methods return `impl Future` rather than `async fn`.
 pub trait BlocklistRepository {
     /// Insert a new blocklist source and return the inserted row (incl. new `id`).
     ///
     /// The `url` column has a UNIQUE constraint; inserting a duplicate URL
     /// surfaces an [`Error::Sqlx`] so the caller can report it as a user error.
-    async fn insert(&self, blocklist: NewBlocklist) -> Result<Blocklist>;
+    fn insert(&self, blocklist: NewBlocklist) -> impl Future<Output = Result<Blocklist>>;
 
     /// List all blocklist sources ordered by `id`.
     ///
     /// Used by the admin UI and as the startup read for E7/E4.
-    async fn list(&self) -> Result<Vec<Blocklist>>;
+    fn list(&self) -> impl Future<Output = Result<Vec<Blocklist>>>;
 
     /// List only enabled blocklist sources ordered by `id`.
     ///
     /// Used by the E7 refresh loop.
-    async fn list_enabled(&self) -> Result<Vec<Blocklist>>;
+    fn list_enabled(&self) -> impl Future<Output = Result<Vec<Blocklist>>>;
 
     /// Delete the blocklist source with the given `id`.
     ///
     /// The corresponding `blocklist_cache` row is removed automatically via the
     /// `ON DELETE CASCADE` foreign key constraint.
-    async fn remove(&self, id: i64) -> Result<()>;
+    fn remove(&self, id: i64) -> impl Future<Output = Result<()>>;
 
     /// Set the `enabled` flag on the blocklist source with the given `id`.
-    async fn set_enabled(&self, id: i64, enabled: bool) -> Result<()>;
+    fn set_enabled(&self, id: i64, enabled: bool) -> impl Future<Output = Result<()>>;
 
     /// Persist post-fetch metadata on the source row after a successful fetch.
     ///
     /// Updates `entry_count`, `last_updated`, `etag`, and `last_modified`.
-    async fn update_refresh_metadata(&self, id: i64, meta: &RefreshMetadata) -> Result<()>;
+    fn update_refresh_metadata(
+        &self,
+        id: i64,
+        meta: &RefreshMetadata,
+    ) -> impl Future<Output = Result<()>>;
 
     /// Upsert the cached raw content for a blocklist source.
     ///
     /// If no cache row exists for `blocklist_id` it is inserted; if one already
     /// exists it is replaced.  `fetched_at` is set to the current unix epoch
     /// via SQLite's `unixepoch()`.
-    async fn save_cache(&self, blocklist_id: i64, content: &[u8]) -> Result<()>;
+    fn save_cache(&self, blocklist_id: i64, content: &[u8]) -> impl Future<Output = Result<()>>;
 
     /// Load the offline-cached content for a blocklist source, or `None` if no
     /// cache row exists yet.
-    async fn load_cache(&self, blocklist_id: i64) -> Result<Option<CachedContent>>;
+    fn load_cache(&self, blocklist_id: i64) -> impl Future<Output = Result<Option<CachedContent>>>;
 }
 
 // ── SqliteBlocklistRepo ───────────────────────────────────────────────────────

@@ -7,6 +7,7 @@
 
 use std::{
     fmt,
+    future::Future,
     net::{Ipv4Addr, Ipv6Addr},
     str::FromStr,
 };
@@ -184,19 +185,16 @@ impl TryFrom<SettingsRow> for Settings {
 
 /// Repository for reading and writing the singleton `settings` row.
 ///
-/// # Note on `async_fn_in_trait`
-///
-/// We use `async fn` directly in the trait.  All implementations are in this
-/// crate, so we control the full `impl` surface and have no need for
-/// `Send`-bound flexibility across dynamic dispatch.  The lint is suppressed
-/// here rather than desugaring to `impl Future`.
-#[allow(async_fn_in_trait)]
+/// Methods return `impl Future` rather than `async fn` so the trait sidesteps the
+/// `async_fn_in_trait` lint without committing every implementation to a `Send`
+/// bound — callers are concrete, so `Send` still leaks through where it's needed
+/// (axum handlers, spawned tasks).
 pub trait SettingsRepository {
     /// Read the singleton settings row (id = 1).
-    async fn get(&self) -> Result<Settings>;
+    fn get(&self) -> impl Future<Output = Result<Settings>>;
 
     /// Persist all mutable fields of `settings` back to the database.
-    async fn update(&self, settings: &Settings) -> Result<()>;
+    fn update(&self, settings: &Settings) -> impl Future<Output = Result<()>>;
 }
 
 // ── SqliteSettingsRepo ────────────────────────────────────────────────────────

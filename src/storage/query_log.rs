@@ -12,6 +12,8 @@
 //! The persisted `outcome` column uses the stable [`Outcome::as_str`] tokens
 //! (E10.2); reads decode them back via [`Outcome`]'s [`FromStr`](std::str::FromStr).
 
+use std::future::Future;
+
 use sqlx::SqlitePool;
 
 use super::Error;
@@ -134,41 +136,56 @@ pub struct QueryLogCounts {
 
 /// Repository for reading and writing query-log rows.
 ///
-/// See [`UpstreamRepository`](super::upstreams::UpstreamRepository) for the note
-/// on `async_fn_in_trait`: all implementations live in this crate.
-#[allow(async_fn_in_trait)]
+/// See [`SettingsRepository`](super::settings::SettingsRepository) for why the
+/// methods return `impl Future` rather than `async fn`.
 pub trait QueryLogRepository {
     /// Insert a batch of records in a single transaction.
     ///
     /// An empty batch is a no-op. The records' `id` fields are ignored; the DB
     /// assigns the real primary keys.
-    async fn insert_batch(&self, records: &[QueryLogRecord]) -> Result<()>;
+    fn insert_batch(&self, records: &[QueryLogRecord]) -> impl Future<Output = Result<()>>;
 
     /// Fetch one page of history, newest-first (keyset pagination on `id`).
     ///
     /// `before = None` returns the newest page; `before = Some(cursor)` returns
     /// the next-older slice with `id < cursor` (no overlap, no gap).
-    async fn page(&self, before: Option<i64>, limit: i64) -> Result<Vec<QueryLogRecord>>;
+    fn page(
+        &self,
+        before: Option<i64>,
+        limit: i64,
+    ) -> impl Future<Output = Result<Vec<QueryLogRecord>>>;
 
     /// Delete up to `batch_limit` rows older than `cutoff_ts_ms`, returning the
     /// number removed. The caller loops until it returns 0 to bound the work
     /// per statement (and the WAL growth).
-    async fn purge_older_than(&self, cutoff_ts_ms: i64, batch_limit: i64) -> Result<u64>;
+    fn purge_older_than(
+        &self,
+        cutoff_ts_ms: i64,
+        batch_limit: i64,
+    ) -> impl Future<Output = Result<u64>>;
 
     /// Return freed pages to the OS via `PRAGMA incremental_vacuum`.
-    async fn incremental_vacuum(&self) -> Result<()>;
+    fn incremental_vacuum(&self) -> impl Future<Output = Result<()>>;
 
     /// Delete every row (the "Clear query log now" admin action).
-    async fn clear_all(&self) -> Result<()>;
+    fn clear_all(&self) -> impl Future<Output = Result<()>>;
 
     /// Windowed outcome counts for rows with `ts >= since_ms`.
-    async fn counts_since(&self, since_ms: i64) -> Result<QueryLogCounts>;
+    fn counts_since(&self, since_ms: i64) -> impl Future<Output = Result<QueryLogCounts>>;
 
     /// Top `n` queried names (by count) for rows with `ts >= since_ms`.
-    async fn top_domains_since(&self, since_ms: i64, n: i64) -> Result<Vec<(String, i64)>>;
+    fn top_domains_since(
+        &self,
+        since_ms: i64,
+        n: i64,
+    ) -> impl Future<Output = Result<Vec<(String, i64)>>>;
 
     /// Top `n` clients (by count) for rows with `ts >= since_ms`.
-    async fn top_clients_since(&self, since_ms: i64, n: i64) -> Result<Vec<(String, i64)>>;
+    fn top_clients_since(
+        &self,
+        since_ms: i64,
+        n: i64,
+    ) -> impl Future<Output = Result<Vec<(String, i64)>>>;
 }
 
 // ── SqliteQueryLogRepo ──────────────────────────────────────────────────────

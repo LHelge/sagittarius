@@ -8,7 +8,7 @@
 //! These queries are added in Epic E8 — after the E3 offline gate — so
 //! `cargo sqlx prepare` must be re-run and the updated `.sqlx/` committed.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, future::Future, str::FromStr};
 
 use sqlx::SqlitePool;
 
@@ -112,19 +112,15 @@ impl TryFrom<AdminUserRow> for AdminUser {
 
 /// Repository for reading and writing admin users.
 ///
-/// # Note on `async_fn_in_trait`
-///
-/// We use `async fn` directly in the trait.  All implementations live in this
-/// crate, so we control the full `impl` surface and have no need for
-/// `Send`-bound flexibility across dynamic dispatch.
-#[allow(async_fn_in_trait)]
+/// See [`UpstreamRepository`](super::upstreams::UpstreamRepository) for why the
+/// methods return `impl Future` rather than `async fn`.
 pub trait AdminUserRepository {
     /// Count the admin users.  `0` means the first-run wizard should run
     /// (SPEC §10).
-    async fn count(&self) -> Result<i64>;
+    fn count(&self) -> impl Future<Output = Result<i64>>;
 
     /// Look up a user by exact username, or `None` if no such user exists.
-    async fn find_by_username(&self, username: &str) -> Result<Option<AdminUser>>;
+    fn find_by_username(&self, username: &str) -> impl Future<Output = Result<Option<AdminUser>>>;
 
     /// Create a new admin user with the given pre-hashed (Argon2id PHC)
     /// password and return the inserted row.
@@ -133,16 +129,20 @@ pub trait AdminUserRepository {
     ///
     /// The `username` column is UNIQUE; inserting a duplicate surfaces as
     /// [`Error::Sqlx`].
-    async fn create(&self, username: &str, password_hash: &str) -> Result<AdminUser>;
+    fn create(
+        &self,
+        username: &str,
+        password_hash: &str,
+    ) -> impl Future<Output = Result<AdminUser>>;
 
     /// Create the initial admin user only if the table is still empty.
     ///
     /// Returns `Ok(None)` if another setup request created an admin first.
-    async fn create_initial(
+    fn create_initial(
         &self,
         username: &str,
         password_hash: &str,
-    ) -> Result<Option<AdminUser>>;
+    ) -> impl Future<Output = Result<Option<AdminUser>>>;
 }
 
 // ── SqliteAdminUserRepo ─────────────────────────────────────────────────────
