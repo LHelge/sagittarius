@@ -17,7 +17,7 @@ use tracing::{info, warn};
 use crate::{
     resolver::state::ResolverState,
     storage::{Error, query_log::QueryLogRepository},
-    time::Clock,
+    time::{self, Clock},
 };
 
 /// How often a purge cycle runs.
@@ -26,9 +26,6 @@ const PURGE_INTERVAL: Duration = Duration::from_secs(3_600);
 /// Maximum rows deleted per statement, looped until the window is clear. Bounds
 /// how long the write lock is held by any single delete.
 const PURGE_BATCH: i64 = 1_000;
-
-/// Milliseconds in a day, for converting the retention window to a cutoff.
-const MS_PER_DAY: i64 = 86_400_000;
 
 /// Deletes query-log rows that have aged out of the retention window.
 pub struct QueryLogPurger<R> {
@@ -51,8 +48,8 @@ where
     /// older than the cutoff in bounded batches, then runs an incremental
     /// vacuum to return freed pages.
     pub async fn purge_once(&self) -> Result<u64, Error> {
-        let retention_days = i64::from(self.state.settings().query_log_retention_days);
-        let cutoff_ms = Clock::now_millis() - retention_days * MS_PER_DAY;
+        let retention_days = u64::from(self.state.settings().query_log_retention_days);
+        let cutoff_ms = Clock::millis_ago(time::days(retention_days));
 
         let mut removed = 0u64;
         loop {
@@ -138,7 +135,8 @@ mod tests {
 
         let now = Clock::now_millis();
         // Default retention is 30 days; one row 40 days old, one fresh.
-        repo.insert_batch(&[record(now - 40 * MS_PER_DAY), record(now - 1_000)])
+        let forty_days = time::days(40).as_millis() as i64;
+        repo.insert_batch(&[record(now - forty_days), record(now - 1_000)])
             .await
             .expect("insert");
 
@@ -166,7 +164,8 @@ mod tests {
 
         // A row two days old survives the default 30-day window …
         let now = Clock::now_millis();
-        repo.insert_batch(&[record(now - 2 * MS_PER_DAY)])
+        let two_days = time::days(2).as_millis() as i64;
+        repo.insert_batch(&[record(now - two_days)])
             .await
             .expect("insert");
 
