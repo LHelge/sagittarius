@@ -61,11 +61,14 @@ impl AppState {
     }
 
     /// `GET /blocklists`.
-    pub async fn blocklists_page(user: CurrentUser, State(state): State<AppState>) -> Response {
-        match state.render_blocklists(&user, None, None).await {
-            Ok(t) => t.into_response(),
-            Err(e) => e.into_response(),
-        }
+    pub async fn blocklists_page(
+        user: CurrentUser,
+        State(state): State<AppState>,
+    ) -> Result<Response, WebError> {
+        Ok(state
+            .render_blocklists(&user, None, None)
+            .await?
+            .into_response())
     }
 
     /// `POST /blocklists/add`.
@@ -73,16 +76,15 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<AddBlocklistForm>,
-    ) -> Response {
+    ) -> Result<Response, WebError> {
         match state.add_blocklist(&form.url, &form.format).await {
-            Ok(()) => Redirect::to("/blocklists").into_response(),
+            Ok(()) => Ok(Redirect::to("/blocklists").into_response()),
+            // A validation error re-renders the form with the message and a 400.
             Err(WebError::BadRequest(msg)) => {
-                match state.render_blocklists(&user, Some(msg), None).await {
-                    Ok(t) => (StatusCode::BAD_REQUEST, t).into_response(),
-                    Err(e) => e.into_response(),
-                }
+                let page = state.render_blocklists(&user, Some(msg), None).await?;
+                Ok((StatusCode::BAD_REQUEST, page).into_response())
             }
-            Err(e) => e.into_response(),
+            Err(e) => Err(e),
         }
     }
 
@@ -120,20 +122,11 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<BlocklistIdForm>,
-    ) -> Response {
-        let res = async {
-            state.db.blocklists().remove(form.id).await?;
-            Ok::<(), WebError>(())
-        }
-        .await;
-        match res {
-            Ok(()) => {
-                // Drop the removed source's domains from the live set.
-                state.refresh.trigger();
-                Redirect::to("/blocklists").into_response()
-            }
-            Err(e) => e.into_response(),
-        }
+    ) -> Result<Response, WebError> {
+        state.db.blocklists().remove(form.id).await?;
+        // Drop the removed source's domains from the live set.
+        state.refresh.trigger();
+        Ok(Redirect::to("/blocklists").into_response())
     }
 
     /// `POST /blocklists/toggle`.
@@ -141,25 +134,23 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<ToggleBlocklistForm>,
-    ) -> Response {
-        let res = state
+    ) -> Result<Response, WebError> {
+        state
             .db
             .blocklists()
             .set_enabled(form.id, form.enabled)
-            .await;
-        match res {
-            Ok(()) => {
-                state.refresh.trigger();
-                Redirect::to("/blocklists").into_response()
-            }
-            Err(e) => WebError::from(e).into_response(),
-        }
+            .await?;
+        state.refresh.trigger();
+        Ok(Redirect::to("/blocklists").into_response())
     }
 
     /// `POST /blocklists/refresh` — fire an on-demand refresh of all sources.
-    pub async fn blocklist_refresh(user: CurrentUser, State(state): State<AppState>) -> Response {
+    pub async fn blocklist_refresh(
+        user: CurrentUser,
+        State(state): State<AppState>,
+    ) -> Result<Response, WebError> {
         state.refresh.trigger();
-        match state
+        Ok(state
             .render_blocklists(
                 &user,
                 None,
@@ -168,11 +159,8 @@ impl AppState {
                         .to_owned(),
                 ),
             )
-            .await
-        {
-            Ok(t) => t.into_response(),
-            Err(e) => e.into_response(),
-        }
+            .await?
+            .into_response())
     }
 }
 

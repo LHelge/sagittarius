@@ -106,14 +106,12 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         Query(q): Query<ActionQuery>,
-    ) -> Response {
-        match state.add_to_blacklist(&q.domain).await {
-            Ok(()) => toast(format!(
-                "Blocked {} — it is blocked on the next query.",
-                q.domain.display_domain()
-            )),
-            Err(e) => e.into_response(),
-        }
+    ) -> Result<Response, WebError> {
+        state.add_to_blacklist(&q.domain).await?;
+        Ok(toast(format!(
+            "Blocked {} — it is blocked on the next query.",
+            q.domain.display_domain()
+        )))
     }
 
     /// `POST /log/unblock?domain=…` — make a blocked domain resolve again.
@@ -125,14 +123,12 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         Query(q): Query<ActionQuery>,
-    ) -> Response {
-        match state.unblock(&q.domain).await {
-            Ok(()) => toast(format!(
-                "Unblocked {} — it resolves on the next query.",
-                q.domain.display_domain()
-            )),
-            Err(e) => e.into_response(),
-        }
+    ) -> Result<Response, WebError> {
+        state.unblock(&q.domain).await?;
+        Ok(toast(format!(
+            "Unblocked {} — it resolves on the next query.",
+            q.domain.display_domain()
+        )))
     }
 }
 
@@ -222,36 +218,44 @@ impl AppState {
     }
 
     /// Shared GET handler body for a list page.
-    async fn list_page(&self, user: &CurrentUser, kind: ListKind) -> Response {
-        match self.render_list(user, kind, None).await {
-            Ok(t) => t.into_response(),
-            Err(e) => e.into_response(),
-        }
+    async fn list_page(&self, user: &CurrentUser, kind: ListKind) -> Result<Response, WebError> {
+        Ok(self.render_list(user, kind, None).await?.into_response())
     }
 
     /// Shared POST-add body: write through, then PRG-redirect on success or
     /// re-render with an inline error on a bad domain.
-    async fn list_add_handler(&self, user: &CurrentUser, kind: ListKind, domain: &str) -> Response {
+    async fn list_add_handler(
+        &self,
+        user: &CurrentUser,
+        kind: ListKind,
+        domain: &str,
+    ) -> Result<Response, WebError> {
         match self.list_add(kind, domain).await {
-            Ok(()) => Redirect::to(kind.base_path()).into_response(),
-            Err(WebError::BadRequest(msg)) => match self.render_list(user, kind, Some(msg)).await {
-                Ok(t) => (axum::http::StatusCode::BAD_REQUEST, t).into_response(),
-                Err(e) => e.into_response(),
-            },
-            Err(e) => e.into_response(),
+            Ok(()) => Ok(Redirect::to(kind.base_path()).into_response()),
+            // A bad domain re-renders the page with the message and a 400.
+            Err(WebError::BadRequest(msg)) => {
+                let page = self.render_list(user, kind, Some(msg)).await?;
+                Ok((axum::http::StatusCode::BAD_REQUEST, page).into_response())
+            }
+            Err(e) => Err(e),
         }
     }
 
     /// Shared POST-remove body: write through, then PRG-redirect.
-    async fn list_remove_handler(&self, kind: ListKind, domain: &str) -> Response {
-        match self.list_remove(kind, domain).await {
-            Ok(()) => Redirect::to(kind.base_path()).into_response(),
-            Err(e) => e.into_response(),
-        }
+    async fn list_remove_handler(
+        &self,
+        kind: ListKind,
+        domain: &str,
+    ) -> Result<Response, WebError> {
+        self.list_remove(kind, domain).await?;
+        Ok(Redirect::to(kind.base_path()).into_response())
     }
 
     /// `GET /blacklist`.
-    pub async fn blacklist_page(user: CurrentUser, State(state): State<AppState>) -> Response {
+    pub async fn blacklist_page(
+        user: CurrentUser,
+        State(state): State<AppState>,
+    ) -> Result<Response, WebError> {
         state.list_page(&user, ListKind::Blacklist).await
     }
     /// `POST /blacklist/add`.
@@ -259,7 +263,7 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<DomainForm>,
-    ) -> Response {
+    ) -> Result<Response, WebError> {
         state
             .list_add_handler(&user, ListKind::Blacklist, &form.domain)
             .await
@@ -269,13 +273,16 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<DomainForm>,
-    ) -> Response {
+    ) -> Result<Response, WebError> {
         state
             .list_remove_handler(ListKind::Blacklist, &form.domain)
             .await
     }
     /// `GET /allowlist`.
-    pub async fn allowlist_page(user: CurrentUser, State(state): State<AppState>) -> Response {
+    pub async fn allowlist_page(
+        user: CurrentUser,
+        State(state): State<AppState>,
+    ) -> Result<Response, WebError> {
         state.list_page(&user, ListKind::Allowlist).await
     }
     /// `POST /allowlist/add`.
@@ -283,7 +290,7 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<DomainForm>,
-    ) -> Response {
+    ) -> Result<Response, WebError> {
         state
             .list_add_handler(&user, ListKind::Allowlist, &form.domain)
             .await
@@ -293,7 +300,7 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<DomainForm>,
-    ) -> Response {
+    ) -> Result<Response, WebError> {
         state
             .list_remove_handler(ListKind::Allowlist, &form.domain)
             .await

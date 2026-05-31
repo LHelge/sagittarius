@@ -79,11 +79,11 @@ impl AppState {
     }
 
     /// `GET /upstreams`.
-    pub async fn upstreams_page(user: CurrentUser, State(state): State<AppState>) -> Response {
-        match state.render_upstreams(&user, None).await {
-            Ok(t) => t.into_response(),
-            Err(e) => e.into_response(),
-        }
+    pub async fn upstreams_page(
+        user: CurrentUser,
+        State(state): State<AppState>,
+    ) -> Result<Response, WebError> {
+        Ok(state.render_upstreams(&user, None).await?.into_response())
     }
 
     /// `POST /upstreams/add`.
@@ -91,16 +91,15 @@ impl AppState {
         user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<AddUpstreamForm>,
-    ) -> Response {
+    ) -> Result<Response, WebError> {
         match state.add_upstream(form).await {
-            Ok(()) => Redirect::to("/upstreams").into_response(),
+            Ok(()) => Ok(Redirect::to("/upstreams").into_response()),
+            // A validation error re-renders the form with the message and a 400.
             Err(WebError::BadRequest(msg)) => {
-                match state.render_upstreams(&user, Some(msg)).await {
-                    Ok(t) => (StatusCode::BAD_REQUEST, t).into_response(),
-                    Err(e) => e.into_response(),
-                }
+                let page = state.render_upstreams(&user, Some(msg)).await?;
+                Ok((StatusCode::BAD_REQUEST, page).into_response())
             }
-            Err(e) => e.into_response(),
+            Err(e) => Err(e),
         }
     }
 
@@ -155,16 +154,10 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<UpstreamIdForm>,
-    ) -> Response {
-        let res = async {
-            state.db.upstreams().delete(form.id).await?;
-            state.rebuild_upstream_pool().await
-        }
-        .await;
-        match res {
-            Ok(()) => Redirect::to("/upstreams").into_response(),
-            Err(e) => e.into_response(),
-        }
+    ) -> Result<Response, WebError> {
+        state.db.upstreams().delete(form.id).await?;
+        state.rebuild_upstream_pool().await?;
+        Ok(Redirect::to("/upstreams").into_response())
     }
 
     /// `POST /upstreams/toggle`.
@@ -172,20 +165,14 @@ impl AppState {
         _user: CurrentUser,
         State(state): State<AppState>,
         axum::Form(form): axum::Form<ToggleUpstreamForm>,
-    ) -> Response {
-        let res = async {
-            state
-                .db
-                .upstreams()
-                .set_enabled(form.id, form.enabled)
-                .await?;
-            state.rebuild_upstream_pool().await
-        }
-        .await;
-        match res {
-            Ok(()) => Redirect::to("/upstreams").into_response(),
-            Err(e) => e.into_response(),
-        }
+    ) -> Result<Response, WebError> {
+        state
+            .db
+            .upstreams()
+            .set_enabled(form.id, form.enabled)
+            .await?;
+        state.rebuild_upstream_pool().await?;
+        Ok(Redirect::to("/upstreams").into_response())
     }
 }
 

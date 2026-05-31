@@ -364,12 +364,12 @@ impl AppState {
         State(state): State<AppState>,
         headers: HeaderMap,
         axum::Form(form): axum::Form<LoginForm>,
-    ) -> Response {
-        let repo = state.db.admin_users();
-        let user = match repo.find_by_username(&form.username).await {
-            Ok(u) => u,
-            Err(e) => return WebError::from(e).into_response(),
-        };
+    ) -> Result<Response, WebError> {
+        let user = state
+            .db
+            .admin_users()
+            .find_by_username(&form.username)
+            .await?;
 
         // Verify against the real hash, or a dummy hash if the user is unknown,
         // so the two paths take comparable time (no user-enumeration oracle).
@@ -382,18 +382,16 @@ impl AppState {
         };
 
         if !authenticated {
-            return LoginTemplate {
+            return Ok(LoginTemplate {
                 chrome: state.bare_chrome().await,
                 error: Some("Invalid username or password.".to_owned()),
             }
-            .into_response();
+            .into_response());
         }
 
         let user_id = user.expect("authenticated implies a user").id;
-        match state.begin_session(&headers, user_id).await {
-            Ok(cookie) => ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response(),
-            Err(e) => e.into_response(),
-        }
+        let cookie = state.begin_session(&headers, user_id).await?;
+        Ok(([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response())
     }
 
     /// `POST /logout` — invalidate the current session and clear the cookie.
