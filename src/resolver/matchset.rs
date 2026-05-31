@@ -1,21 +1,28 @@
 //! Lock-free, hot-swappable domain name match set.
 //!
 //! [`MatchSet`] wraps an [`ArcSwap`]-protected [`HashSet<Name>`] to provide
-//! the core primitive used for the admin blacklist, allowlist, and aggregated
-//! blocklist set (SPEC §3.1, §3.2).
+//! the core primitive used for the admin blacklist and allowlist (SPEC §3.1,
+//! §3.2).  The aggregated blocklist uses the sibling [`AttributedSet`], which
+//! additionally records the **primary source** (a `blocklist_id`) for each
+//! blocked name so the query log can attribute blocks to a list (E11).
 //!
 //! # Design
 //!
 //! The DNS hot path reads the current snapshot with a cheap atomic load and
 //! **never blocks**.  An admin edit or blocklist refresh builds a fresh
-//! [`HashSet`] *off* the hot path and atomically installs it with
-//! [`MatchSet::store`], so no reader ever sees a torn or partially-updated
-//! set.  This is the core SPEC §3.2 guarantee.
+//! [`HashSet`]/[`HashMap`] *off* the hot path and atomically installs it with
+//! [`MatchSet::store`]/[`AttributedSet::store`], so no reader ever sees a torn
+//! or partially-updated set.  This is the core SPEC §3.2 guarantee.
 //!
-//! Three independent [`MatchSet`] instances are used — one per list — with
+//! Three independent sets are used — admin blacklist and allowlist as
+//! [`MatchSet`]s, the aggregated blocklist as an [`AttributedSet`] — with
 //! cross-list precedence handled by the query pipeline layer (E6), not here.
 
-use std::{collections::HashSet, fmt, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::Arc,
+};
 
 use arc_swap::{ArcSwap, Guard};
 
@@ -155,6 +162,160 @@ impl fmt::Debug for MatchSet {
 impl FromIterator<Name> for MatchSet {
     /// Build a [`MatchSet`] from an iterator of [`Name`]s.
     fn from_iter<I: IntoIterator<Item = Name>>(iter: I) -> Self {
+        Self::new(iter.into_iter().collect())
+    }
+}
+
+// ── AttributedSet ───────────────────────────────────────────────────────────
+
+/// A lock-free, hot-swappable map from a blocked [`Name`] to the **primary**
+/// blocklist source (`blocklist_id`) responsible for it (SPEC §6, E11).
+///
+/// This is the aggregated-blocklist counterpart to [`MatchSet`].  It behaves
+/// like a [`MatchSet`] on the hot path — [`contains`](AttributedSet::contains)
+/// is a presence check that keeps the [`DecisionStack`] a pure
+/// `Name → bool` test — but it additionally remembers which source put each
+/// name there.  The off-hot-path query-log writer reads that with
+/// [`primary_source`](AttributedSet::primary_source) to attribute a block to a
+/// specific list.
+///
+/// # Attribution model
+///
+/// Exactly one **primary** source is stored per name (first-writer-wins as the
+/// aggregator iterates enabled sources in `blocklist_id` order, so the
+/// lowest-id list wins an overlap).  This keeps the value a single `i64` — no
+/// bitmask, no per-name source list — at the cost of not tracking every list a
+/// domain appears on.
+///
+/// # Usage
+///
+/// ```rust
+/// use std::collections::HashMap;
+/// use sagittarius::resolver::matchset::AttributedSet;
+/// use sagittarius::codec::name::Name;
+///
+/// let mut map: HashMap<Name, i64> = HashMap::new();
+/// map.insert("ads.example.com".parse().unwrap(), 7);
+///
+/// let set = AttributedSet::new(map);
+/// assert!(set.contains(&"ads.example.com".parse().unwrap()));
+/// assert_eq!(set.primary_source(&"ads.example.com".parse().unwrap()), Some(7));
+/// assert_eq!(set.primary_source(&"safe.example.com".parse().unwrap()), None);
+/// ```
+///
+/// [`DecisionStack`]: crate::resolver::pipeline
+pub struct AttributedSet {
+    inner: ArcSwap<HashMap<Name, i64>>,
+}
+
+impl AttributedSet {
+    /// Construct an [`AttributedSet`] pre-populated with `map`.
+    #[must_use]
+    pub fn new(map: HashMap<Name, i64>) -> Self {
+        Self {
+            inner: ArcSwap::from_pointee(map),
+        }
+    }
+
+    /// Construct an empty [`AttributedSet`].
+    ///
+    /// The blocklist starts empty and is filled by the background refresh
+    /// scheduler (E7) via the aggregator's `install`.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::new(HashMap::new())
+    }
+
+    // ── Hot-path reads ────────────────────────────────────────────────────────
+
+    /// Return `true` if `name` is a member of the current snapshot.
+    ///
+    /// This is the hot-path presence check used by the decision layer; it is a
+    /// cheap atomic load followed by [`HashMap::contains_key`] and never blocks.
+    /// The attribution value is intentionally ignored here so the decision
+    /// layer stays a pure presence test.
+    #[must_use]
+    pub fn contains(&self, name: &Name) -> bool {
+        self.inner.load().contains_key(name)
+    }
+
+    /// Return the primary `blocklist_id` for `name`, or `None` if it is not a
+    /// member of the current snapshot.
+    ///
+    /// Used off the hot path by the query-log writer (E11.3) to attribute a
+    /// block to the source that introduced the name.
+    #[must_use]
+    pub fn primary_source(&self, name: &Name) -> Option<i64> {
+        self.inner.load().get(name).copied()
+    }
+
+    /// Load the current snapshot as a short-lived [`Guard`].
+    #[must_use]
+    pub fn snapshot(&self) -> Guard<Arc<HashMap<Name, i64>>> {
+        self.inner.load()
+    }
+
+    /// Load the current snapshot as a full, owned [`Arc`].
+    ///
+    /// Increments the reference count so the snapshot stays alive as long as
+    /// the returned [`Arc`] is held — use it when the snapshot must outlive an
+    /// await point.
+    #[must_use]
+    pub fn load_full(&self) -> Arc<HashMap<Name, i64>> {
+        self.inner.load_full()
+    }
+
+    /// Return the number of entries in the current snapshot.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.load().len()
+    }
+
+    /// Return `true` if the current snapshot is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.load().is_empty()
+    }
+
+    // ── Rebuild-and-swap writer ───────────────────────────────────────────────
+
+    /// Atomically install `map` as the new current snapshot.
+    ///
+    /// The caller (the aggregator) builds the `Name → blocklist_id` map *off*
+    /// the hot path; this method wraps it in an [`Arc`] and performs the atomic
+    /// swap with the same no-torn-read guarantee as [`MatchSet::store`].
+    pub fn store(&self, map: HashMap<Name, i64>) {
+        self.store_arc(Arc::new(map));
+    }
+
+    /// Atomically install a pre-boxed snapshot.
+    pub fn store_arc(&self, arc: Arc<HashMap<Name, i64>>) {
+        self.inner.store(arc);
+    }
+}
+
+impl Default for AttributedSet {
+    /// An empty [`AttributedSet`].
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl fmt::Debug for AttributedSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let snap = self.inner.load();
+        f.debug_struct("AttributedSet")
+            .field("len", &snap.len())
+            .finish()
+    }
+}
+
+impl FromIterator<(Name, i64)> for AttributedSet {
+    /// Build an [`AttributedSet`] from an iterator of `(name, blocklist_id)`
+    /// pairs.  On duplicate names the last pair wins (standard [`HashMap`]
+    /// collection semantics); the aggregator instead enforces first-writer-wins
+    /// before constructing the map.
+    fn from_iter<I: IntoIterator<Item = (Name, i64)>>(iter: I) -> Self {
         Self::new(iter.into_iter().collect())
     }
 }
@@ -385,5 +546,81 @@ mod tests {
         let ms = MatchSet::new(set_of(&["a.com", "b.com", "c.com"]));
         let s = format!("{ms:?}");
         assert!(s.contains("len: 3"), "debug output was: {s}");
+    }
+
+    // ── AttributedSet ─────────────────────────────────────────────────────────
+
+    /// Build an [`AttributedSet`] from `(name, id)` pairs.
+    fn attributed(entries: &[(&str, i64)]) -> AttributedSet {
+        entries.iter().map(|(n, id)| (name(n), *id)).collect()
+    }
+
+    #[test]
+    fn attributed_empty_is_empty() {
+        let set = AttributedSet::empty();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+        assert_eq!(set.primary_source(&name("anything.com")), None);
+    }
+
+    #[test]
+    fn attributed_default_is_empty() {
+        assert!(AttributedSet::default().is_empty());
+    }
+
+    /// `contains` is parity with the old set: membership matches the map's keys.
+    #[test]
+    fn attributed_contains_matches_keys() {
+        let set = attributed(&[("ads.example.com", 1), ("tracker.net", 2)]);
+        assert!(set.contains(&name("ads.example.com")));
+        assert!(set.contains(&name("tracker.net")));
+        assert!(!set.contains(&name("safe.example.com")));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn attributed_contains_case_insensitive() {
+        let set = attributed(&[("Blocked.Example.COM", 5)]);
+        assert!(set.contains(&name("blocked.example.com")));
+        assert!(set.contains(&name("BLOCKED.EXAMPLE.COM")));
+    }
+
+    /// `primary_source` returns the stored id, and `None` for non-members.
+    #[test]
+    fn attributed_primary_source_returns_id_or_none() {
+        let set = attributed(&[("ads.example.com", 42), ("tracker.net", 7)]);
+        assert_eq!(set.primary_source(&name("ads.example.com")), Some(42));
+        assert_eq!(set.primary_source(&name("tracker.net")), Some(7));
+        assert_eq!(set.primary_source(&name("safe.example.com")), None);
+    }
+
+    #[test]
+    fn attributed_store_replaces_snapshot() {
+        let set = attributed(&[("old.com", 1)]);
+        assert_eq!(set.primary_source(&name("old.com")), Some(1));
+
+        set.store(
+            [(name("new.com"), 9)]
+                .into_iter()
+                .collect::<HashMap<_, _>>(),
+        );
+
+        assert_eq!(set.primary_source(&name("new.com")), Some(9));
+        assert!(!set.contains(&name("old.com")));
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn attributed_snapshot_and_load_full_reflect_current() {
+        let set = attributed(&[("a.com", 3)]);
+        assert_eq!(set.snapshot().get(&name("a.com")).copied(), Some(3));
+        assert_eq!(set.load_full().get(&name("a.com")).copied(), Some(3));
+    }
+
+    #[test]
+    fn attributed_debug_shows_len() {
+        let set = attributed(&[("a.com", 1), ("b.com", 2)]);
+        let s = format!("{set:?}");
+        assert!(s.contains("len: 2"), "debug output was: {s}");
     }
 }

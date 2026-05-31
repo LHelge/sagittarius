@@ -1,10 +1,10 @@
 ---
 id: rqp
 title: E11.1 · Attributed blocklist structure + aggregator (primary source per domain)
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:54:33.957463770Z
-updated: 2026-05-30T19:54:33.957463770Z
+updated: 2026-05-31T22:00:08.446949588Z
 tags:
 - blocklist
 - dns
