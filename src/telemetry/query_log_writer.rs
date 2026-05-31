@@ -144,7 +144,7 @@ mod tests {
     async fn open_repo() -> (TempDir, SqliteQueryLogRepo, Db) {
         let dir = TempDir::new().expect("temp dir");
         let db = Db::connect(dir.path().join("t.db")).await.expect("connect");
-        let repo = SqliteQueryLogRepo::new(db.pool().clone());
+        let repo = db.query_log();
         (dir, repo, db)
     }
 
@@ -175,10 +175,7 @@ mod tests {
         drop(tx);
         handle.await.unwrap();
 
-        let rows = SqliteQueryLogRepo::new(db.pool().clone())
-            .page(None, 10)
-            .await
-            .unwrap();
+        let rows = db.query_log().page(None, 10).await.unwrap();
         assert_eq!(rows.len(), 2, "both enqueued events must be persisted");
     }
 
@@ -199,10 +196,7 @@ mod tests {
         let writer = QueryLogWriter::new(rx, repo);
         writer.run(token).await;
 
-        let rows = SqliteQueryLogRepo::new(db.pool().clone())
-            .page(None, 10)
-            .await
-            .unwrap();
+        let rows = db.query_log().page(None, 10).await.unwrap();
         assert_eq!(rows.len(), 5, "cancellation must drain the buffer");
     }
 

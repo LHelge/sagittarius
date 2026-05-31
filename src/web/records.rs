@@ -23,9 +23,7 @@ use crate::{
         local::{LocalRecords, RecordData},
         state::build_local_records,
     },
-    storage::local_records::{
-        LocalRecordRepository, NewLocalRecord, RecordType, SqliteLocalRecordRepo,
-    },
+    storage::local_records::{LocalRecordRepository, NewLocalRecord, RecordType},
     web::{
         AppState, Chrome,
         auth::CurrentUser,
@@ -36,9 +34,7 @@ use crate::{
 impl AppState {
     /// Rebuild the in-memory local-record snapshot from the database.
     async fn reload_local_records(&self) -> Result<(), WebError> {
-        let rows = SqliteLocalRecordRepo::new(self.db.pool().clone())
-            .load_all()
-            .await?;
+        let rows = self.db.local_records().load_all().await?;
         let records = build_local_records(rows).map_err(|e| WebError::internal(e.to_string()))?;
         self.resolver.local().store(records);
         Ok(())
@@ -53,7 +49,8 @@ impl AppState {
         ttl: u32,
     ) -> Result<(), WebError> {
         validate_local(name, record_type, value, ttl)?;
-        SqliteLocalRecordRepo::new(self.db.pool().clone())
+        self.db
+            .local_records()
             .add(NewLocalRecord {
                 name: name.to_owned(),
                 record_type,
@@ -74,9 +71,7 @@ impl AppState {
 
     /// Remove a local record by id (write through, swap).
     async fn remove_local_record(&self, id: i64) -> Result<(), WebError> {
-        SqliteLocalRecordRepo::new(self.db.pool().clone())
-            .remove(id)
-            .await?;
+        self.db.local_records().remove(id).await?;
         self.reload_local_records().await
     }
 
@@ -85,7 +80,9 @@ impl AppState {
         user: &CurrentUser,
         error: Option<String>,
     ) -> Result<LocalPageTemplate, WebError> {
-        let records = SqliteLocalRecordRepo::new(self.db.pool().clone())
+        let records = self
+            .db
+            .local_records()
             .list()
             .await?
             .into_iter()
@@ -328,11 +325,7 @@ mod tests {
         st.add_local_record("router.home.lan", RecordType::A, "192.168.1.1", 300)
             .await
             .expect("add");
-        let id = SqliteLocalRecordRepo::new(st.db.pool().clone())
-            .list()
-            .await
-            .unwrap()[0]
-            .id;
+        let id = st.db.local_records().list().await.unwrap()[0].id;
         st.remove_local_record(id).await.expect("remove");
         let m = st
             .resolver

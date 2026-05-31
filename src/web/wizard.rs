@@ -28,7 +28,7 @@ use axum::{
 };
 
 use crate::{
-    storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+    storage::admin_users::AdminUserRepository,
     web::{AppState, Chrome, auth::Password, render::WebError},
 };
 
@@ -46,10 +46,7 @@ impl AppState {
         if self.setup_done.load(Ordering::Relaxed) {
             return false;
         }
-        match SqliteAdminUserRepo::new(self.db.pool().clone())
-            .count()
-            .await
-        {
+        match self.db.admin_users().count().await {
             Ok(0) => true,
             Ok(_) => {
                 self.setup_done.store(true, Ordering::Relaxed);
@@ -134,7 +131,7 @@ impl AppState {
         State(state): State<AppState>,
         axum::Form(form): axum::Form<SetupForm>,
     ) -> Response {
-        let repo = SqliteAdminUserRepo::new(state.db.pool().clone());
+        let repo = state.db.admin_users();
 
         if let Err(msg) = form.validate() {
             return WizardTemplate {

@@ -22,9 +22,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    storage::blocklists::{
-        BlocklistFormat, BlocklistRepository, NewBlocklist, SqliteBlocklistRepo,
-    },
+    storage::blocklists::{BlocklistFormat, BlocklistRepository, NewBlocklist},
     time::Clock,
     web::{AppState, Chrome, auth::CurrentUser, dashboard::group, render::WebError},
 };
@@ -37,7 +35,9 @@ impl AppState {
         notice: Option<String>,
     ) -> Result<BlocklistsPageTemplate, WebError> {
         let now = Clock::now_secs();
-        let sources = SqliteBlocklistRepo::new(self.db.pool().clone())
+        let sources = self
+            .db
+            .blocklists()
             .list()
             .await?
             .into_iter()
@@ -96,7 +96,8 @@ impl AppState {
                 "URL must start with http:// or https://.",
             ));
         }
-        SqliteBlocklistRepo::new(self.db.pool().clone())
+        self.db
+            .blocklists()
             .insert(NewBlocklist {
                 url: url.to_owned(),
                 format,
@@ -121,9 +122,7 @@ impl AppState {
         axum::Form(form): axum::Form<BlocklistIdForm>,
     ) -> Response {
         let res = async {
-            SqliteBlocklistRepo::new(state.db.pool().clone())
-                .remove(form.id)
-                .await?;
+            state.db.blocklists().remove(form.id).await?;
             Ok::<(), WebError>(())
         }
         .await;
@@ -143,7 +142,9 @@ impl AppState {
         State(state): State<AppState>,
         axum::Form(form): axum::Form<ToggleBlocklistForm>,
     ) -> Response {
-        let res = SqliteBlocklistRepo::new(state.db.pool().clone())
+        let res = state
+            .db
+            .blocklists()
             .set_enabled(form.id, form.enabled)
             .await;
         match res {
@@ -234,7 +235,7 @@ struct BlocklistsPageTemplate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Db, blocklists::SqliteBlocklistRepo};
+    use crate::storage::Db;
     use tempfile::TempDir;
 
     async fn state() -> (TempDir, AppState) {
@@ -258,10 +259,7 @@ mod tests {
         st.add_blocklist("https://example.com/hosts.txt", "hosts")
             .await
             .expect("add");
-        let all = SqliteBlocklistRepo::new(st.db.pool().clone())
-            .list()
-            .await
-            .unwrap();
+        let all = st.db.blocklists().list().await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].url, "https://example.com/hosts.txt");
         assert_eq!(all[0].format, BlocklistFormat::Hosts);
