@@ -820,6 +820,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_shows_persisted_window_excluding_old_rows() {
+        use crate::{
+            resolver::pipeline::Outcome,
+            storage::{
+                admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+                query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+            },
+            time::Clock,
+            web::auth::Password,
+        };
+        use reqwest::redirect::Policy;
+
+        let (_dir, state) = test_state().await;
+        SqliteAdminUserRepo::new(state.db.pool().clone())
+            .create("admin", Password::hash("s3cret").unwrap().as_str())
+            .await
+            .unwrap();
+
+        let repo = SqliteQueryLogRepo::new(state.db.pool().clone());
+        let now = Clock::now_millis();
+        let row = |ts: i64, name: &str, outcome: Outcome| QueryLogRecord {
+            id: 0,
+            ts,
+            client: "10.0.0.5".to_owned(),
+            qname: name.to_owned(),
+            qtype: "A".to_owned(),
+            outcome,
+            rcode: Some(0),
+            upstream: None,
+            latency_ms: 1,
+        };
+        // In-window rows plus one well outside the 24h window.
+        repo.insert_batch(&[
+            row(now - 1_000, "inwin.test.", Outcome::Forwarded),
+            row(now - 2_000, "inwin.test.", Outcome::Forwarded),
+            row(now - 3_000, "blocked.test.", Outcome::BlockedByAdmin),
+            row(now - 48 * 3_600 * 1_000, "old.test.", Outcome::Forwarded),
+        ])
+        .await
+        .unwrap();
+
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let cancel = CancellationToken::new();
+        let c2 = cancel.clone();
+        let handle = tokio::spawn(async move { server.serve(c2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        let cookie = r
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+
+        let page = client
+            .get(format!("{base}/"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        assert!(page.contains("Last 24 hours (persisted)"));
+        // In-window domains/clients are surfaced; the out-of-window row is not.
+        assert!(page.contains("inwin.test"));
+        assert!(page.contains("blocked.test"));
+        assert!(
+            !page.contains("old.test"),
+            "rows older than 24h are excluded"
+        );
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    #[tokio::test]
     async fn query_log_history_seeds_from_db_and_scrolls_back() {
         use crate::{
             resolver::pipeline::Outcome,
