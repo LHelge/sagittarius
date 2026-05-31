@@ -28,18 +28,14 @@ use crate::{
         DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, UpstreamConfig,
         UpstreamPool,
     },
-    storage::upstreams::{
-        NewUpstream, SqliteUpstreamRepo, Transport, Upstream, UpstreamRepository,
-    },
+    storage::upstreams::{NewUpstream, Transport, Upstream, UpstreamRepository},
     web::{AppState, Chrome, auth::CurrentUser, render::WebError},
 };
 
 impl AppState {
     /// Rebuild the live upstream pool from the enabled rows and swap it in.
     async fn rebuild_upstream_pool(&self) -> Result<(), WebError> {
-        let rows = SqliteUpstreamRepo::new(self.db.pool().clone())
-            .list_enabled()
-            .await?;
+        let rows = self.db.upstreams().list_enabled().await?;
         let configs: Vec<_> = rows
             .iter()
             .filter_map(|r| UpstreamConfig::try_from(r).ok())
@@ -61,7 +57,9 @@ impl AppState {
         user: &CurrentUser,
         error: Option<String>,
     ) -> Result<UpstreamsPageTemplate, WebError> {
-        let upstreams = SqliteUpstreamRepo::new(self.db.pool().clone())
+        let upstreams = self
+            .db
+            .upstreams()
             .list()
             .await?
             .into_iter()
@@ -139,7 +137,8 @@ impl AppState {
             ));
         }
 
-        SqliteUpstreamRepo::new(self.db.pool().clone())
+        self.db
+            .upstreams()
             .insert(NewUpstream {
                 address,
                 transport,
@@ -158,9 +157,7 @@ impl AppState {
         axum::Form(form): axum::Form<UpstreamIdForm>,
     ) -> Response {
         let res = async {
-            SqliteUpstreamRepo::new(state.db.pool().clone())
-                .delete(form.id)
-                .await?;
+            state.db.upstreams().delete(form.id).await?;
             state.rebuild_upstream_pool().await
         }
         .await;
@@ -177,7 +174,9 @@ impl AppState {
         axum::Form(form): axum::Form<ToggleUpstreamForm>,
     ) -> Response {
         let res = async {
-            SqliteUpstreamRepo::new(state.db.pool().clone())
+            state
+                .db
+                .upstreams()
                 .set_enabled(form.id, form.enabled)
                 .await?;
             state.rebuild_upstream_pool().await
@@ -255,18 +254,11 @@ mod tests {
     #[tokio::test]
     async fn add_ip_upstream_persists_and_rebuilds() {
         let (_d, st) = state().await;
-        let before = SqliteUpstreamRepo::new(st.db.pool().clone())
-            .list()
-            .await
-            .unwrap()
-            .len();
+        let before = st.db.upstreams().list().await.unwrap().len();
         st.add_upstream(form("9.9.9.9", "udp", ""))
             .await
             .expect("add");
-        let after = SqliteUpstreamRepo::new(st.db.pool().clone())
-            .list()
-            .await
-            .unwrap();
+        let after = st.db.upstreams().list().await.unwrap();
         assert_eq!(after.len(), before + 1);
         assert!(after.iter().any(|u| u.address == "9.9.9.9"));
     }

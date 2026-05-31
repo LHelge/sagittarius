@@ -42,11 +42,9 @@ use crate::{
     },
     storage::{
         Db,
-        lists::{
-            AllowlistRepository, BlacklistRepository, SqliteAllowlistRepo, SqliteBlacklistRepo,
-        },
-        local_records::{LocalRecordRepository, RecordType, SqliteLocalRecordRepo},
-        settings::{BlockingMode, Settings, SettingsRepository, SqliteSettingsRepo},
+        lists::{AllowlistRepository, BlacklistRepository},
+        local_records::{LocalRecordRepository, RecordType},
+        settings::{BlockingMode, Settings, SettingsRepository},
     },
 };
 
@@ -256,10 +254,9 @@ impl ResolverState {
     /// - A parse failure on a stored IP value or builder rejection
     ///   ([`resolver::Error::InvalidLocalRecord`]).
     pub async fn hydrate(db: &Db) -> resolver::Result<Arc<Self>> {
-        let pool = db.pool().clone();
-
         // ── Settings ──────────────────────────────────────────────────────────
-        let settings = SqliteSettingsRepo::new(pool.clone())
+        let settings = db
+            .settings()
             .get()
             .await
             .map_err(resolver::Error::Storage)?;
@@ -273,14 +270,16 @@ impl ResolverState {
         let runtime_settings = RuntimeSettings::from(&settings);
 
         // ── Blacklist & allowlist ─────────────────────────────────────────────
-        let blacklist_names = SqliteBlacklistRepo::new(pool.clone())
+        let blacklist_names = db
+            .blacklist()
             .load_all()
             .await
             .map_err(resolver::Error::Storage)?;
 
         let blacklist = blacklist_names.into_iter().collect::<MatchSet>();
 
-        let allowlist_names = SqliteAllowlistRepo::new(pool.clone())
+        let allowlist_names = db
+            .allowlist()
             .load_all()
             .await
             .map_err(resolver::Error::Storage)?;
@@ -291,7 +290,8 @@ impl ResolverState {
         let blocklist = MatchSet::empty();
 
         // ── Local records ─────────────────────────────────────────────────────
-        let local_rows = SqliteLocalRecordRepo::new(pool)
+        let local_rows = db
+            .local_records()
             .load_all()
             .await
             .map_err(resolver::Error::Storage)?;
@@ -382,12 +382,8 @@ mod tests {
         resolver::local::LocalMatch,
         storage::{
             Db,
-            lists::{
-                AllowlistRepository, BlacklistRepository, SqliteAllowlistRepo, SqliteBlacklistRepo,
-            },
-            local_records::{
-                LocalRecordRepository, NewLocalRecord, RecordType, SqliteLocalRecordRepo,
-            },
+            lists::{AllowlistRepository, BlacklistRepository},
+            local_records::{LocalRecordRepository, NewLocalRecord, RecordType},
             settings::{BlockingMode, Settings},
         },
     };
@@ -508,11 +504,11 @@ mod tests {
     async fn hydration_reflects_blacklist_and_allowlist() {
         let (_dir, db) = open_temp_db().await;
 
-        let bl = SqliteBlacklistRepo::new(db.pool().clone());
+        let bl = db.blacklist();
         bl.add("ads.example.com").await.expect("add to blacklist");
         bl.add("tracker.evil.net").await.expect("add to blacklist");
 
-        let al = SqliteAllowlistRepo::new(db.pool().clone());
+        let al = db.allowlist();
         al.add("safe.example.com").await.expect("add to allowlist");
 
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
@@ -539,7 +535,7 @@ mod tests {
     async fn hydration_reflects_local_records() {
         let (_dir, db) = open_temp_db().await;
 
-        let repo = SqliteLocalRecordRepo::new(db.pool().clone());
+        let repo = db.local_records();
         repo.add(NewLocalRecord {
             name: "router.home.lan".to_owned(),
             record_type: RecordType::A,

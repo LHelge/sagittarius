@@ -32,12 +32,7 @@ use crate::{
             UpstreamConfig, UpstreamPool,
         },
     },
-    storage::{
-        Db,
-        blocklists::SqliteBlocklistRepo,
-        query_log::SqliteQueryLogRepo,
-        upstreams::{SqliteUpstreamRepo, UpstreamRepository},
-    },
+    storage::{Db, upstreams::UpstreamRepository},
     telemetry::{
         LiveLog, QUERY_LOG_CHANNEL_CAPACITY, QueryLogPurger, QueryLogWriter, Stats, TelemetrySink,
     },
@@ -175,16 +170,11 @@ impl App {
         // share the same `Arc<ResolverState>`.  `load_from_cache` is awaited
         // here (synchronously within run_until_shutdown) so that blocklist
         // domains are active before the DNS listener starts serving.
-        let scheduler = BlocklistScheduler::new(
-            SqliteBlocklistRepo::new(db.pool().clone()),
-            Arc::clone(&state),
-            Fetcher::new(),
-        );
+        let scheduler =
+            BlocklistScheduler::new(db.blocklists(), Arc::clone(&state), Fetcher::new());
         scheduler.load_from_cache().await;
 
-        let rows = SqliteUpstreamRepo::new(db.pool().clone())
-            .list_enabled()
-            .await?;
+        let rows = db.upstreams().list_enabled().await?;
 
         let configs: Vec<_> = rows
             .iter()
@@ -262,15 +252,13 @@ impl App {
         });
 
         // Drain persisted query events into SQLite, decoupled from the hot path.
-        let query_log_writer =
-            QueryLogWriter::new(query_log_rx, SqliteQueryLogRepo::new(db.pool().clone()));
+        let query_log_writer = QueryLogWriter::new(query_log_rx, db.query_log());
         self.spawn_subsystem("query-log-writer", move |token| async move {
             query_log_writer.run(token).await;
         });
 
         // Enforce the query-log retention window hourly and reclaim disk pages.
-        let query_log_purger =
-            QueryLogPurger::new(SqliteQueryLogRepo::new(db.pool().clone()), query_log_state);
+        let query_log_purger = QueryLogPurger::new(db.query_log(), query_log_state);
         self.spawn_subsystem("query-log-purge", move |token| async move {
             query_log_purger.run(token).await;
         });
@@ -529,15 +517,13 @@ mod tests {
         use tokio::sync::oneshot;
 
         use crate::codec::{header::Header, name::Name, writer::Writer};
-        use crate::storage::local_records::{
-            LocalRecordRepository, NewLocalRecord, RecordType, SqliteLocalRecordRepo,
-        };
+        use crate::storage::local_records::{LocalRecordRepository, NewLocalRecord, RecordType};
 
         // Seed a local A record so DNS can answer with no upstream/network.
         let dir = TempDir::new().expect("temp dir");
         let db_path = dir.path().join("test.db");
         let db = Db::connect(&db_path).await.expect("create db");
-        SqliteLocalRecordRepo::new(db.pool().clone())
+        db.local_records()
             .add(NewLocalRecord {
                 name: "router.home.lan".to_string(),
                 record_type: RecordType::A,

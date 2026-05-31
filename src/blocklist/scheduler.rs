@@ -530,7 +530,7 @@ mod tests {
         blocklist::fetch::Fetcher,
         storage::{
             Db,
-            blocklists::{BlocklistFormat, BlocklistRepository, NewBlocklist, SqliteBlocklistRepo},
+            blocklists::{BlocklistFormat, BlocklistRepository, NewBlocklist},
         },
     };
 
@@ -547,7 +547,7 @@ mod tests {
     /// Build a scheduler with a short timeout (5 s) for test fetches.
     fn make_scheduler(db: &Db, state: Arc<ResolverState>) -> BlocklistScheduler {
         BlocklistScheduler::new(
-            SqliteBlocklistRepo::new(db.pool().clone()),
+            db.blocklists(),
             state,
             Fetcher::new().with_timeout(Duration::from_secs(5)),
         )
@@ -569,7 +569,7 @@ mod tests {
     async fn load_from_cache_builds_set_without_network() {
         let (_dir, db) = open_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
-        let repo = SqliteBlocklistRepo::new(db.pool().clone());
+        let repo = db.blocklists();
 
         // Insert an enabled source and manually seed its cache.
         let src = repo
@@ -624,7 +624,7 @@ mod tests {
 
         let (_dir, db) = open_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
-        let repo = SqliteBlocklistRepo::new(db.pool().clone());
+        let repo = db.blocklists();
 
         let src = repo.insert(hosts_source(&url)).await.expect("insert");
 
@@ -682,7 +682,7 @@ mod tests {
 
         let (_dir, db) = open_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
-        let repo = SqliteBlocklistRepo::new(db.pool().clone());
+        let repo = db.blocklists();
 
         // Insert source with matching ETag already stored.
         let src = repo
@@ -758,7 +758,7 @@ mod tests {
 
         let (_dir, db) = open_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
-        let repo = SqliteBlocklistRepo::new(db.pool().clone());
+        let repo = db.blocklists();
 
         // Good source.
         repo.insert(NewBlocklist {
@@ -826,7 +826,7 @@ mod tests {
 
         let (_dir, db) = open_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
-        let repo = SqliteBlocklistRepo::new(db.pool().clone());
+        let repo = db.blocklists();
 
         let previous: crate::codec::name::Name = "previous.example.com".parse().unwrap();
         state
@@ -890,12 +890,12 @@ mod tests {
 
         let (_dir, db) = open_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
-        let repo = SqliteBlocklistRepo::new(db.pool().clone());
+        let repo = db.blocklists();
 
         repo.insert(hosts_source(&url)).await.expect("insert");
 
         let scheduler = BlocklistScheduler::new(
-            SqliteBlocklistRepo::new(db.pool().clone()),
+            db.blocklists(),
             Arc::clone(&state),
             Fetcher::new().with_timeout(Duration::from_secs(5)),
         );

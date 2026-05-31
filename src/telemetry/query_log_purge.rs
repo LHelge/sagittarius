@@ -94,10 +94,7 @@ mod tests {
     use crate::{
         resolver::pipeline::Outcome,
         resolver::state::RuntimeSettings,
-        storage::{
-            Db,
-            query_log::{QueryLogRecord, SqliteQueryLogRepo},
-        },
+        storage::{Db, query_log::QueryLogRecord},
     };
 
     async fn setup() -> (TempDir, Db, Arc<ResolverState>) {
@@ -131,7 +128,7 @@ mod tests {
     #[tokio::test]
     async fn removes_old_rows_keeps_recent() {
         let (_dir, db, state) = setup().await;
-        let repo = SqliteQueryLogRepo::new(db.pool().clone());
+        let repo = db.query_log();
 
         let now = Clock::now_millis();
         // Default retention is 30 days; one row 40 days old, one fresh.
@@ -140,7 +137,7 @@ mod tests {
             .await
             .expect("insert");
 
-        let purger = QueryLogPurger::new(SqliteQueryLogRepo::new(db.pool().clone()), state);
+        let purger = QueryLogPurger::new(db.query_log(), state);
         let removed = purger.purge_once().await.expect("purge");
         assert_eq!(removed, 1, "only the aged-out row is removed");
 
@@ -152,7 +149,7 @@ mod tests {
     #[tokio::test]
     async fn empty_table_purges_nothing() {
         let (_dir, db, state) = setup().await;
-        let purger = QueryLogPurger::new(SqliteQueryLogRepo::new(db.pool().clone()), state);
+        let purger = QueryLogPurger::new(db.query_log(), state);
         let removed = purger.purge_once().await.expect("purge empty");
         assert_eq!(removed, 0);
     }
@@ -160,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn honors_changed_retention_from_snapshot() {
         let (_dir, db, state) = setup().await;
-        let repo = SqliteQueryLogRepo::new(db.pool().clone());
+        let repo = db.query_log();
 
         // A row two days old survives the default 30-day window …
         let now = Clock::now_millis();
@@ -169,10 +166,7 @@ mod tests {
             .await
             .expect("insert");
 
-        let purger = QueryLogPurger::new(
-            SqliteQueryLogRepo::new(db.pool().clone()),
-            Arc::clone(&state),
-        );
+        let purger = QueryLogPurger::new(db.query_log(), Arc::clone(&state));
         assert_eq!(purger.purge_once().await.expect("purge 30d"), 0);
 
         // … but is removed once retention is tightened to 1 day.
@@ -184,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn run_exits_promptly_on_cancel() {
         let (_dir, db, state) = setup().await;
-        let purger = QueryLogPurger::new(SqliteQueryLogRepo::new(db.pool().clone()), state);
+        let purger = QueryLogPurger::new(db.query_log(), state);
         let token = CancellationToken::new();
         let t2 = token.clone();
         let handle = tokio::spawn(async move { purger.run(t2).await });

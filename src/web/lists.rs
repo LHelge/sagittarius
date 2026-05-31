@@ -33,9 +33,7 @@ use serde::Deserialize;
 
 use crate::{
     codec::name::Name,
-    storage::lists::{
-        AllowlistRepository, BlacklistRepository, SqliteAllowlistRepo, SqliteBlacklistRepo,
-    },
+    storage::lists::{AllowlistRepository, BlacklistRepository},
     web::{
         AppState,
         auth::CurrentUser,
@@ -48,51 +46,39 @@ impl AppState {
 
     /// Rebuild the in-memory admin blacklist snapshot from the database.
     async fn reload_blacklist(&self) -> Result<(), WebError> {
-        let names = SqliteBlacklistRepo::new(self.db.pool().clone())
-            .load_all()
-            .await?;
+        let names = self.db.blacklist().load_all().await?;
         self.resolver.blacklist().store(names.into_iter().collect());
         Ok(())
     }
 
     /// Rebuild the in-memory allowlist snapshot from the database.
     async fn reload_allowlist(&self) -> Result<(), WebError> {
-        let names = SqliteAllowlistRepo::new(self.db.pool().clone())
-            .load_all()
-            .await?;
+        let names = self.db.allowlist().load_all().await?;
         self.resolver.allowlist().store(names.into_iter().collect());
         Ok(())
     }
 
     /// Add `domain` to the admin blacklist (write-through, then swap).
     pub(crate) async fn add_to_blacklist(&self, domain: &str) -> Result<(), WebError> {
-        SqliteBlacklistRepo::new(self.db.pool().clone())
-            .add(domain)
-            .await?;
+        self.db.blacklist().add(domain).await?;
         self.reload_blacklist().await
     }
 
     /// Remove `domain` from the admin blacklist (write-through, then swap).
     pub(crate) async fn remove_from_blacklist(&self, domain: &str) -> Result<(), WebError> {
-        SqliteBlacklistRepo::new(self.db.pool().clone())
-            .remove(domain)
-            .await?;
+        self.db.blacklist().remove(domain).await?;
         self.reload_blacklist().await
     }
 
     /// Add `domain` to the allowlist (write-through, then swap).
     pub(crate) async fn add_to_allowlist(&self, domain: &str) -> Result<(), WebError> {
-        SqliteAllowlistRepo::new(self.db.pool().clone())
-            .add(domain)
-            .await?;
+        self.db.allowlist().add(domain).await?;
         self.reload_allowlist().await
     }
 
     /// Remove `domain` from the allowlist (write-through, then swap).
     pub(crate) async fn remove_from_allowlist(&self, domain: &str) -> Result<(), WebError> {
-        SqliteAllowlistRepo::new(self.db.pool().clone())
-            .remove(domain)
-            .await?;
+        self.db.allowlist().remove(domain).await?;
         self.reload_allowlist().await
     }
 
@@ -193,16 +179,8 @@ impl ListKind {
 impl AppState {
     async fn list_entries(&self, kind: ListKind) -> Result<Vec<String>, WebError> {
         let entries = match kind {
-            ListKind::Blacklist => {
-                SqliteBlacklistRepo::new(self.db.pool().clone())
-                    .list()
-                    .await?
-            }
-            ListKind::Allowlist => {
-                SqliteAllowlistRepo::new(self.db.pool().clone())
-                    .list()
-                    .await?
-            }
+            ListKind::Blacklist => self.db.blacklist().list().await?,
+            ListKind::Allowlist => self.db.allowlist().list().await?,
         };
         // Show (and round-trip on remove) the bare domain; the stored value keeps
         // its canonical trailing dot.
@@ -392,10 +370,7 @@ mod tests {
         // In-memory set updated immediately ...
         assert!(st.resolver.blacklist().contains(&name("ads.example.com")));
         // ... and persisted.
-        let names = SqliteBlacklistRepo::new(st.db.pool().clone())
-            .load_all()
-            .await
-            .unwrap();
+        let names = st.db.blacklist().load_all().await.unwrap();
         assert!(names.contains(&name("ads.example.com")));
     }
 

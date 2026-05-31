@@ -29,8 +29,8 @@ use serde::Deserialize;
 use crate::{
     resolver::state::RuntimeSettings,
     storage::{
-        query_log::{QueryLogRepository, SqliteQueryLogRepo},
-        settings::{BlockingMode, Settings, SettingsRepository, SqliteSettingsRepo},
+        query_log::QueryLogRepository,
+        settings::{BlockingMode, Settings, SettingsRepository},
     },
     web::{AppState, Chrome, auth::CurrentUser, render::WebError},
 };
@@ -42,9 +42,7 @@ impl AppState {
         error: Option<String>,
         notice: Option<String>,
     ) -> Result<SettingsPageTemplate, WebError> {
-        let s = SqliteSettingsRepo::new(self.db.pool().clone())
-            .get()
-            .await?;
+        let s = self.db.settings().get().await?;
         Ok(SettingsPageTemplate {
             chrome: self.chrome("settings", user).await,
             cache_min_ttl: s.cache_min_ttl,
@@ -103,10 +101,7 @@ impl AppState {
 
     /// `POST /settings/clear-log` — delete all persisted query-log history.
     pub async fn settings_clear_log(user: CurrentUser, State(state): State<AppState>) -> Response {
-        if let Err(e) = SqliteQueryLogRepo::new(state.db.pool().clone())
-            .clear_all()
-            .await
-        {
+        if let Err(e) = state.db.query_log().clear_all().await {
             return WebError::from(e).into_response();
         }
         match state
@@ -121,9 +116,7 @@ impl AppState {
     /// Validate and persist a settings form, then refresh the live snapshot.
     async fn apply_settings(&self, form: SettingsForm) -> Result<(), WebError> {
         let settings = form.into_settings()?;
-        SqliteSettingsRepo::new(self.db.pool().clone())
-            .update(&settings)
-            .await?;
+        self.db.settings().update(&settings).await?;
         // Apply to the live snapshot (capacity needs a restart; see module doc).
         self.resolver
             .store_settings(RuntimeSettings::from(&settings));
@@ -276,10 +269,7 @@ mod tests {
         st.apply_settings(base_form()).await.expect("apply");
 
         // Persisted.
-        let s = SqliteSettingsRepo::new(st.db.pool().clone())
-            .get()
-            .await
-            .unwrap();
+        let s = st.db.settings().get().await.unwrap();
         assert_eq!(s.cache_max_ttl, 3600);
         assert_eq!(s.blocking_mode, BlockingMode::NxDomain);
         assert_eq!(s.ui_theme, "dark");
@@ -308,10 +298,7 @@ mod tests {
         f.blocking_mode = "custom".to_owned();
         f.custom_block_ipv4 = "203.0.113.1".to_owned();
         st.apply_settings(f).await.expect("apply custom");
-        let s = SqliteSettingsRepo::new(st.db.pool().clone())
-            .get()
-            .await
-            .unwrap();
+        let s = st.db.settings().get().await.unwrap();
         assert_eq!(s.blocking_mode, BlockingMode::Custom);
         assert_eq!(s.custom_block_ipv4, Some("203.0.113.1".parse().unwrap()));
     }
@@ -336,10 +323,7 @@ mod tests {
         // save — it is simply dropped.
         f.custom_block_ipv4 = "not-an-ip".to_owned();
         st.apply_settings(f).await.expect("apply");
-        let s = SqliteSettingsRepo::new(st.db.pool().clone())
-            .get()
-            .await
-            .unwrap();
+        let s = st.db.settings().get().await.unwrap();
         assert_eq!(s.custom_block_ipv4, None);
     }
 
@@ -351,10 +335,7 @@ mod tests {
         let mut f = base_form(); // nxdomain
         f.custom_block_ipv4 = "203.0.113.9".to_owned();
         st.apply_settings(f).await.expect("apply");
-        let s = SqliteSettingsRepo::new(st.db.pool().clone())
-            .get()
-            .await
-            .unwrap();
+        let s = st.db.settings().get().await.unwrap();
         assert_eq!(s.custom_block_ipv4, Some("203.0.113.9".parse().unwrap()));
     }
 
@@ -378,10 +359,7 @@ mod tests {
         f.query_log_retention_days = 7;
         st.apply_settings(f).await.expect("apply");
 
-        let s = SqliteSettingsRepo::new(st.db.pool().clone())
-            .get()
-            .await
-            .unwrap();
+        let s = st.db.settings().get().await.unwrap();
         assert!(!s.query_log_enabled, "unticked checkbox disables logging");
         assert_eq!(s.query_log_retention_days, 7);
 
@@ -405,11 +383,11 @@ mod tests {
     async fn clear_log_empties_the_table() {
         use crate::{
             resolver::pipeline::Outcome,
-            storage::query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+            storage::query_log::{QueryLogRecord, QueryLogRepository},
         };
 
         let (_d, st) = state().await;
-        let repo = SqliteQueryLogRepo::new(st.db.pool().clone());
+        let repo = st.db.query_log();
         repo.insert_batch(&[QueryLogRecord {
             id: 0,
             ts: 1,

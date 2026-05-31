@@ -51,10 +51,7 @@ use crate::{
     blocklist::scheduler::RefreshTrigger,
     config::SessionCookieSecurePolicy,
     resolver::{state::ResolverState, upstream::SharedUpstreamPool},
-    storage::{
-        Db,
-        settings::{SettingsRepository, SqliteSettingsRepo},
-    },
+    storage::{Db, settings::SettingsRepository},
     telemetry::TelemetrySink,
     web::assets::Assets,
 };
@@ -149,7 +146,7 @@ impl AppState {
     /// Read the configured UI theme, falling back to `auto` if the settings
     /// row cannot be read.
     async fn ui_theme(&self) -> String {
-        match SqliteSettingsRepo::new(self.db.pool().clone()).get().await {
+        match self.db.settings().get().await {
             Ok(settings) => settings.ui_theme,
             Err(e) => {
                 warn!(error = %e, "failed to read ui_theme; defaulting to auto");
@@ -304,7 +301,6 @@ impl AppState {
             resolver::upstream::{
                 DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, UpstreamPool,
             },
-            storage::blocklists::SqliteBlocklistRepo,
             telemetry::{LiveLog, Stats},
         };
 
@@ -324,11 +320,8 @@ impl AppState {
             )
             .await,
         ));
-        let scheduler = BlocklistScheduler::new(
-            SqliteBlocklistRepo::new(db.pool().clone()),
-            Arc::clone(&resolver),
-            Fetcher::new(),
-        );
+        let scheduler =
+            BlocklistScheduler::new(db.blocklists(), Arc::clone(&resolver), Fetcher::new());
         AppState {
             db,
             resolver,
@@ -380,17 +373,16 @@ mod tests {
 
     #[tokio::test]
     async fn auth_flow_end_to_end() {
-        use crate::{
-            storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-            web::auth::Password,
-        };
+        use crate::{storage::admin_users::AdminUserRepository, web::auth::Password};
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
         let pool = state.db.pool().clone();
 
         // Seed an admin account.
-        SqliteAdminUserRepo::new(pool.clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").expect("hash").as_str())
             .await
             .expect("create admin");
@@ -583,12 +575,13 @@ mod tests {
 
     #[tokio::test]
     async fn first_run_wizard_flow() {
-        use crate::storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo};
+        use crate::storage::admin_users::AdminUserRepository;
         use reqwest::redirect::Policy;
 
-        // Fresh state: no admin user exists yet.
+        // Fresh state: no admin user exists yet. Keep a DB handle alive past the
+        // move into the server, to assert admin counts during the wizard flow.
         let (_dir, state) = test_state().await;
-        let pool = state.db.pool().clone();
+        let db = state.db.clone();
         let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
             .await
             .expect("bind");
@@ -638,10 +631,7 @@ mod tests {
         assert_eq!(r.status(), 200);
         assert!(r.text().await.unwrap().contains("do not match"));
         assert_eq!(
-            SqliteAdminUserRepo::new(pool.clone())
-                .count()
-                .await
-                .unwrap(),
+            db.admin_users().count().await.unwrap(),
             0,
             "no admin created on validation failure"
         );
@@ -657,13 +647,7 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 303);
         assert_eq!(r.headers().get("location").unwrap(), "/login");
-        assert_eq!(
-            SqliteAdminUserRepo::new(pool.clone())
-                .count()
-                .await
-                .unwrap(),
-            1
-        );
+        assert_eq!(db.admin_users().count().await.unwrap(), 1);
 
         // The wizard is now closed.
         let r = client.get(format!("{base}/setup")).send().await.unwrap();
@@ -694,7 +678,7 @@ mod tests {
         use crate::{
             codec::{message::Qtype, name::Name},
             resolver::pipeline::Outcome,
-            storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
+            storage::admin_users::AdminUserRepository,
             telemetry::QueryEvent,
             web::auth::Password,
         };
@@ -702,7 +686,9 @@ mod tests {
         use std::time::Duration;
 
         let (_dir, state) = test_state().await;
-        SqliteAdminUserRepo::new(state.db.pool().clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
@@ -824,8 +810,8 @@ mod tests {
         use crate::{
             resolver::pipeline::Outcome,
             storage::{
-                admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-                query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+                admin_users::AdminUserRepository,
+                query_log::{QueryLogRecord, QueryLogRepository},
             },
             time::Clock,
             web::auth::Password,
@@ -833,12 +819,14 @@ mod tests {
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
-        SqliteAdminUserRepo::new(state.db.pool().clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
 
-        let repo = SqliteQueryLogRepo::new(state.db.pool().clone());
+        let repo = state.db.query_log();
         let now = Clock::now_millis();
         let row = |ts: i64, name: &str, outcome: Outcome| QueryLogRecord {
             id: 0,
@@ -923,21 +911,23 @@ mod tests {
         use crate::{
             resolver::pipeline::Outcome,
             storage::{
-                admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-                query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+                admin_users::AdminUserRepository,
+                query_log::{QueryLogRecord, QueryLogRepository},
             },
             web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
-        SqliteAdminUserRepo::new(state.db.pool().clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
 
         // Seed three persisted rows; ascending ts → ascending ids (1, 2, 3).
-        let repo = SqliteQueryLogRepo::new(state.db.pool().clone());
+        let repo = state.db.query_log();
         for (ts, name) in [(1, "a.test."), (2, "b.test."), (3, "c.test.")] {
             repo.insert_batch(&[QueryLogRecord {
                 id: 0,
@@ -1045,16 +1035,15 @@ mod tests {
     async fn one_click_whitelist_persists_and_swaps() {
         use crate::{
             codec::name::Name,
-            storage::{
-                admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-                lists::{AllowlistRepository, SqliteAllowlistRepo},
-            },
+            storage::{admin_users::AdminUserRepository, lists::AllowlistRepository},
             web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
-        SqliteAdminUserRepo::new(state.db.pool().clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
@@ -1119,10 +1108,7 @@ mod tests {
 
         // Persisted to the DB and swapped into the live set.
         assert!(app.resolver.allowlist().contains(&dom));
-        let names = SqliteAllowlistRepo::new(app.db.pool().clone())
-            .load_all()
-            .await
-            .unwrap();
+        let names = app.db.allowlist().load_all().await.unwrap();
         assert!(names.contains(&dom));
 
         // The real Datastar path: token in the JSON signal body (no header).
@@ -1153,14 +1139,14 @@ mod tests {
     #[tokio::test]
     async fn management_blacklist_form_roundtrip() {
         use crate::{
-            codec::name::Name,
-            storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-            web::auth::Password,
+            codec::name::Name, storage::admin_users::AdminUserRepository, web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
-        SqliteAdminUserRepo::new(state.db.pool().clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
@@ -1257,14 +1243,14 @@ mod tests {
     #[tokio::test]
     async fn settings_form_saves_over_http() {
         use crate::{
-            codec::synth::BlockMode,
-            storage::admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-            web::auth::Password,
+            codec::synth::BlockMode, storage::admin_users::AdminUserRepository, web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
-        SqliteAdminUserRepo::new(state.db.pool().clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
@@ -1336,15 +1322,17 @@ mod tests {
         use crate::{
             resolver::pipeline::Outcome,
             storage::{
-                admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-                query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+                admin_users::AdminUserRepository,
+                query_log::{QueryLogRecord, QueryLogRepository},
             },
             web::auth::Password,
         };
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
-        SqliteAdminUserRepo::new(state.db.pool().clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
@@ -1396,7 +1384,8 @@ mod tests {
         assert!(page.contains("/settings/clear-log"));
 
         // Seed a query-log row to be cleared.
-        SqliteQueryLogRepo::new(app.db.pool().clone())
+        app.db
+            .query_log()
             .insert_batch(&[QueryLogRecord {
                 id: 0,
                 ts: 1,
@@ -1432,10 +1421,7 @@ mod tests {
         assert_eq!(r.status(), 200);
         assert!(r.text().await.unwrap().contains("Query log cleared"));
 
-        let remaining = SqliteQueryLogRepo::new(app.db.pool().clone())
-            .page(None, 10)
-            .await
-            .unwrap();
+        let remaining = app.db.query_log().page(None, 10).await.unwrap();
         assert!(remaining.is_empty(), "clear-log must empty the table");
 
         cancel.cancel();
@@ -1447,15 +1433,14 @@ mod tests {
 
     #[tokio::test]
     async fn blocklist_sources_manage_over_http() {
-        use crate::storage::{
-            admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-            blocklists::{BlocklistRepository, SqliteBlocklistRepo},
-        };
+        use crate::storage::{admin_users::AdminUserRepository, blocklists::BlocklistRepository};
         use crate::web::auth::Password;
         use reqwest::redirect::Policy;
 
         let (_dir, state) = test_state().await;
-        SqliteAdminUserRepo::new(state.db.pool().clone())
+        state
+            .db
+            .admin_users()
             .create("admin", Password::hash("s3cret").unwrap().as_str())
             .await
             .unwrap();
@@ -1504,10 +1489,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 303);
-        let sources = SqliteBlocklistRepo::new(app.db.pool().clone())
-            .list()
-            .await
-            .unwrap();
+        let sources = app.db.blocklists().list().await.unwrap();
         assert_eq!(sources.len(), 1);
 
         // The page lists it.

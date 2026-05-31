@@ -45,7 +45,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     resolver::pipeline::LogAction,
-    storage::query_log::{QueryLogRecord, QueryLogRepository, SqliteQueryLogRepo},
+    storage::query_log::{QueryLogRecord, QueryLogRepository},
     telemetry::{QueryEvent, Stats},
     web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay, render::WebError},
 };
@@ -56,10 +56,7 @@ const LOG_PAGE_SIZE: i64 = 100;
 impl AppState {
     /// `GET /log` — the query-log page, seeded with the newest page of history.
     pub async fn query_log(user: CurrentUser, State(state): State<AppState>) -> Response {
-        let records = match SqliteQueryLogRepo::new(state.db.pool().clone())
-            .page(None, LOG_PAGE_SIZE)
-            .await
-        {
+        let records = match state.db.query_log().page(None, LOG_PAGE_SIZE).await {
             Ok(records) => records,
             Err(e) => return WebError::from(e).into_response(),
         };
@@ -89,7 +86,9 @@ impl AppState {
         State(state): State<AppState>,
         Query(q): Query<OlderQuery>,
     ) -> Response {
-        let records = match SqliteQueryLogRepo::new(state.db.pool().clone())
+        let records = match state
+            .db
+            .query_log()
             .page(Some(q.before), LOG_PAGE_SIZE)
             .await
         {

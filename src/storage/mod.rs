@@ -131,6 +131,58 @@ impl Db {
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
+
+    // ── Repository accessors ──────────────────────────────────────────────────
+    //
+    // Convenience constructors so callers write `db.settings()` instead of
+    // `SqliteSettingsRepo::new(db.pool().clone())`. Each repo is a cheap handle
+    // over a cloned pool (the pool itself is an `Arc`), so constructing one per
+    // call is free; this just centralizes the wiring.
+
+    /// Repository for the singleton settings row.
+    pub fn settings(&self) -> settings::SqliteSettingsRepo {
+        settings::SqliteSettingsRepo::new(self.pool.clone())
+    }
+
+    /// Repository for upstream resolver rows.
+    pub fn upstreams(&self) -> upstreams::SqliteUpstreamRepo {
+        upstreams::SqliteUpstreamRepo::new(self.pool.clone())
+    }
+
+    /// Repository for blocklist source rows + the offline content cache.
+    pub fn blocklists(&self) -> blocklists::SqliteBlocklistRepo {
+        blocklists::SqliteBlocklistRepo::new(self.pool.clone())
+    }
+
+    /// Repository for the admin blacklist.
+    pub fn blacklist(&self) -> lists::SqliteBlacklistRepo {
+        lists::SqliteBlacklistRepo::new(self.pool.clone())
+    }
+
+    /// Repository for the admin allowlist.
+    pub fn allowlist(&self) -> lists::SqliteAllowlistRepo {
+        lists::SqliteAllowlistRepo::new(self.pool.clone())
+    }
+
+    /// Repository for authoritative local DNS records.
+    pub fn local_records(&self) -> local_records::SqliteLocalRecordRepo {
+        local_records::SqliteLocalRecordRepo::new(self.pool.clone())
+    }
+
+    /// Repository for web-admin credentials.
+    pub fn admin_users(&self) -> admin_users::SqliteAdminUserRepo {
+        admin_users::SqliteAdminUserRepo::new(self.pool.clone())
+    }
+
+    /// Repository for admin sessions.
+    pub fn sessions(&self) -> sessions::SqliteSessionRepo {
+        sessions::SqliteSessionRepo::new(self.pool.clone())
+    }
+
+    /// Repository for the durable per-query log.
+    pub fn query_log(&self) -> query_log::SqliteQueryLogRepo {
+        query_log::SqliteQueryLogRepo::new(self.pool.clone())
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

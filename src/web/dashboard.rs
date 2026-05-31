@@ -19,7 +19,7 @@ use axum::{extract::State, response::IntoResponse};
 use std::time::Duration;
 
 use crate::{
-    storage::query_log::{QueryLogCounts, QueryLogRepository, SqliteQueryLogRepo},
+    storage::query_log::{QueryLogCounts, QueryLogRepository},
     telemetry::StatsSnapshot,
     time::{self, Clock},
     web::{AppState, Chrome, auth::CurrentUser, render::DomainDisplay},
@@ -42,7 +42,7 @@ impl AppState {
 
         // Persisted 24h window. On a DB error the figures degrade to zeros
         // rather than failing the whole page.
-        let repo = SqliteQueryLogRepo::new(state.db.pool().clone());
+        let repo = state.db.query_log();
         let since = Clock::millis_ago(WINDOW);
         let window = WindowStats {
             counts: repo.counts_since(since).await.unwrap_or_default(),

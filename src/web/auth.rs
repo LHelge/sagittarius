@@ -53,8 +53,8 @@ use tracing::warn;
 use crate::{
     config::SessionCookieSecurePolicy,
     storage::{
-        admin_users::{AdminUserRepository, SqliteAdminUserRepo},
-        sessions::{NewSession, SessionRepository, SqliteSessionRepo},
+        admin_users::AdminUserRepository,
+        sessions::{NewSession, SessionRepository},
     },
     time::Clock,
     web::{
@@ -299,7 +299,7 @@ impl AppState {
     /// `None` for any missing, malformed, expired, or mismatched session.
     pub(crate) async fn current_user(&self, headers: &HeaderMap) -> Option<CurrentUser> {
         let cookie = SessionCookie::from_headers(headers)?;
-        let repo = SqliteSessionRepo::new(self.db.pool().clone());
+        let repo = self.db.sessions();
         let session = repo.find(&cookie.id).await.ok()??;
 
         let now = Clock::now_secs();
@@ -332,7 +332,8 @@ impl AppState {
         let cookie = SessionCookie::issue();
         let expires_at = Clock::now_secs() + IDLE_SECS;
 
-        SqliteSessionRepo::new(self.db.pool().clone())
+        self.db
+            .sessions()
             .insert(&NewSession {
                 id: cookie.id.clone(),
                 token_hash: cookie.token.hash(),
@@ -364,7 +365,7 @@ impl AppState {
         headers: HeaderMap,
         axum::Form(form): axum::Form<LoginForm>,
     ) -> Response {
-        let repo = SqliteAdminUserRepo::new(state.db.pool().clone());
+        let repo = state.db.admin_users();
         let user = match repo.find_by_username(&form.username).await {
             Ok(u) => u,
             Err(e) => return WebError::from(e).into_response(),
@@ -398,9 +399,7 @@ impl AppState {
     /// `POST /logout` — invalidate the current session and clear the cookie.
     pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         if let Some(cookie) = SessionCookie::from_headers(&headers) {
-            let _ = SqliteSessionRepo::new(state.db.pool().clone())
-                .delete(&cookie.id)
-                .await;
+            let _ = state.db.sessions().delete(&cookie.id).await;
         }
         let secure = origin::is_https(state.cookie_policy, &headers);
         let cookie = SessionCookie::clear_header(secure);
