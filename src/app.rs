@@ -38,7 +38,9 @@ use crate::{
         query_log::SqliteQueryLogRepo,
         upstreams::{SqliteUpstreamRepo, UpstreamRepository},
     },
-    telemetry::{LiveLog, QUERY_LOG_CHANNEL_CAPACITY, QueryLogWriter, Stats, TelemetrySink},
+    telemetry::{
+        LiveLog, QUERY_LOG_CHANNEL_CAPACITY, QueryLogPurger, QueryLogWriter, Stats, TelemetrySink,
+    },
     web::{AdminServer, AppState},
 };
 
@@ -208,10 +210,13 @@ impl App {
 
         // Persist query events off the hot path: the sink `try_send`s onto a
         // bounded channel that a dedicated writer task drains into SQLite.
+        // Capture a resolver handle for the writer gate and the purge task
+        // before `state` is moved into the engine below.
+        let query_log_state = Arc::clone(&state);
         let (query_log_tx, query_log_rx) = tokio::sync::mpsc::channel(QUERY_LOG_CHANNEL_CAPACITY);
         let telemetry = Arc::new(
             TelemetrySink::new(Arc::new(LiveLog::default()), Arc::new(Stats::new()))
-                .with_query_log(query_log_tx, Arc::clone(&state)),
+                .with_query_log(query_log_tx, Arc::clone(&query_log_state)),
         );
 
         // ── Web admin shared state ────────────────────────────────────────────
@@ -261,6 +266,13 @@ impl App {
             QueryLogWriter::new(query_log_rx, SqliteQueryLogRepo::new(db.pool().clone()));
         self.spawn_subsystem("query-log-writer", move |token| async move {
             query_log_writer.run(token).await;
+        });
+
+        // Enforce the query-log retention window hourly and reclaim disk pages.
+        let query_log_purger =
+            QueryLogPurger::new(SqliteQueryLogRepo::new(db.pool().clone()), query_log_state);
+        self.spawn_subsystem("query-log-purge", move |token| async move {
+            query_log_purger.run(token).await;
         });
 
         // Close the tracker so `wait()` can complete once tracked tasks drain.
