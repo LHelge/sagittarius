@@ -120,38 +120,135 @@ impl QueryEvent {
 
 // ── TelemetrySink ─────────────────────────────────────────────────────────────
 
+/// Bounded capacity of the query-log channel between the hot path and the
+/// writer task (E10.4). Large enough to absorb bursts; on overflow events are
+/// dropped (and counted) rather than blocking the DNS response path.
+pub const QUERY_LOG_CHANNEL_CAPACITY: usize = 4096;
+
+/// The hot-path → writer-task channel for persisting query events, plus the
+/// gate and drop counter. Held by [`TelemetrySink`] only when persistence is
+/// wired (it is absent in lightweight test sinks).
+#[derive(Clone)]
+struct QueryLogChannel {
+    /// Bounded sender drained by the writer task ([`super::query_log_writer`]).
+    sender: tokio::sync::mpsc::Sender<QueryEvent>,
+    /// Shared resolver state, read to gate on `query_log_enabled` per query.
+    state: std::sync::Arc<crate::resolver::state::ResolverState>,
+    /// Count of events dropped because the channel was full.
+    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
 /// A thin bundle that wires together the [`super::live_log::LiveLog`] and
-/// [`super::stats::Stats`] sinks.
+/// [`super::stats::Stats`] sinks, and (optionally) the persistent query-log
+/// channel.
 ///
 /// This is the single seam called by the pipeline's log step (E6.7).  One call
 /// to [`TelemetrySink::record`] emits the structured log event, updates the
-/// runtime counters, and pushes the event to the live-log ring and broadcast
-/// channel.
+/// runtime counters, pushes the event to the live-log ring/broadcast, and —
+/// when query logging is enabled — enqueues it for durable persistence
+/// **without ever awaiting** (a full channel drops + counts instead).
 ///
-/// Cheap to clone — both inner `Arc`s are reference-counted.
+/// Cheap to clone — every field is reference-counted.
 #[derive(Clone)]
 pub struct TelemetrySink {
     /// The live-log ring buffer and broadcast channel.
     pub live_log: std::sync::Arc<super::live_log::LiveLog>,
     /// The runtime counters and top-N accumulators.
     pub stats: std::sync::Arc<super::stats::Stats>,
+    /// Persistence channel + gate; `None` in test sinks that don't persist.
+    query_log: Option<QueryLogChannel>,
 }
 
 impl TelemetrySink {
-    /// Create a new [`TelemetrySink`].
+    /// Create a new [`TelemetrySink`] without query-log persistence.
+    ///
+    /// Use [`TelemetrySink::with_query_log`] to attach the writer channel.
     pub fn new(
         live_log: std::sync::Arc<super::live_log::LiveLog>,
         stats: std::sync::Arc<super::stats::Stats>,
     ) -> Self {
-        Self { live_log, stats }
+        Self {
+            live_log,
+            stats,
+            query_log: None,
+        }
     }
 
-    /// Record a query event: emit the log line, update stats, publish to the
-    /// live-log ring.
+    /// Attach the persistent query-log channel.
+    ///
+    /// `sender` is the bounded channel drained by the writer task; `state`
+    /// supplies the `query_log_enabled` gate read per query on the hot path.
+    #[must_use]
+    pub fn with_query_log(
+        mut self,
+        sender: tokio::sync::mpsc::Sender<QueryEvent>,
+        state: std::sync::Arc<crate::resolver::state::ResolverState>,
+    ) -> Self {
+        self.query_log = Some(QueryLogChannel {
+            sender,
+            state,
+            dropped: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        });
+        self
+    }
+
+    /// Number of query events dropped so far because the channel was full.
+    ///
+    /// Returns `0` when no query-log channel is attached.
+    #[must_use]
+    pub fn dropped_query_events(&self) -> u64 {
+        self.query_log
+            .as_ref()
+            .map(|ch| ch.dropped.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Record a query event: emit the log line, update stats, enqueue for
+    /// persistence (if enabled), and publish to the live-log ring/broadcast.
+    ///
+    /// Never blocks or awaits: the persistence enqueue is a non-blocking
+    /// `try_send`; a full channel drops the event and bumps the drop counter.
     pub fn record(&self, event: QueryEvent) {
         event.emit();
         self.stats.record(&event);
+        self.enqueue_for_persistence(&event);
         self.live_log.publish(event);
+    }
+
+    /// Enqueue `event` onto the query-log channel when logging is enabled.
+    ///
+    /// A clone is taken only when there is a channel and the gate is open, so
+    /// the common (persisting) path costs one clone and the disabled/test paths
+    /// cost nothing.
+    fn enqueue_for_persistence(&self, event: &QueryEvent) {
+        use std::sync::atomic::Ordering;
+        use tokio::sync::mpsc::error::TrySendError;
+
+        let Some(channel) = &self.query_log else {
+            return;
+        };
+        if !channel.state.settings().query_log_enabled {
+            return;
+        }
+
+        match channel.sender.try_send(event.clone()) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                // Rate-limit the warning: first drop, then every 1000th, so a
+                // sustained overload doesn't flood the log.
+                let dropped = channel.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                if dropped == 1 || dropped % 1000 == 0 {
+                    tracing::warn!(
+                        dropped,
+                        "query-log channel full; dropping events (writer task is behind)"
+                    );
+                }
+            }
+            Err(TrySendError::Closed(_)) => {
+                // The writer task has exited (e.g. during shutdown). Nothing to
+                // do — the live log and stats already captured the event.
+            }
+        }
     }
 }
 
@@ -262,5 +359,98 @@ mod tests {
             .expect("broadcast channel closed");
 
         assert_eq!(received.qname.to_string(), "example.com.");
+    }
+
+    // ── Query-log channel gating (E10.4) ──────────────────────────────────────
+
+    /// Hydrate a fresh resolver state (query logging enabled by the seed
+    /// defaults) for the gating tests.
+    async fn hydrate_state() -> (
+        tempfile::TempDir,
+        Arc<crate::resolver::state::ResolverState>,
+    ) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let db = crate::storage::Db::connect(dir.path().join("t.db"))
+            .await
+            .expect("connect");
+        let state = crate::resolver::state::ResolverState::hydrate(&db)
+            .await
+            .expect("hydrate");
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn record_enqueues_when_enabled() {
+        let (_dir, state) = hydrate_state().await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sink = TelemetrySink::new(Arc::new(LiveLog::default()), Arc::new(Stats::default()))
+            .with_query_log(tx, Arc::clone(&state));
+
+        sink.record(make_event(Outcome::Forwarded));
+
+        let queued = rx.try_recv().expect("event must be enqueued when enabled");
+        assert_eq!(queued.qname.to_string(), "example.com.");
+        assert_eq!(sink.dropped_query_events(), 0);
+    }
+
+    #[tokio::test]
+    async fn record_full_channel_drops_and_counts_without_blocking() {
+        let (_dir, state) = hydrate_state().await;
+        // Capacity 1, and we never drain it: the first record fills it, the rest
+        // overflow and must be dropped (and counted) rather than blocking.
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let sink = TelemetrySink::new(Arc::new(LiveLog::default()), Arc::new(Stats::default()))
+            .with_query_log(tx, Arc::clone(&state));
+
+        for _ in 0..4 {
+            // record() is synchronous and must return immediately even though
+            // the channel is full — no await, no deadlock.
+            sink.record(make_event(Outcome::Forwarded));
+        }
+
+        assert_eq!(
+            sink.dropped_query_events(),
+            3,
+            "1 enqueued, 3 dropped on the full channel"
+        );
+        // Stats still counted every event.
+        assert_eq!(sink.stats.snapshot(10).total, 4);
+    }
+
+    #[tokio::test]
+    async fn record_skips_enqueue_when_disabled_but_stats_and_broadcast_fire() {
+        use crate::resolver::state::RuntimeSettings;
+
+        let (_dir, state) = hydrate_state().await;
+        // Disable query logging on the live snapshot.
+        state.store_settings(RuntimeSettings {
+            query_log_enabled: false,
+            ..(*state.settings_full()).clone()
+        });
+
+        let live_log = Arc::new(LiveLog::default());
+        let stats = Arc::new(Stats::default());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sink = TelemetrySink::new(Arc::clone(&live_log), Arc::clone(&stats))
+            .with_query_log(tx, Arc::clone(&state));
+
+        let mut broadcast = live_log.subscribe();
+        sink.record(make_event(Outcome::Cached));
+
+        // Nothing was enqueued for persistence …
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "disabled logging must not enqueue"
+        );
+        // … but stats and the live broadcast still fired.
+        assert_eq!(stats.snapshot(10).total, 1);
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), broadcast.recv())
+            .await
+            .expect("broadcast timeout")
+            .expect("broadcast closed");
+        assert_eq!(got.qname.to_string(), "example.com.");
     }
 }

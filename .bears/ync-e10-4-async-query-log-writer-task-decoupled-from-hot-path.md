@@ -1,10 +1,10 @@
 ---
 id: ync
 title: E10.4 · Async query-log writer task (decoupled from hot path)
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:32:58.137874735Z
-updated: 2026-05-30T19:32:58.137874735Z
+updated: 2026-05-31T15:56:37.541602981Z
 tags:
 - telemetry
 depends_on:
