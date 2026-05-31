@@ -371,6 +371,99 @@ mod tests {
             .to_owned()
     }
 
+    /// A bound, serving admin server with a seeded admin and an authenticated
+    /// session, for the feature integration tests.
+    ///
+    /// Collapses the repeated bind → spawn → login → cookie/CSRF dance. Tests
+    /// that exercise the auth or first-run-wizard flows themselves do **not** use
+    /// this (they drive those flows manually).
+    struct TestServer {
+        /// A clone of the served state, for asserting on the DB / live snapshot.
+        app: AppState,
+        base: String,
+        client: reqwest::Client,
+        /// The `name=id.token` session cookie for the logged-in admin.
+        cookie: String,
+        /// The session-bound CSRF token for that cookie.
+        csrf: String,
+        cancel: CancellationToken,
+        handle: tokio::task::JoinHandle<()>,
+        _dir: TempDir,
+    }
+
+    impl TestServer {
+        /// Spawn a server, seed an `admin`/`s3cret` account, and log in.
+        async fn login() -> Self {
+            use crate::{storage::admin_users::AdminUserRepository, web::auth::Password};
+            use reqwest::redirect::Policy;
+
+            let (dir, state) = test_state().await;
+            state
+                .db
+                .admin_users()
+                .create("admin", Password::hash("s3cret").unwrap().as_str())
+                .await
+                .unwrap();
+            let app = state.clone();
+            let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+                .await
+                .unwrap();
+            let base = format!("http://{}", server.local_addr().unwrap());
+            let cancel = CancellationToken::new();
+            let c2 = cancel.clone();
+            let handle = tokio::spawn(async move { server.serve(c2).await });
+
+            let client = reqwest::Client::builder()
+                .redirect(Policy::none())
+                .build()
+                .unwrap();
+            let r = client
+                .post(format!("{base}/login"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("origin", &base)
+                .body("username=admin&password=s3cret")
+                .send()
+                .await
+                .unwrap();
+            let cookie = r
+                .headers()
+                .get("set-cookie")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned();
+            let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
+
+            Self {
+                app,
+                base,
+                client,
+                cookie,
+                csrf,
+                cancel,
+                handle,
+                _dir: dir,
+            }
+        }
+
+        /// Absolute URL for `path` (e.g. `ts.url("/settings")`).
+        fn url(&self, path: &str) -> String {
+            format!("{}{}", self.base, path)
+        }
+
+        /// Cancel the server and wait for it to drain.
+        async fn shutdown(self) {
+            self.cancel.cancel();
+            tokio::time::timeout(std::time::Duration::from_secs(5), self.handle)
+                .await
+                .expect("server shut down within 5s")
+                .expect("server task panicked");
+        }
+    }
+
     #[tokio::test]
     async fn auth_flow_end_to_end() {
         use crate::{storage::admin_users::AdminUserRepository, web::auth::Password};
@@ -678,58 +771,17 @@ mod tests {
         use crate::{
             codec::{message::Qtype, name::Name},
             resolver::pipeline::Outcome,
-            storage::admin_users::AdminUserRepository,
             telemetry::QueryEvent,
-            web::auth::Password,
         };
-        use reqwest::redirect::Policy;
         use std::time::Duration;
 
-        let (_dir, state) = test_state().await;
-        state
-            .db
-            .admin_users()
-            .create("admin", Password::hash("s3cret").unwrap().as_str())
-            .await
-            .unwrap();
-        let app = state.clone();
-        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
-            .await
-            .unwrap();
-        let base = format!("http://{}", server.local_addr().unwrap());
-        let cancel = CancellationToken::new();
-        let c2 = cancel.clone();
-        let handle = tokio::spawn(async move { server.serve(c2).await });
-
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-
-        // Log in and capture the session cookie.
-        let r = client
-            .post(format!("{base}/login"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", &base)
-            .body("username=admin&password=s3cret")
-            .send()
-            .await
-            .unwrap();
-        let cookie = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
+        let ts = TestServer::login().await;
 
         // The log page renders, seeded and wired for the SSE stream.
-        let log = client
-            .get(format!("{base}/log"))
-            .header("cookie", &cookie)
+        let log = ts
+            .client
+            .get(ts.url("/log"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap()
@@ -742,9 +794,10 @@ mod tests {
         assert!(log.contains("data-init=\"@get('/events')\""));
 
         // Open the SSE stream.
-        let mut resp = client
-            .get(format!("{base}/events"))
-            .header("cookie", &cookie)
+        let mut resp = ts
+            .client
+            .get(ts.url("/events"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap();
@@ -783,7 +836,7 @@ mod tests {
         assert!(head.contains("datastar-patch-signals"));
 
         // Publish a live query; it must arrive as a prepended log row.
-        app.telemetry.record(
+        ts.app.telemetry.record(
             QueryEvent::new(
                 "10.1.2.3:4000".parse().unwrap(),
                 "sse-row.example.com".parse::<Name>().unwrap(),
@@ -798,35 +851,19 @@ mod tests {
         assert!(body.contains("sgt-badge--blocked"));
 
         drop(resp);
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
-            .await
-            .expect("shutdown")
-            .expect("task");
+        ts.shutdown().await;
     }
 
     #[tokio::test]
     async fn dashboard_shows_persisted_window_excluding_old_rows() {
         use crate::{
             resolver::pipeline::Outcome,
-            storage::{
-                admin_users::AdminUserRepository,
-                query_log::{QueryLogRecord, QueryLogRepository},
-            },
+            storage::query_log::{QueryLogRecord, QueryLogRepository},
             time::Clock,
-            web::auth::Password,
         };
-        use reqwest::redirect::Policy;
 
-        let (_dir, state) = test_state().await;
-        state
-            .db
-            .admin_users()
-            .create("admin", Password::hash("s3cret").unwrap().as_str())
-            .await
-            .unwrap();
+        let ts = TestServer::login().await;
 
-        let repo = state.db.query_log();
         let now = Clock::now_millis();
         let row = |ts: i64, name: &str, outcome: Outcome| QueryLogRecord {
             id: 0,
@@ -840,49 +877,22 @@ mod tests {
             latency_ms: 1,
         };
         // In-window rows plus one well outside the 24h window.
-        repo.insert_batch(&[
-            row(now - 1_000, "inwin.test.", Outcome::Forwarded),
-            row(now - 2_000, "inwin.test.", Outcome::Forwarded),
-            row(now - 3_000, "blocked.test.", Outcome::BlockedByAdmin),
-            row(now - 48 * 3_600 * 1_000, "old.test.", Outcome::Forwarded),
-        ])
-        .await
-        .unwrap();
-
-        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+        ts.app
+            .db
+            .query_log()
+            .insert_batch(&[
+                row(now - 1_000, "inwin.test.", Outcome::Forwarded),
+                row(now - 2_000, "inwin.test.", Outcome::Forwarded),
+                row(now - 3_000, "blocked.test.", Outcome::BlockedByAdmin),
+                row(now - 48 * 3_600 * 1_000, "old.test.", Outcome::Forwarded),
+            ])
             .await
             .unwrap();
-        let base = format!("http://{}", server.local_addr().unwrap());
-        let cancel = CancellationToken::new();
-        let c2 = cancel.clone();
-        let handle = tokio::spawn(async move { server.serve(c2).await });
 
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-        let r = client
-            .post(format!("{base}/login"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", &base)
-            .body("username=admin&password=s3cret")
-            .send()
-            .await
-            .unwrap();
-        let cookie = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-
-        let page = client
-            .get(format!("{base}/"))
-            .header("cookie", &cookie)
+        let page = ts
+            .client
+            .get(ts.url("/"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap()
@@ -899,39 +909,24 @@ mod tests {
             "rows older than 24h are excluded"
         );
 
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
-            .await
-            .expect("shutdown")
-            .expect("task");
+        ts.shutdown().await;
     }
 
     #[tokio::test]
     async fn query_log_history_seeds_from_db_and_scrolls_back() {
         use crate::{
             resolver::pipeline::Outcome,
-            storage::{
-                admin_users::AdminUserRepository,
-                query_log::{QueryLogRecord, QueryLogRepository},
-            },
-            web::auth::Password,
+            storage::query_log::{QueryLogRecord, QueryLogRepository},
         };
-        use reqwest::redirect::Policy;
 
-        let (_dir, state) = test_state().await;
-        state
-            .db
-            .admin_users()
-            .create("admin", Password::hash("s3cret").unwrap().as_str())
-            .await
-            .unwrap();
+        let ts = TestServer::login().await;
 
         // Seed three persisted rows; ascending ts → ascending ids (1, 2, 3).
-        let repo = state.db.query_log();
-        for (ts, name) in [(1, "a.test."), (2, "b.test."), (3, "c.test.")] {
+        let repo = ts.app.db.query_log();
+        for (row_ts, name) in [(1, "a.test."), (2, "b.test."), (3, "c.test.")] {
             repo.insert_batch(&[QueryLogRecord {
                 id: 0,
-                ts,
+                ts: row_ts,
                 client: "10.0.0.9".to_owned(),
                 qname: name.to_owned(),
                 qtype: "A".to_owned(),
@@ -944,42 +939,12 @@ mod tests {
             .unwrap();
         }
 
-        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
-            .await
-            .unwrap();
-        let base = format!("http://{}", server.local_addr().unwrap());
-        let cancel = CancellationToken::new();
-        let c2 = cancel.clone();
-        let handle = tokio::spawn(async move { server.serve(c2).await });
-
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-        let r = client
-            .post(format!("{base}/login"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", &base)
-            .body("username=admin&password=s3cret")
-            .send()
-            .await
-            .unwrap();
-        let cookie = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-
         // The initial page renders all three rows from the DB, newest-first, and
         // seeds the scroll-back cursor with the smallest id (1).
-        let page = client
-            .get(format!("{base}/log"))
-            .header("cookie", &cookie)
+        let page = ts
+            .client
+            .get(ts.url("/log"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap()
@@ -995,9 +960,10 @@ mod tests {
         assert!(page.contains("Load older"));
 
         // Scroll back from id 2 → only the older row (id 1, a.test) appended.
-        let older = client
-            .get(format!("{base}/log/older?before=2"))
-            .header("cookie", &cookie)
+        let older = ts
+            .client
+            .get(ts.url("/log/older?before=2"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap()
@@ -1012,9 +978,10 @@ mod tests {
         assert!(older.contains(r#""oldest":1"#), "cursor advances to id 1");
 
         // Past the start: nothing to append, cursor resets to 0 (hides control).
-        let empty = client
-            .get(format!("{base}/log/older?before=1"))
-            .header("cookie", &cookie)
+        let empty = ts
+            .client
+            .get(ts.url("/log/older?before=1"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap()
@@ -1024,69 +991,23 @@ mod tests {
         assert!(empty.contains(r#""oldest":0"#));
         assert!(!empty.contains("datastar-patch-elements"));
 
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
-            .await
-            .expect("shutdown")
-            .expect("task");
+        ts.shutdown().await;
     }
 
     #[tokio::test]
     async fn one_click_whitelist_persists_and_swaps() {
-        use crate::{
-            codec::name::Name,
-            storage::{admin_users::AdminUserRepository, lists::AllowlistRepository},
-            web::auth::Password,
-        };
-        use reqwest::redirect::Policy;
+        use crate::{codec::name::Name, storage::lists::AllowlistRepository};
 
-        let (_dir, state) = test_state().await;
-        state
-            .db
-            .admin_users()
-            .create("admin", Password::hash("s3cret").unwrap().as_str())
-            .await
-            .unwrap();
-        let app = state.clone();
-        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
-            .await
-            .unwrap();
-        let base = format!("http://{}", server.local_addr().unwrap());
-        let cancel = CancellationToken::new();
-        let c2 = cancel.clone();
-        let handle = tokio::spawn(async move { server.serve(c2).await });
-
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-        let r = client
-            .post(format!("{base}/login"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", &base)
-            .body("username=admin&password=s3cret")
-            .send()
-            .await
-            .unwrap();
-        let cookie = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
+        let ts = TestServer::login().await;
 
         let dom: Name = "ads.example.com".parse().unwrap();
-        assert!(!app.resolver.allowlist().contains(&dom));
+        assert!(!ts.app.resolver.allowlist().contains(&dom));
 
         // Without the CSRF token the mutation is rejected.
-        let r = client
-            .post(format!("{base}/log/unblock?domain=ads.example.com"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/log/unblock?domain=ads.example.com"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap();
@@ -1094,10 +1015,11 @@ mod tests {
 
         // With the token it succeeds and returns a Datastar toast patch. The
         // domain is not admin-blacklisted, so Unblock allowlists it.
-        let r = client
-            .post(format!("{base}/log/unblock?domain=ads.example.com"))
-            .header("cookie", &cookie)
-            .header("x-csrf-token", &csrf)
+        let r = ts
+            .client
+            .post(ts.url("/log/unblock?domain=ads.example.com"))
+            .header("cookie", &ts.cookie)
+            .header("x-csrf-token", &ts.csrf)
             .send()
             .await
             .unwrap();
@@ -1107,19 +1029,20 @@ mod tests {
         assert!(body.contains("Unblocked"));
 
         // Persisted to the DB and swapped into the live set.
-        assert!(app.resolver.allowlist().contains(&dom));
-        let names = app.db.allowlist().load_all().await.unwrap();
+        assert!(ts.app.resolver.allowlist().contains(&dom));
+        let names = ts.app.db.allowlist().load_all().await.unwrap();
         assert!(names.contains(&dom));
 
         // The real Datastar path: token in the JSON signal body (no header).
         // Block adds the resolved domain to the blacklist; the response is just
         // the toast — the button is not toggled.
         let dom2: Name = "ads2.example.com".parse().unwrap();
-        let r = client
-            .post(format!("{base}/log/block?domain=ads2.example.com"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/log/block?domain=ads2.example.com"))
+            .header("cookie", &ts.cookie)
             .header("content-type", "application/json")
-            .body(format!("{{\"csrf\":\"{csrf}\",\"f_text\":\"\"}}"))
+            .body(format!("{{\"csrf\":\"{}\",\"f_text\":\"\"}}", ts.csrf))
             .send()
             .await
             .unwrap();
@@ -1127,80 +1050,37 @@ mod tests {
         let body = r.text().await.unwrap();
         assert!(body.contains("Blocked"));
         assert!(!body.contains("act-"), "button must not be toggled");
-        assert!(app.resolver.blacklist().contains(&dom2));
+        assert!(ts.app.resolver.blacklist().contains(&dom2));
 
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
-            .await
-            .expect("shutdown")
-            .expect("task");
+        ts.shutdown().await;
     }
 
     #[tokio::test]
     async fn management_blacklist_form_roundtrip() {
-        use crate::{
-            codec::name::Name, storage::admin_users::AdminUserRepository, web::auth::Password,
-        };
-        use reqwest::redirect::Policy;
+        use crate::codec::name::Name;
 
-        let (_dir, state) = test_state().await;
-        state
-            .db
-            .admin_users()
-            .create("admin", Password::hash("s3cret").unwrap().as_str())
-            .await
-            .unwrap();
-        let app = state.clone();
-        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
-            .await
-            .unwrap();
-        let base = format!("http://{}", server.local_addr().unwrap());
-        let cancel = CancellationToken::new();
-        let c2 = cancel.clone();
-        let handle = tokio::spawn(async move { server.serve(c2).await });
-
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-        let r = client
-            .post(format!("{base}/login"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", &base)
-            .body("username=admin&password=s3cret")
-            .send()
-            .await
-            .unwrap();
-        let cookie = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
+        let ts = TestServer::login().await;
         let dom: Name = "ads.example.com".parse().unwrap();
 
         // Add via the management form (CSRF token travels as a form field).
-        let r = client
-            .post(format!("{base}/blacklist/add"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/blacklist/add"))
+            .header("cookie", &ts.cookie)
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(format!("csrf_token={csrf}&domain=ads.example.com"))
+            .body(format!("csrf_token={}&domain=ads.example.com", ts.csrf))
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), 303);
         assert_eq!(r.headers().get("location").unwrap(), "/blacklist");
-        assert!(app.resolver.blacklist().contains(&dom));
+        assert!(ts.app.resolver.blacklist().contains(&dom));
 
         // The page lists the entry, shown without the canonical trailing dot.
-        let page = client
-            .get(format!("{base}/blacklist"))
-            .header("cookie", &cookie)
+        let page = ts
+            .client
+            .get(ts.url("/blacklist"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap()
@@ -1211,9 +1091,10 @@ mod tests {
         assert!(!page.contains("ads.example.com."));
 
         // A form missing the CSRF token is rejected.
-        let r = client
-            .post(format!("{base}/blacklist/add"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/blacklist/add"))
+            .header("cookie", &ts.cookie)
             .header("content-type", "application/x-www-form-urlencoded")
             .body("domain=evil.example.com")
             .send()
@@ -1222,82 +1103,40 @@ mod tests {
         assert_eq!(r.status(), 403);
 
         // Remove round-trips the in-memory set too.
-        let r = client
-            .post(format!("{base}/blacklist/remove"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/blacklist/remove"))
+            .header("cookie", &ts.cookie)
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(format!("csrf_token={csrf}&domain=ads.example.com"))
+            .body(format!("csrf_token={}&domain=ads.example.com", ts.csrf))
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), 303);
-        assert!(!app.resolver.blacklist().contains(&dom));
+        assert!(!ts.app.resolver.blacklist().contains(&dom));
 
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
-            .await
-            .expect("shutdown")
-            .expect("task");
+        ts.shutdown().await;
     }
 
     #[tokio::test]
     async fn settings_form_saves_over_http() {
-        use crate::{
-            codec::synth::BlockMode, storage::admin_users::AdminUserRepository, web::auth::Password,
-        };
-        use reqwest::redirect::Policy;
+        use crate::codec::synth::BlockMode;
 
-        let (_dir, state) = test_state().await;
-        state
-            .db
-            .admin_users()
-            .create("admin", Password::hash("s3cret").unwrap().as_str())
-            .await
-            .unwrap();
-        let app = state.clone();
-        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
-            .await
-            .unwrap();
-        let base = format!("http://{}", server.local_addr().unwrap());
-        let cancel = CancellationToken::new();
-        let c2 = cancel.clone();
-        let handle = tokio::spawn(async move { server.serve(c2).await });
-
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-        let r = client
-            .post(format!("{base}/login"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", &base)
-            .body("username=admin&password=s3cret")
-            .send()
-            .await
-            .unwrap();
-        let cookie = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
+        let ts = TestServer::login().await;
 
         // Seed defaults use null-ip; switch to nxdomain over the form.
-        assert_eq!(app.resolver.settings().block_mode, BlockMode::null_ip());
+        assert_eq!(ts.app.resolver.settings().block_mode, BlockMode::null_ip());
         let body = format!(
-            "csrf_token={csrf}&cache_min_ttl=10&cache_max_ttl=3600&cache_negative_ttl_cap=300\
+            "csrf_token={}&cache_min_ttl=10&cache_max_ttl=3600&cache_negative_ttl_cap=300\
              &cache_capacity=50000&blocking_mode=nxdomain&custom_block_ipv4=&custom_block_ipv6=\
              &blocklist_refresh_interval=7200&ui_theme=dark\
-             &query_log_enabled=1&query_log_retention_days=30"
+             &query_log_enabled=1&query_log_retention_days=30",
+            ts.csrf
         );
-        let r = client
-            .post(format!("{base}/settings"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/settings"))
+            .header("cookie", &ts.cookie)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(body)
             .send()
@@ -1307,72 +1146,26 @@ mod tests {
         assert!(r.text().await.unwrap().contains("Settings saved"));
 
         // The live runtime snapshot reflects the change immediately.
-        assert_eq!(app.resolver.settings().block_mode, BlockMode::NxDomain);
-        assert_eq!(app.resolver.settings().cache_max_ttl, 3600);
+        assert_eq!(ts.app.resolver.settings().block_mode, BlockMode::NxDomain);
+        assert_eq!(ts.app.resolver.settings().cache_max_ttl, 3600);
 
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
-            .await
-            .expect("shutdown")
-            .expect("task");
+        ts.shutdown().await;
     }
 
     #[tokio::test]
     async fn query_log_controls_render_and_clear_over_http() {
         use crate::{
             resolver::pipeline::Outcome,
-            storage::{
-                admin_users::AdminUserRepository,
-                query_log::{QueryLogRecord, QueryLogRepository},
-            },
-            web::auth::Password,
+            storage::query_log::{QueryLogRecord, QueryLogRepository},
         };
-        use reqwest::redirect::Policy;
 
-        let (_dir, state) = test_state().await;
-        state
-            .db
-            .admin_users()
-            .create("admin", Password::hash("s3cret").unwrap().as_str())
-            .await
-            .unwrap();
-        let app = state.clone();
-        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
-            .await
-            .unwrap();
-        let base = format!("http://{}", server.local_addr().unwrap());
-        let cancel = CancellationToken::new();
-        let c2 = cancel.clone();
-        let handle = tokio::spawn(async move { server.serve(c2).await });
-
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-        let r = client
-            .post(format!("{base}/login"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", &base)
-            .body("username=admin&password=s3cret")
-            .send()
-            .await
-            .unwrap();
-        let cookie = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
+        let ts = TestServer::login().await;
 
         // The settings page renders the query-log toggle and retention input.
-        let page = client
-            .get(format!("{base}/settings"))
-            .header("cookie", &cookie)
+        let page = ts
+            .client
+            .get(ts.url("/settings"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap()
@@ -1384,7 +1177,8 @@ mod tests {
         assert!(page.contains("/settings/clear-log"));
 
         // Seed a query-log row to be cleared.
-        app.db
+        ts.app
+            .db
             .query_log()
             .insert_batch(&[QueryLogRecord {
                 id: 0,
@@ -1401,101 +1195,62 @@ mod tests {
             .unwrap();
 
         // Without the CSRF token the clear action is rejected.
-        let r = client
-            .post(format!("{base}/settings/clear-log"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/settings/clear-log"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), 403, "clear-log without CSRF must be rejected");
 
         // With the token it succeeds and empties the log.
-        let r = client
-            .post(format!("{base}/settings/clear-log"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/settings/clear-log"))
+            .header("cookie", &ts.cookie)
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(format!("csrf_token={csrf}"))
+            .body(format!("csrf_token={}", ts.csrf))
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), 200);
         assert!(r.text().await.unwrap().contains("Query log cleared"));
 
-        let remaining = app.db.query_log().page(None, 10).await.unwrap();
+        let remaining = ts.app.db.query_log().page(None, 10).await.unwrap();
         assert!(remaining.is_empty(), "clear-log must empty the table");
 
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
-            .await
-            .expect("shutdown")
-            .expect("task");
+        ts.shutdown().await;
     }
 
     #[tokio::test]
     async fn blocklist_sources_manage_over_http() {
-        use crate::storage::{admin_users::AdminUserRepository, blocklists::BlocklistRepository};
-        use crate::web::auth::Password;
-        use reqwest::redirect::Policy;
+        use crate::storage::blocklists::BlocklistRepository;
 
-        let (_dir, state) = test_state().await;
-        state
-            .db
-            .admin_users()
-            .create("admin", Password::hash("s3cret").unwrap().as_str())
-            .await
-            .unwrap();
-        let app = state.clone();
-        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
-            .await
-            .unwrap();
-        let base = format!("http://{}", server.local_addr().unwrap());
-        let cancel = CancellationToken::new();
-        let c2 = cancel.clone();
-        let handle = tokio::spawn(async move { server.serve(c2).await });
-
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .unwrap();
-        let r = client
-            .post(format!("{base}/login"))
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("origin", &base)
-            .body("username=admin&password=s3cret")
-            .send()
-            .await
-            .unwrap();
-        let cookie = r
-            .headers()
-            .get("set-cookie")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-        let csrf = app.csrf_token(&session_id_of(&cookie)).into_string();
+        let ts = TestServer::login().await;
 
         // Add a source via the form.
-        let r = client
-            .post(format!("{base}/blocklists/add"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/blocklists/add"))
+            .header("cookie", &ts.cookie)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(format!(
-                "csrf_token={csrf}&url=https://example.com/hosts.txt&format=hosts"
+                "csrf_token={}&url=https://example.com/hosts.txt&format=hosts",
+                ts.csrf
             ))
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), 303);
-        let sources = app.db.blocklists().list().await.unwrap();
+        let sources = ts.app.db.blocklists().list().await.unwrap();
         assert_eq!(sources.len(), 1);
 
         // The page lists it.
-        let page = client
-            .get(format!("{base}/blocklists"))
-            .header("cookie", &cookie)
+        let page = ts
+            .client
+            .get(ts.url("/blocklists"))
+            .header("cookie", &ts.cookie)
             .send()
             .await
             .unwrap()
@@ -1505,22 +1260,19 @@ mod tests {
         assert!(page.contains("https://example.com/hosts.txt"));
 
         // The "Refresh now" button fires the trigger and reports it.
-        let r = client
-            .post(format!("{base}/blocklists/refresh"))
-            .header("cookie", &cookie)
+        let r = ts
+            .client
+            .post(ts.url("/blocklists/refresh"))
+            .header("cookie", &ts.cookie)
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(format!("csrf_token={csrf}"))
+            .body(format!("csrf_token={}", ts.csrf))
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), 200);
         assert!(r.text().await.unwrap().contains("Refresh started"));
 
-        cancel.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
-            .await
-            .expect("shutdown")
-            .expect("task");
+        ts.shutdown().await;
     }
 
     #[tokio::test]
