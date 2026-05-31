@@ -51,9 +51,20 @@ pub struct QueryLogRecord {
     pub upstream: Option<String>,
     /// Measured query latency in milliseconds.
     pub latency_ms: i64,
+    /// Primary blocklist source (`blocklist_id`) responsible for the block, when
+    /// `outcome` is [`Outcome::BlockedByBlocklist`] and the name was still
+    /// attributed in the live snapshot (E11).
+    ///
+    /// `None` for every other outcome. A plain integer, not an FK: it preserves
+    /// historical attribution after a list is deleted (the read path LEFT JOINs
+    /// `blocklists` and renders unknown ids as "removed list").
+    pub blocklist_id: Option<i64>,
 }
 
 impl From<&QueryEvent> for QueryLogRecord {
+    /// Build a record from an event. `blocklist_id` is left `None` here; the
+    /// query-log writer (E11.3) resolves it from the live blocklist snapshot for
+    /// `BlockedByBlocklist` events, since the event itself carries no source.
     fn from(ev: &QueryEvent) -> Self {
         Self {
             id: 0, // ignored on insert — the DB assigns the real id.
@@ -67,6 +78,7 @@ impl From<&QueryEvent> for QueryLogRecord {
             rcode: ev.rcode.map(|rc| i64::from(u8::from(rc))),
             upstream: ev.upstream.map(|u| u.to_string()),
             latency_ms: ev.latency.as_millis() as i64,
+            blocklist_id: None,
         }
     }
 }
@@ -88,6 +100,7 @@ struct QueryLogRow {
     rcode: Option<i64>,
     upstream: Option<String>,
     latency_ms: i64,
+    blocklist_id: Option<i64>,
 }
 
 impl TryFrom<QueryLogRow> for QueryLogRecord {
@@ -107,6 +120,7 @@ impl TryFrom<QueryLogRow> for QueryLogRecord {
             rcode: row.rcode,
             upstream: row.upstream,
             latency_ms: row.latency_ms,
+            blocklist_id: row.blocklist_id,
         })
     }
 }
@@ -214,8 +228,8 @@ impl QueryLogRepository for SqliteQueryLogRepo {
             let outcome = record.outcome.as_str();
             sqlx::query!(
                 r#"INSERT INTO query_log
-                    (ts, client, qname, qtype, outcome, rcode, upstream, latency_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#,
+                    (ts, client, qname, qtype, outcome, rcode, upstream, latency_ms, blocklist_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
                 record.ts,
                 record.client,
                 record.qname,
@@ -224,6 +238,7 @@ impl QueryLogRepository for SqliteQueryLogRepo {
                 record.rcode,
                 record.upstream,
                 record.latency_ms,
+                record.blocklist_id,
             )
             .execute(&mut *tx)
             .await?;
@@ -247,7 +262,8 @@ impl QueryLogRepository for SqliteQueryLogRepo {
                 outcome,
                 rcode,
                 upstream,
-                latency_ms  AS "latency_ms!"
+                latency_ms  AS "latency_ms!",
+                blocklist_id
             FROM query_log
             WHERE (? IS NULL OR id < ?)
             ORDER BY id DESC
@@ -382,6 +398,7 @@ mod tests {
             rcode: Some(0),
             upstream: None,
             latency_ms: 5,
+            blocklist_id: None,
         }
     }
 

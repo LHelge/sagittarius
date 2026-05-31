@@ -872,6 +872,7 @@ mod tests {
             rcode: Some(0),
             upstream: None,
             latency_ms: 1,
+            blocklist_id: None,
         };
         // In-window rows plus one well outside the 24h window.
         ts.app
@@ -931,6 +932,7 @@ mod tests {
                 rcode: Some(0),
                 upstream: None,
                 latency_ms: 1,
+                blocklist_id: None,
             }])
             .await
             .unwrap();
@@ -1187,6 +1189,7 @@ mod tests {
                 rcode: Some(0),
                 upstream: None,
                 latency_ms: 1,
+                blocklist_id: None,
             }])
             .await
             .unwrap();

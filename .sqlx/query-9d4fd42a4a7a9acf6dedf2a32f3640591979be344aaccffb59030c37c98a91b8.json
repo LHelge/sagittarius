@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO query_log\n                    (ts, client, qname, qtype, outcome, rcode, upstream, latency_ms, blocklist_id)\n                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "9d4fd42a4a7a9acf6dedf2a32f3640591979be344aaccffb59030c37c98a91b8"
+}

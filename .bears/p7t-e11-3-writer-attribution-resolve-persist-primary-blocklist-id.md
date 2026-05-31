@@ -1,10 +1,10 @@
 ---
 id: p7t
 title: 'E11.3 · Writer attribution: resolve & persist primary blocklist_id'
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:54:47.638947454Z
-updated: 2026-05-30T19:54:47.638947454Z
+updated: 2026-05-31T22:28:30.542572462Z
 tags:
 - telemetry
 - storage

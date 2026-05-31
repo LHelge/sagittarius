@@ -10,11 +10,14 @@
 //! event still buffered in the channel before returning, so a graceful stop
 //! never loses the tail of the log.
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::{
+    resolver::{pipeline::Outcome, state::ResolverState},
     storage::query_log::{QueryLogRecord, QueryLogRepository},
     telemetry::QueryEvent,
 };
@@ -30,16 +33,38 @@ const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 pub struct QueryLogWriter<R> {
     rx: Receiver<QueryEvent>,
     repo: R,
+    /// Shared resolver state, read off the hot path to attribute blocklist
+    /// blocks to their primary source (E11.3).
+    state: Arc<ResolverState>,
 }
 
 impl<R> QueryLogWriter<R>
 where
     R: QueryLogRepository,
 {
-    /// Create a writer over `rx` (the channel held by the telemetry sink) and
-    /// the query-log `repo`.
-    pub fn new(rx: Receiver<QueryEvent>, repo: R) -> Self {
-        Self { rx, repo }
+    /// Create a writer over `rx` (the channel held by the telemetry sink), the
+    /// query-log `repo`, and the shared `state` (used to resolve the primary
+    /// blocklist source of `BlockedByBlocklist` events).
+    pub fn new(rx: Receiver<QueryEvent>, repo: R, state: Arc<ResolverState>) -> Self {
+        Self { rx, repo, state }
+    }
+
+    /// Build the persisted record for `event`, attributing the primary blocklist
+    /// source for `BlockedByBlocklist` events.
+    ///
+    /// **Eventual consistency:** the attribution is resolved against the *live*
+    /// blocklist snapshot (read here ~1s after the block, off the hot path), not
+    /// the snapshot in force at block time. A refresh in that window could shift
+    /// or drop the attribution. A name that was blocked-by-blocklist is normally
+    /// still present unless a refresh removed it in the gap — in which case
+    /// `primary_source` returns `None` and the row stores `NULL`, which is fine
+    /// for effectiveness telemetry.
+    fn record_for(&self, event: &QueryEvent) -> QueryLogRecord {
+        let mut record = QueryLogRecord::from(event);
+        if event.outcome == Outcome::BlockedByBlocklist {
+            record.blocklist_id = self.state.blocklist().primary_source(&event.qname);
+        }
+        record
     }
 
     /// Run until cancelled or every sender is dropped, then make a final drain.
@@ -116,7 +141,8 @@ where
         if batch.is_empty() {
             return;
         }
-        let records: Vec<QueryLogRecord> = batch.iter().map(QueryLogRecord::from).collect();
+        let records: Vec<QueryLogRecord> =
+            batch.iter().map(|event| self.record_for(event)).collect();
         if let Err(e) = self.repo.insert_batch(&records).await {
             warn!(
                 error = %e,
@@ -137,31 +163,44 @@ mod tests {
     use super::*;
     use crate::{
         codec::{message::Qtype, name::Name},
-        resolver::pipeline::Outcome,
         storage::{Db, query_log::SqliteQueryLogRepo},
     };
 
-    async fn open_repo() -> (TempDir, SqliteQueryLogRepo, Db) {
+    async fn open_repo() -> (TempDir, SqliteQueryLogRepo, Db, Arc<ResolverState>) {
         let (dir, db) = crate::test_support::temp_db().await;
         let repo = db.query_log();
-        (dir, repo, db)
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+        (dir, repo, db, state)
     }
 
     fn event(name: &str) -> QueryEvent {
+        event_with(name, Outcome::Forwarded)
+    }
+
+    fn event_with(name: &str, outcome: Outcome) -> QueryEvent {
         QueryEvent::new(
             "10.0.0.1:1000".parse().unwrap(),
             name.parse::<Name>().unwrap(),
             Qtype::A,
-            Outcome::Forwarded,
+            outcome,
         )
         .with_ts(1_000)
     }
 
+    /// Install a blocklist snapshot mapping each `(name, id)` into the state.
+    fn install_blocklist(state: &ResolverState, entries: &[(&str, i64)]) {
+        let map = entries
+            .iter()
+            .map(|(n, id)| (n.parse::<Name>().unwrap(), *id))
+            .collect();
+        state.blocklist().store(map);
+    }
+
     #[tokio::test]
     async fn writes_enqueued_events_to_db() {
-        let (_dir, repo, db) = open_repo().await;
+        let (_dir, repo, db, state) = open_repo().await;
         let (tx, rx) = mpsc::channel(64);
-        let writer = QueryLogWriter::new(rx, repo);
+        let writer = QueryLogWriter::new(rx, repo, state);
         let token = CancellationToken::new();
         let t2 = token.clone();
         let handle = tokio::spawn(async move { writer.run(t2).await });
@@ -180,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn final_drain_flushes_buffered_events_on_cancel() {
-        let (_dir, repo, db) = open_repo().await;
+        let (_dir, repo, db, state) = open_repo().await;
         let (tx, rx) = mpsc::channel(64);
 
         // Buffer several events before the writer ever runs.
@@ -192,7 +231,7 @@ mod tests {
         // the final drain must still flush the buffered tail.
         let token = CancellationToken::new();
         token.cancel();
-        let writer = QueryLogWriter::new(rx, repo);
+        let writer = QueryLogWriter::new(rx, repo, state);
         writer.run(token).await;
 
         let rows = db.query_log().page(None, 10).await.unwrap();
@@ -201,9 +240,9 @@ mod tests {
 
     #[tokio::test]
     async fn closed_channel_ends_the_run() {
-        let (_dir, repo, _db) = open_repo().await;
+        let (_dir, repo, _db, state) = open_repo().await;
         let (tx, rx) = mpsc::channel(64);
-        let writer = QueryLogWriter::new(rx, repo);
+        let writer = QueryLogWriter::new(rx, repo, state);
 
         // Drop every sender; run must return promptly without cancellation.
         drop(tx);
@@ -213,5 +252,96 @@ mod tests {
         )
         .await
         .expect("run must end when the channel closes");
+    }
+
+    // ── Blocklist attribution (E11.3) ─────────────────────────────────────────
+
+    /// A `BlockedByBlocklist` event for a domain in source S persists
+    /// `blocklist_id = S`.
+    #[tokio::test]
+    async fn blocked_by_blocklist_persists_primary_source() {
+        let (_dir, repo, db, state) = open_repo().await;
+        install_blocklist(&state, &[("ads.example.com", 7)]);
+
+        let (tx, rx) = mpsc::channel(64);
+        let token = CancellationToken::new();
+        let t2 = token.clone();
+        let writer = QueryLogWriter::new(rx, repo, state);
+        let handle = tokio::spawn(async move { writer.run(t2).await });
+
+        tx.send(event_with("ads.example.com", Outcome::BlockedByBlocklist))
+            .await
+            .unwrap();
+        token.cancel();
+        drop(tx);
+        handle.await.unwrap();
+
+        let rows = db.query_log().page(None, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].blocklist_id,
+            Some(7),
+            "block must be attributed to its primary source"
+        );
+    }
+
+    /// Non-blocklist outcomes persist `NULL`, even if the name happens to be in
+    /// the blocklist snapshot.
+    #[tokio::test]
+    async fn non_blocklist_outcomes_persist_null() {
+        let (_dir, repo, db, state) = open_repo().await;
+        install_blocklist(&state, &[("ads.example.com", 7)]);
+
+        let (tx, rx) = mpsc::channel(64);
+        let token = CancellationToken::new();
+        let t2 = token.clone();
+        let writer = QueryLogWriter::new(rx, repo, state);
+        let handle = tokio::spawn(async move { writer.run(t2).await });
+
+        // Admin block and a plain forward — neither must carry a blocklist_id.
+        tx.send(event_with("ads.example.com", Outcome::BlockedByAdmin))
+            .await
+            .unwrap();
+        tx.send(event_with("safe.example.com", Outcome::Forwarded))
+            .await
+            .unwrap();
+        token.cancel();
+        drop(tx);
+        handle.await.unwrap();
+
+        let rows = db.query_log().page(None, 10).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter().all(|r| r.blocklist_id.is_none()),
+            "only BlockedByBlocklist rows may carry a blocklist_id"
+        );
+    }
+
+    /// A blocked domain that is absent from the current snapshot (e.g. a refresh
+    /// dropped it in the ~1s gap) persists `NULL` without error.
+    #[tokio::test]
+    async fn blocked_domain_absent_from_snapshot_persists_null() {
+        let (_dir, repo, db, state) = open_repo().await;
+        // Blocklist is empty — the name is not attributed in the live snapshot.
+
+        let (tx, rx) = mpsc::channel(64);
+        let token = CancellationToken::new();
+        let t2 = token.clone();
+        let writer = QueryLogWriter::new(rx, repo, state);
+        let handle = tokio::spawn(async move { writer.run(t2).await });
+
+        tx.send(event_with("gone.example.com", Outcome::BlockedByBlocklist))
+            .await
+            .unwrap();
+        token.cancel();
+        drop(tx);
+        handle.await.unwrap();
+
+        let rows = db.query_log().page(None, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].blocklist_id, None,
+            "absent attribution must store NULL, not error"
+        );
     }
 }
