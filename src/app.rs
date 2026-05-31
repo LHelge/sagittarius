@@ -252,7 +252,10 @@ impl App {
         });
 
         // Drain persisted query events into SQLite, decoupled from the hot path.
-        let query_log_writer = QueryLogWriter::new(query_log_rx, db.query_log());
+        // The writer also resolves the primary blocklist source for blocked
+        // events from the shared state (E11.3).
+        let query_log_writer =
+            QueryLogWriter::new(query_log_rx, db.query_log(), Arc::clone(&query_log_state));
         self.spawn_subsystem("query-log-writer", move |token| async move {
             query_log_writer.run(token).await;
         });

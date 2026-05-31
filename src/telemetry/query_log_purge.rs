@@ -114,6 +114,7 @@ mod tests {
             rcode: Some(0),
             upstream: None,
             latency_ms: 1,
+            blocklist_id: None,
         }
     }
 

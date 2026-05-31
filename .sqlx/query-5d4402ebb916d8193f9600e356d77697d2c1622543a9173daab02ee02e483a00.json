@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT\n                id          AS \"id!\",\n                ts          AS \"ts!\",\n                client,\n                qname,\n                qtype,\n                outcome,\n                rcode,\n                upstream,\n                latency_ms  AS \"latency_ms!\"\n            FROM query_log\n            WHERE (? IS NULL OR id < ?)\n            ORDER BY id DESC\n            LIMIT ?",
+  "query": "SELECT\n                id          AS \"id!\",\n                ts          AS \"ts!\",\n                client,\n                qname,\n                qtype,\n                outcome,\n                rcode,\n                upstream,\n                latency_ms  AS \"latency_ms!\",\n                blocklist_id\n            FROM query_log\n            WHERE (? IS NULL OR id < ?)\n            ORDER BY id DESC\n            LIMIT ?",
   "describe": {
     "columns": [
       {
@@ -47,6 +47,11 @@
         "name": "latency_ms!",
         "ordinal": 8,
         "type_info": "Integer"
+      },
+      {
+        "name": "blocklist_id",
+        "ordinal": 9,
+        "type_info": "Integer"
       }
     ],
     "parameters": {
@@ -61,8 +66,9 @@
       false,
       true,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "3dbcd9b411d35a77d608edaf3d2f4b84175116fdc910883a9272586810c564f0"
+  "hash": "5d4402ebb916d8193f9600e356d77697d2c1622543a9173daab02ee02e483a00"
 }
