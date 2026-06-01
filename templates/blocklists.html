@@ -39,6 +39,8 @@
         <th>URL</th>
         <th>Format</th>
         <th class="sgt-num">Entries</th>
+        <th class="sgt-num">Blocked (24h)</th>
+        <th class="sgt-num">Share</th>
         <th>Updated</th>
         <th>Status</th>
         <th></th>
@@ -47,15 +49,23 @@
     <tbody>
       {% for s in sources %}
       <tr>
+        {% if s.removed %}
+        <td class="sgt-muted">{{ s.url }}</td>
+        {% else %}
         <td class="sgt-mono">{{ s.url }}</td>
+        {% endif %}
         <td>{{ s.format }}</td>
         <td class="sgt-num">{{ s.entry_count }}</td>
+        <td class="sgt-num">{{ s.blocked }}</td>
+        <td class="sgt-num">{{ s.share }}</td>
         <td>{{ s.last_updated }}</td>
         <td>
-          {% if s.enabled %}<span class="sgt-badge sgt-badge--forwarded">enabled</span>
+          {% if s.removed %}
+          {% else if s.enabled %}<span class="sgt-badge sgt-badge--forwarded">enabled</span>
           {% else %}<span class="sgt-badge sgt-badge--other">disabled</span>{% endif %}
         </td>
         <td class="sgt-num">
+          {% if !s.removed %}
           <div class="sgt-actions">
             <form method="post" action="/blocklists/toggle" class="sgt-inline-form">
               <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
@@ -69,6 +79,7 @@
               <button type="submit" class="secondary outline sgt-btn-sm">Remove</button>
             </form>
           </div>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
