@@ -1,10 +1,10 @@
 ---
 id: q3r
 title: E11.4 · Per-list effectiveness view (windowed block counts)
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:54:55.396099425Z
-updated: 2026-05-30T19:54:55.396099425Z
+updated: 2026-06-01T04:31:51.395192299Z
 tags:
 - web
 depends_on:

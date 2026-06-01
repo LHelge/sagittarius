@@ -201,6 +201,17 @@ pub trait QueryLogRepository {
         since_ms: i64,
         n: i64,
     ) -> impl Future<Output = Result<Vec<(String, i64)>>>;
+
+    /// Count of `BlockedByBlocklist` rows grouped by `blocklist_id` for rows
+    /// with `ts >= since_ms` (E11.4 per-list effectiveness).
+    ///
+    /// The `blocklist_id` is the bare stored value, so callers must LEFT JOIN
+    /// the live `blocklists` themselves: an id that no longer matches a source
+    /// (or a `None`, written when attribution was unknown) is a "removed list".
+    fn block_counts_by_source_since(
+        &self,
+        since_ms: i64,
+    ) -> impl Future<Output = Result<Vec<(Option<i64>, i64)>>>;
 }
 
 // ── SqliteQueryLogRepo ──────────────────────────────────────────────────────
@@ -367,6 +378,22 @@ impl QueryLogRepository for SqliteQueryLogRepo {
         .await?;
 
         Ok(rows.into_iter().map(|r| (r.client, r.n)).collect())
+    }
+
+    async fn block_counts_by_source_since(&self, since_ms: i64) -> Result<Vec<(Option<i64>, i64)>> {
+        // 'blocked-blocklist' is Outcome::BlockedByBlocklist.as_str(); kept in
+        // sync with the enum by the same guard test as counts_since.
+        let rows = sqlx::query!(
+            r#"SELECT blocklist_id, COUNT(*) AS "n!: i64"
+            FROM query_log
+            WHERE ts >= ? AND outcome = 'blocked-blocklist'
+            GROUP BY blocklist_id"#,
+            since_ms,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| (r.blocklist_id, r.n)).collect())
     }
 }
 
@@ -616,6 +643,54 @@ mod tests {
         );
         assert_eq!(Outcome::Cached.as_str(), "cached");
         assert_eq!(Outcome::Forwarded.as_str(), "forwarded");
+    }
+
+    /// Build a record with an explicit blocklist_id attribution.
+    fn rec_attributed(ts: i64, qname: &str, blocklist_id: Option<i64>) -> QueryLogRecord {
+        QueryLogRecord {
+            blocklist_id,
+            ..rec(ts, "10.0.0.1", qname, Outcome::BlockedByBlocklist)
+        }
+    }
+
+    #[tokio::test]
+    async fn block_counts_by_source_groups_and_windows() {
+        let (_dir, repo) = open_repo().await;
+
+        // Old blocked row (ts 10) must be excluded by the window.
+        repo.insert_batch(&[rec_attributed(10, "old.test.", Some(1))])
+            .await
+            .expect("insert old");
+
+        repo.insert_batch(&[
+            rec_attributed(1000, "a.test.", Some(1)),
+            rec_attributed(1001, "b.test.", Some(1)),
+            rec_attributed(1002, "c.test.", Some(2)),
+            rec_attributed(1003, "d.test.", None), // unknown / removed at write time
+            // A non-blocklist outcome must not be counted even if attributed.
+            rec(1004, "10.0.0.1", "e.test.", Outcome::Forwarded),
+        ])
+        .await
+        .expect("insert new");
+
+        let mut counts = repo
+            .block_counts_by_source_since(1000)
+            .await
+            .expect("counts");
+        counts.sort_by_key(|(id, _)| *id); // None sorts first
+
+        assert_eq!(
+            counts,
+            vec![(None, 1), (Some(1), 2), (Some(2), 1)],
+            "grouped by blocklist_id, blocklist-only, windowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn block_counts_by_source_empty_window_is_empty() {
+        let (_dir, repo) = open_repo().await;
+        let counts = repo.block_counts_by_source_since(0).await.expect("counts");
+        assert!(counts.is_empty(), "no rows → no groups");
     }
 
     #[tokio::test]
