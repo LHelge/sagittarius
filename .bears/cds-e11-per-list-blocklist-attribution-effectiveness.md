@@ -2,10 +2,10 @@
 id: cds
 title: E11 · Per-list blocklist attribution & effectiveness
 type: epic
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:54:20.808651667Z
-updated: 2026-05-30T19:54:20.808651667Z
+updated: 2026-06-01T04:34:00.337872139Z
 tags:
 - blocklist
 - telemetry

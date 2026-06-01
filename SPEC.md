@@ -56,7 +56,7 @@ interface all included.
 | Persistent storage | SQLite via [`sqlx`](https://docs.rs/sqlx) | System of record for config, credentials, lists, local records, and the durable query-log history. Compile-time-checked queries (`query!`/`query_as!`); migrations embedded in the binary via the `sqlx::migrate!` macro |
 | Logging / telemetry | [`tracing`](https://docs.rs/tracing) + [`tracing-subscriber`](https://docs.rs/tracing-subscriber) | Structured app + query logging to stdout; operator handles retention externally |
 | CLI arguments | [`clap`](https://docs.rs/clap) | Operational flags (bind addresses, database path) with env fallbacks and sane defaults |
-| In-memory blocking sets | `HashSet` | Admin blacklist, allowlist, and aggregated blocklist set (§3.1) |
+| In-memory blocking sets | `HashSet` / `HashMap` | Admin blacklist and allowlist (`HashSet`); the aggregated blocklist is a `HashMap<Name, blocklist_id>` recording each domain's primary source (§3.1, §6) |
 | Lock-free state swap | [`arc-swap`](https://docs.rs/arc-swap) | Atomically swap immutable list snapshots so hot-path reads never block (§3.2) |
 | Local DNS records | `HashMap` (exact) + suffix-probe wildcards | Handful of entries; wildcards like `*.home.lan` via most-specific suffix match |
 | DNS cache | [`moka`](https://docs.rs/moka) | Per-entry expiration driven by record TTL |
@@ -167,9 +167,12 @@ DoT/DoH); it is not used to deserialize received messages on the hot path.
    - **Allowlist** (`HashSet`) — domains the admin explicitly allowed; an
      *exception* that suppresses blocklist matching (but not the admin
      blacklist). Persisted in SQLite, mirrored in memory.
-   - **Blocklist set** (`HashSet`) — the aggregated, deduplicated domains
-     expanded from all enabled blocklist *sources*. **Memory-only at runtime**;
-     only source definitions and cached fetched copies are persisted (§6).
+   - **Blocklist set** (`HashMap<Name, blocklist_id>`) — the aggregated,
+     deduplicated domains expanded from all enabled blocklist *sources*, each
+     mapped to its **primary source** so a block can be attributed to a list
+     (§6). The decision layer still treats it as a presence check (`Name → bool`);
+     attribution is read only off the hot path. **Memory-only at runtime**; only
+     source definitions and cached fetched copies are persisted (§6).
    - **Local records** — a small set (typically a handful) served
      authoritatively. Records are keyed by normalized name and type (A/AAAA in
      v0.1), so the same local name may have both IPv4 and IPv6 answers. Exact
@@ -234,7 +237,9 @@ path) and occasional writers (admin edits, blocklist refresh):
   `Arc<…>` snapshot inside an `ArcSwap`. A query reads the current snapshot with
   a cheap atomic load and never blocks; a writer builds a fresh structure *off*
   the hot path and atomically swaps it in, so no reader ever sees a torn or
-  partially-updated set.
+  partially-updated set. The blocklist snapshot is a `Name → primary
+  blocklist_id` map, but the decision layer reads it as a presence check; the
+  attribution value is consulted only off the hot path (§6).
 - **Cache.** `moka` is already a concurrent cache; shared via `Arc`, no extra
   locking.
 - **Stats.** Runtime counters are atomics (top-N may use a sharded/relaxed
@@ -289,11 +294,16 @@ The database holds global configuration **and** the durable per-query history
 - **query_log** — durable per-query history, one row per resolved query: `id`
   (autoincrement; chronological order + pagination cursor), `ts` (receipt time,
   epoch **milliseconds**), `client` (IP), `qname`, `qtype`, `outcome` (a stable
-  token), nullable `rcode` and `upstream`, and `latency_ms`. Indexed on `ts` for
-  the retention purge; pagination uses the primary key. Writes are batched off
-  the hot path by a dedicated writer task; an hourly purge deletes rows older
-  than the retention window and runs `PRAGMA incremental_vacuum` to return freed
-  pages (the pool sets `auto_vacuum = INCREMENTAL` for fresh databases).
+  token), nullable `rcode` and `upstream`, `latency_ms`, and a nullable
+  `blocklist_id` attributing a `blocked-blocklist` row to its primary source
+  (§6). `blocklist_id` is a **plain integer, not a foreign key** — keeping the
+  bare id preserves historical attribution after a list is deleted (the read
+  path LEFT JOINs `blocklists` and shows unknown ids as "removed list") and keeps
+  the write-heavy inserts cheap. Indexed on `ts` for the retention purge;
+  pagination uses the primary key. Writes are batched off the hot path by a
+  dedicated writer task; an hourly purge deletes rows older than the retention
+  window and runs `PRAGMA incremental_vacuum` to return freed pages (the pool
+  sets `auto_vacuum = INCREMENTAL` for fresh databases).
 
 **Deferred to post-MVP** *(future)*:
 
@@ -424,6 +434,19 @@ null-IP / custom, per the configured block mode) and authoritative local
   cached copies) are persisted. The admin **blacklist** and **allowlist** are
   kept as separate sets (§3.1) and applied with their own precedence at query
   time (§5); they are never merged into the blocklist set.
+- **Per-domain attribution.** The aggregated set is a `Name → primary
+  blocklist_id` map: each domain records the **primary source** that contributed
+  it. On overlap, the first writer wins; sources are aggregated in ascending
+  `blocklist_id` order, so the **lowest-id (oldest-subscribed) list** is the
+  primary. Only this single primary is stored — a deliberate trade-off that keeps
+  the map value a bare `i64` (no bitmask, no per-domain source list) at the cost
+  of overlap / "uniquely blocked by X" analysis (a junction table could add that
+  later). Attribution is resolved **off the hot path** by the query-log writer,
+  which reads the live snapshot and stamps `query_log.blocklist_id` for
+  `blocked-blocklist` rows; the decision layer itself stays a pure presence
+  check. This is eventually consistent — a refresh in the ~1s write delay can
+  shift or drop an attribution (→ `NULL`), which is acceptable for effectiveness
+  telemetry.
 - **Counts.** Per-list entry counts and last-update times are surfaced in the UI.
 
 ---
@@ -496,7 +519,11 @@ null-IP / custom, per the configured block mode) and authoritative local
     example local-record answers, or admin-blacklist blocks that the allowlist
     cannot override) do not offer that one-click action. The list change writes
     through to SQLite and refreshes the in-memory sets immediately.
-  - Blocklist subscription management (add/remove/enable, manual refresh).
+  - Blocklist subscription management (add/remove/enable, manual refresh). The
+    page also shows **per-list effectiveness**: each source's windowed block
+    count (last 24h) and its share of all blocklist blocks, so the admin can see
+    which lists are pulling their weight. Blocks credited to a source that has
+    since been removed are summarized as a "removed list" row (§6).
   - Manual blacklist / whitelist editing.
   - Local DNS record management (including wildcards).
   - Upstream resolver configuration.

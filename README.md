@@ -31,7 +31,9 @@ traffic disappear.
 ## Planned features (v0.1)
 
 - 🛡️ **DNS blocking** via subscribable blocklists (hosts / domain-list formats)
-  plus manual allow/deny lists. Exact-domain matching in v0.1.
+  plus manual allow/deny lists. Exact-domain matching in v0.1. **Per-list
+  effectiveness** shows how many blocks each source contributed (last 24h) and
+  its share of the total, so you can see which lists are pulling their weight.
 - 📊 **Live query log and dashboard** — block ratio, top domains, top clients,
   and a live query log streamed over SSE, with one-click allow/deny straight
   from the log. The log and dashboard are backed by a **persistent query log**
@@ -56,7 +58,7 @@ milestone.
 | Persistent storage | SQLite via [`sqlx`](https://docs.rs/sqlx) — compile-time-checked queries, embedded migrations; stores config and the durable query-log history |
 | Logging | [`tracing`](https://docs.rs/tracing) to stdout; live log streamed to the UI over SSE |
 | CLI / config | [`clap`](https://docs.rs/clap) flags (bind addresses, db path) with sane defaults |
-| Hot-path state | `HashSet` blacklist/allowlist/blocklist + `HashMap` local records, hot-swapped via [`arc-swap`](https://docs.rs/arc-swap); [`moka`](https://docs.rs/moka) cache with per-entry TTL |
+| Hot-path state | `HashSet` blacklist/allowlist + a `HashMap` blocklist (domain → primary source) and `HashMap` local records, hot-swapped via [`arc-swap`](https://docs.rs/arc-swap); [`moka`](https://docs.rs/moka) cache with per-entry TTL |
 | Web server | [`axum`](https://docs.rs/axum) |
 | Templating / UI | [`askama`](https://docs.rs/askama) + [Datastar](https://data-star.dev) (SSE) + [Pico CSS](https://picocss.com) |
 | Frontend assets | Vendored and embedded via `include_str!` / `include_bytes!` — no CDN, no Node build |
