@@ -1,10 +1,10 @@
 ---
 id: '895'
 title: 'E11.5 · Docs: SPEC + README for per-list attribution'
-status: open
+status: done
 priority: P2
 created: 2026-05-30T19:55:04.854586552Z
-updated: 2026-05-30T19:55:04.854586552Z
+updated: 2026-06-01T04:34:00.337716284Z
 tags:
 - docs
 depends_on:
