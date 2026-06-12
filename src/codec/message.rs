@@ -432,7 +432,7 @@ impl Query {
     /// The slice always starts at offset 12 (immediately after the DNS header).
     #[must_use]
     pub fn question_wire(&self) -> Bytes {
-        // Safety: question_end is set to reader.position() after Question::read,
+        // Invariant: question_end is set to reader.position() after Question::read,
         // which only advances the cursor within the bounds of `raw`.  The slice
         // [12..question_end] is therefore always valid.
         self.raw.slice(12..self.question_end)

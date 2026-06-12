@@ -168,21 +168,6 @@ pub fn build_engine(
 
 // ── upstream_config_from_row ──────────────────────────────────────────────────
 
-/// Map a persisted [`Upstream`] row to a runtime [`UpstreamConfig`].
-///
-/// Default ports are applied per transport:
-/// - UDP / TCP → 53
-/// - DoT → 853
-/// - DoH → 443
-///
-/// Address parsing:
-/// - If `row.address` parses as `SocketAddr` (explicit port), use it as-is.
-/// - If `row.address` parses as `IpAddr`, combine with the default port.
-/// - Otherwise (e.g. a DoH URL / hostname) → returns `None`; the caller
-///   should log a warning and skip the row.
-///
-/// The seeded upstreams (1.1.1.1 and 1.0.0.1, UDP) both parse as `IpAddr`
-/// and are mapped correctly.
 /// A stored [`Upstream`] row could not be mapped to a runtime
 /// [`UpstreamConfig`]: its address is neither an `IP:port` nor a bare IP (e.g.
 /// a hostname-only DoH URL, out of scope for v0.1).
@@ -200,6 +185,21 @@ impl std::error::Error for UnmappableUpstream {}
 impl TryFrom<&Upstream> for UpstreamConfig {
     type Error = UnmappableUpstream;
 
+    /// Map a persisted [`Upstream`] row to a runtime [`UpstreamConfig`].
+    ///
+    /// Default ports are applied per transport:
+    /// - UDP / TCP → 53
+    /// - DoT → 853
+    /// - DoH → 443
+    ///
+    /// Address parsing:
+    /// - If `row.address` parses as `SocketAddr` (explicit port), use it as-is.
+    /// - If `row.address` parses as `IpAddr`, combine with the default port.
+    /// - Otherwise (e.g. a DoH URL / hostname) → [`UnmappableUpstream`]; the
+    ///   caller should log a warning and skip the row.
+    ///
+    /// The seeded upstreams (1.1.1.1 and 1.0.0.1, UDP) both parse as `IpAddr`
+    /// and are mapped correctly.
     fn try_from(row: &Upstream) -> Result<Self, Self::Error> {
         let transport = match row.transport {
             Transport::Udp => UpstreamTransport::Udp,

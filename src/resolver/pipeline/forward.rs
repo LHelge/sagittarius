@@ -158,7 +158,7 @@ impl Service<DnsRequest> for ForwardService {
                     // All upstreams failed (or the pool is empty) → SERVFAIL.
                     tracing::warn!(
                         qname = %question.name,
-                        qtype = ?question.qtype,
+                        qtype = %question.qtype,
                         error = %e,
                         "all upstreams failed; returning SERVFAIL"
                     );

@@ -1,10 +1,10 @@
 ---
 id: xe2
 title: "Docs drift sweep: AttributedSet rename, doc placement, Safety headings, qtype tracing"
-status: open
+status: done
 priority: P3
 created: "2026-06-12T23:05:26.249881667Z"
-updated: "2026-06-12T23:05:26.249881667Z"
+updated: "2026-06-12T23:28:57.456670557Z"
 tags:
   - docs
   - refactor
