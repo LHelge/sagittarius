@@ -271,83 +271,14 @@ impl SharedUpstreamPool {
 mod tests {
     use std::{net::SocketAddr, time::Duration};
 
-    use hickory_net::proto::op::{Message, MessageType, ResponseCode};
-    use hickory_net::proto::rr::{Name, RData, Record, rdata::A};
-    use tokio::net::UdpSocket;
     use tokio::time::timeout;
     use tokio_util::task::TaskTracker;
 
     use super::*;
-    use crate::codec::message::{Qclass, Qtype, Question};
     use crate::resolver::upstream::{UpstreamConfig, UpstreamTransport};
-
-    // ── Mock UDP upstream ─────────────────────────────────────────────────────
-
-    /// Spawn a UDP mock upstream on an ephemeral port.
-    ///
-    /// For each datagram received the request is parsed with hickory, handed to
-    /// `handler`, and — if it returns `Some(response)` — the response is
-    /// serialised and sent back.  Returning `None` simulates a dead / silent
-    /// upstream (nothing is sent, so `forward()` will time out).
-    async fn spawn_mock_udp<F>(mut handler: F) -> SocketAddr
-    where
-        F: FnMut(Message) -> Option<Message> + Send + 'static,
-    {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let addr = sock.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 512];
-            loop {
-                let Ok((len, peer)) = sock.recv_from(&mut buf).await else {
-                    break;
-                };
-                let Ok(req) = Message::from_vec(&buf[..len]) else {
-                    continue;
-                };
-                if let Some(resp) = handler(req)
-                    && let Ok(resp_bytes) = resp.to_vec()
-                {
-                    let _ = sock.send_to(&resp_bytes, peer).await;
-                }
-            }
-        });
-
-        addr
-    }
-
-    /// Positive A-record mock handler.
-    fn positive_a_handler(req: Message) -> Option<Message> {
-        let mut resp = req.clone();
-        resp.metadata.message_type = MessageType::Response;
-        resp.metadata.response_code = ResponseCode::NoError;
-        let name = Name::from_ascii("example.com.").unwrap();
-        let rdata = RData::A(A::new(93, 184, 216, 34));
-        resp.add_answer(Record::from_rdata(name, 300, rdata));
-        Some(resp)
-    }
-
-    /// NXDOMAIN mock handler.
-    fn nxdomain_handler(req: Message) -> Option<Message> {
-        let mut resp = req.clone();
-        resp.metadata.message_type = MessageType::Response;
-        resp.metadata.response_code = ResponseCode::NXDomain;
-        Some(resp)
-    }
-
-    /// Silent mock handler (simulates a timeout).
-    fn silent_handler(_req: Message) -> Option<Message> {
-        None
-    }
-
-    /// Build the stock question used in every test: `example.com. A IN`.
-    fn stock_question() -> Question {
-        Question {
-            name: "example.com".parse().unwrap(),
-            qtype: Qtype::A,
-            qclass: Qclass::In,
-        }
-    }
+    use crate::test_support::{
+        mock_udp_upstream, nxdomain_handler, positive_a_handler, silent_handler, stock_question,
+    };
 
     /// Build a UDP [`UpstreamConfig`] pointing at `addr`.
     fn udp_config(addr: SocketAddr) -> UpstreamConfig {
@@ -456,8 +387,8 @@ mod tests {
     /// Expected: Ok(ForwardResult { is_negative: false }).
     #[tokio::test]
     async fn failover_to_second_upstream_on_timeout() {
-        let silent_addr = spawn_mock_udp(silent_handler).await;
-        let answer_addr = spawn_mock_udp(positive_a_handler).await;
+        let silent_addr = mock_udp_upstream(silent_handler).await;
+        let answer_addr = mock_udp_upstream(positive_a_handler).await;
 
         let configs = vec![udp_config(silent_addr), udp_config(answer_addr)];
         let tracker = TaskTracker::new();
@@ -488,8 +419,8 @@ mod tests {
     /// Both upstreams are silent; budget = 1 → AllUpstreamsFailed { attempts: 2 }.
     #[tokio::test]
     async fn all_fail_returns_all_upstreams_failed() {
-        let s0 = spawn_mock_udp(silent_handler).await;
-        let s1 = spawn_mock_udp(silent_handler).await;
+        let s0 = mock_udp_upstream(silent_handler).await;
+        let s1 = mock_udp_upstream(silent_handler).await;
 
         let configs = vec![udp_config(s0), udp_config(s1)];
         let tracker = TaskTracker::new();
@@ -517,9 +448,9 @@ mod tests {
     /// 3 silent upstreams, budget = 1 → only 2 are tried.
     #[tokio::test]
     async fn budget_bounds_attempts() {
-        let s0 = spawn_mock_udp(silent_handler).await;
-        let s1 = spawn_mock_udp(silent_handler).await;
-        let s2 = spawn_mock_udp(silent_handler).await;
+        let s0 = mock_udp_upstream(silent_handler).await;
+        let s1 = mock_udp_upstream(silent_handler).await;
+        let s2 = mock_udp_upstream(silent_handler).await;
 
         let configs = vec![udp_config(s0), udp_config(s1), udp_config(s2)];
         let tracker = TaskTracker::new();
@@ -548,8 +479,8 @@ mod tests {
     /// After `store(pool_b)`, `forward` must observe the new pool.
     #[tokio::test]
     async fn shared_pool_swap_takes_effect() {
-        let positive_addr = spawn_mock_udp(positive_a_handler).await;
-        let nxdomain_addr = spawn_mock_udp(nxdomain_handler).await;
+        let positive_addr = mock_udp_upstream(positive_a_handler).await;
+        let nxdomain_addr = mock_udp_upstream(nxdomain_handler).await;
 
         let tracker = TaskTracker::new();
 

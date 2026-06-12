@@ -604,11 +604,11 @@ mod tests {
     use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
     use super::*;
+    use crate::test_support::a_query;
     use crate::{
         codec::{
             framing,
             header::{Header, Rcode},
-            name::Name,
             reader::Reader,
             synth::Response,
             writer::Writer,
@@ -617,16 +617,6 @@ mod tests {
     };
 
     // ── Query builders ────────────────────────────────────────────────────────
-
-    fn build_a_query(id: u16, name: &str) -> Bytes {
-        let mut w = Writer::with_capacity(64);
-        Header::new(id).with_qdcount(1).with_rd(true).write(&mut w);
-        let n: Name = name.parse().expect("valid name");
-        n.write(&mut w);
-        w.write_u16(1u16); // QTYPE A
-        w.write_u16(1u16); // QCLASS IN
-        w.finish()
-    }
 
     fn parse_header(buf: &[u8]) -> Header {
         let mut r = Reader::new(Bytes::copy_from_slice(buf));
@@ -691,7 +681,7 @@ mod tests {
             let client = TokioUdpSocket::bind("127.0.0.1:0")
                 .await
                 .expect("client bind");
-            let query = build_a_query(0x1234, "example.com");
+            let query = a_query(0x1234, "example.com");
             client.send_to(&query, server_addr).await.expect("send");
 
             let mut buf = vec![0u8; 512];
@@ -718,7 +708,7 @@ mod tests {
             let (token, tracker) = spawn_listeners(listeners, tower::service_fn(noerror_service));
 
             let mut stream = TcpStream::connect(server_addr).await.expect("connect");
-            let query = build_a_query(0xBEEF, "tcp.example.com");
+            let query = a_query(0xBEEF, "tcp.example.com");
             let framed = framing::tcp::encode_length_prefix(&query);
             stream.write_all(&framed).await.expect("write");
 
@@ -773,8 +763,8 @@ mod tests {
             let mut stream = TcpStream::connect(server_addr).await.expect("connect");
 
             // Send two queries back-to-back.
-            let q1 = build_a_query(0x0001, "first.example.com");
-            let q2 = build_a_query(0x0002, "second.example.com");
+            let q1 = a_query(0x0001, "first.example.com");
+            let q2 = a_query(0x0002, "second.example.com");
             stream
                 .write_all(&framing::tcp::encode_length_prefix(&q1))
                 .await
@@ -892,7 +882,7 @@ mod tests {
                 spawn_listeners(listeners, tower::service_fn(rate_limited_service));
 
             let client = TokioUdpSocket::bind("127.0.0.1:0").await.expect("bind");
-            let query = build_a_query(0x5678, "refused.example.com");
+            let query = a_query(0x5678, "refused.example.com");
             client.send_to(&query, server_addr).await.expect("send");
 
             let mut buf = vec![0u8; 512];
@@ -938,7 +928,7 @@ mod tests {
 
             let client = TokioUdpSocket::bind("127.0.0.1:0").await.expect("bind");
             // No EDNS OPT → limit = 512.
-            let query = build_a_query(0xABCD, "big.example.com");
+            let query = a_query(0xABCD, "big.example.com");
             client.send_to(&query, server_addr).await.expect("send");
 
             let mut buf = vec![0u8; 1500];

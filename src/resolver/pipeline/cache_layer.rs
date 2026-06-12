@@ -195,12 +195,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        codec::{
-            header::Header,
-            message::{Qclass, Qtype, Query, Question},
-            name::Name,
-            writer::Writer,
-        },
+        codec::message::{Qclass, Qtype, Query, Question},
         resolver::state::ResolverState,
     };
 
@@ -210,21 +205,9 @@ mod tests {
         (dir, state)
     }
 
-    /// Build a minimal DNS A datagram for `name` with `id` (used as stand-in
-    /// "stored bytes"; content is opaque to the cache).
-    fn build_a_datagram(id: u16, name: &str) -> Bytes {
-        let mut w = Writer::with_capacity(64);
-        Header::new(id).with_qdcount(1).with_rd(true).write(&mut w);
-        let n: Name = name.parse().expect("valid name");
-        n.write(&mut w);
-        w.write_u16(1u16); // QTYPE A
-        w.write_u16(1u16); // QCLASS IN
-        w.finish()
-    }
-
     fn request(id: u16, name: &str) -> DnsRequest {
         let client: SocketAddr = "127.0.0.1:5353".parse().unwrap();
-        let query = Query::try_from(build_a_datagram(id, name)).expect("valid query");
+        let query = Query::try_from(crate::test_support::a_query(id, name)).expect("valid query");
         DnsRequest::new(query, client)
     }
 
@@ -248,7 +231,7 @@ mod tests {
         let (_dir, state) = hydrate_state().await;
 
         // Pre-populate the cache for example.com / A / IN.
-        let stored = build_a_datagram(0xAAAA, "example.com");
+        let stored = crate::test_support::a_query(0xAAAA, "example.com");
         state
             .cache()
             .insert(question("example.com"), stored, vec![], 300)

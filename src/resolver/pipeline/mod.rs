@@ -309,23 +309,11 @@ mod tests {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// Build a minimal DNS A query datagram for `name` with the given `id`.
-    fn build_a_query(id: u16, name: &str) -> Bytes {
-        let mut w = Writer::with_capacity(64);
-        let hdr = Header::new(id).with_qdcount(1).with_rd(true);
-        hdr.write(&mut w);
-        let n: Name = name.parse().expect("valid name in test helper");
-        n.write(&mut w);
-        w.write_u16(1u16); // QTYPE A
-        w.write_u16(1u16); // QCLASS IN
-        w.finish()
-    }
-
     // ── DnsRequest accessors ──────────────────────────────────────────────────
 
     #[test]
     fn dns_request_accessors_and_allow_bypass() {
-        let raw = build_a_query(0x1234, "example.com");
+        let raw = crate::test_support::a_query(0x1234, "example.com");
         let query = Query::try_from(raw.clone()).expect("valid query");
         let client: SocketAddr = "127.0.0.1:5353".parse().unwrap();
 
@@ -364,7 +352,7 @@ mod tests {
         let client: SocketAddr = "127.0.0.1:5353".parse().unwrap();
 
         // Plain query — no OPT, no EDNS info.
-        let plain = Query::try_from(build_a_query(0x0001, "plain.example")).unwrap();
+        let plain = Query::try_from(crate::test_support::a_query(0x0001, "plain.example")).unwrap();
         assert!(DnsRequest::new(plain, client).edns().is_none());
 
         // Query with an OPT RR advertising a 4096-byte UDP payload.
@@ -505,7 +493,7 @@ mod tests {
     async fn service_shape_round_trip() {
         use tower::ServiceExt as _;
 
-        let raw = build_a_query(0xBEEF, "roundtrip.test");
+        let raw = crate::test_support::a_query(0xBEEF, "roundtrip.test");
         let query = Query::try_from(raw.clone()).expect("valid query");
         let client: SocketAddr = "127.0.0.1:5353".parse().unwrap();
         let request = DnsRequest::new(query, client);

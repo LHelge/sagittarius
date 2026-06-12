@@ -219,13 +219,13 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
+    use crate::test_support::{a_query, aaaa_query};
     use crate::{
         codec::{
             header::{Header, Rcode},
             message::Query,
             name::Name,
             reader::Reader,
-            writer::Writer,
         },
         resolver::{
             local::{LocalRecords, RecordData as LRecordData},
@@ -239,28 +239,6 @@ mod tests {
     /// Parse a domain name.
     fn name(s: &str) -> Name {
         s.parse().expect("valid domain name")
-    }
-
-    /// Build a minimal DNS A query datagram.
-    fn build_a_query(id: u16, domain: &str) -> Bytes {
-        let mut w = Writer::with_capacity(64);
-        Header::new(id).with_qdcount(1).with_rd(true).write(&mut w);
-        let n: Name = domain.parse().expect("valid name");
-        n.write(&mut w);
-        w.write_u16(1u16); // QTYPE A
-        w.write_u16(1u16); // QCLASS IN
-        w.finish()
-    }
-
-    /// Build a minimal DNS AAAA query datagram.
-    fn build_aaaa_query(id: u16, domain: &str) -> Bytes {
-        let mut w = Writer::with_capacity(64);
-        Header::new(id).with_qdcount(1).with_rd(true).write(&mut w);
-        let n: Name = domain.parse().expect("valid name");
-        n.write(&mut w);
-        w.write_u16(28u16); // QTYPE AAAA
-        w.write_u16(1u16); // QCLASS IN
-        w.finish()
     }
 
     /// Build a [`DnsRequest`] from a raw datagram.
@@ -305,7 +283,7 @@ mod tests {
             .allowlist()
             .store([target.clone()].into_iter().collect());
 
-        let raw = build_a_query(0x0001, "evil.example.com");
+        let raw = a_query(0x0001, "evil.example.com");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -333,7 +311,7 @@ mod tests {
             .blocklist()
             .store([(target.clone(), 1)].into_iter().collect());
 
-        let raw = build_a_query(0x0002, "safe.example.com");
+        let raw = a_query(0x0002, "safe.example.com");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -373,7 +351,7 @@ mod tests {
         .unwrap();
         state.local().store(b.build());
 
-        let raw = build_a_query(0x0003, "router.home.lan");
+        let raw = a_query(0x0003, "router.home.lan");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -400,7 +378,7 @@ mod tests {
         state.local().store(b.build());
 
         // Query for AAAA — the name exists but has no AAAA record.
-        let raw = build_aaaa_query(0x0004, "host.lan");
+        let raw = aaaa_query(0x0004, "host.lan");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -425,7 +403,7 @@ mod tests {
             .blocklist()
             .store([(target.clone(), 1)].into_iter().collect());
 
-        let raw = build_a_query(0x0005, "tracker.bad.example");
+        let raw = a_query(0x0005, "tracker.bad.example");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -446,7 +424,7 @@ mod tests {
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
         // All lists and cache are empty after hydration.
 
-        let raw = build_a_query(0x0006, "nobody.example.com");
+        let raw = a_query(0x0006, "nobody.example.com");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -482,7 +460,7 @@ mod tests {
             .store([(target.clone(), 1)].into_iter().collect());
 
         let query_id: u16 = 0x1234;
-        let raw = build_a_query(query_id, "blocked.example");
+        let raw = a_query(query_id, "blocked.example");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -517,7 +495,7 @@ mod tests {
             .store([target.clone()].into_iter().collect());
 
         let query_id: u16 = 0x5678;
-        let raw = build_a_query(query_id, "evil.example");
+        let raw = a_query(query_id, "evil.example");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -540,7 +518,7 @@ mod tests {
         let layer = DecisionLayer::new(state);
         let svc = layer.layer(tower::service_fn(stub_fn));
 
-        let raw = build_a_query(0x9999, "via-layer.example.com");
+        let raw = a_query(0x9999, "via-layer.example.com");
         let req = make_request(raw);
 
         let resp = svc.oneshot(req).await.unwrap();
@@ -561,7 +539,7 @@ mod tests {
         state.local().store(b.build());
 
         let query_id: u16 = 0xABCD;
-        let raw = build_a_query(query_id, "myhost.lan");
+        let raw = a_query(query_id, "myhost.lan");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
@@ -593,7 +571,7 @@ mod tests {
         state.local().store(b.build());
 
         let query_id: u16 = 0xDEAD;
-        let raw = build_aaaa_query(query_id, "nodata.lan");
+        let raw = aaaa_query(query_id, "nodata.lan");
         let req = make_request(raw);
 
         let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
