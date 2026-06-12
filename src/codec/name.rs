@@ -37,9 +37,10 @@
 //! handles compression pointers, and it does so defensively:
 //!
 //! - Pointers are followed only for *skipping*, never materialized.
-//! - A hard cap of [`MAX_SKIP_HOPS`] pointer hops and [`MAX_SKIP_LABELS`] total
-//!   label bytes processed is enforced.  A crafted pointer loop therefore always
-//!   terminates with [`Error::NameSkipLimitExceeded`] rather than hanging.
+//! - At most [`MAX_SKIP_HOPS`] pointer hops are followed, and the total label
+//!   bytes visited are bounded by the RFC 1035 255-byte name limit
+//!   ([`MAX_NAME_WIRE_LEN`]).  A crafted pointer loop therefore always
+//!   terminates with an error rather than hanging.
 //! - Forward pointers and out-of-range targets are rejected with
 //!   [`Error::InvalidPointerTarget`].
 //! - After a successful skip the caller's [`Reader`] cursor sits immediately
@@ -68,13 +69,10 @@ const MAX_NAME_WIRE_LEN: usize = 255;
 /// Maximum number of compression-pointer hops allowed during [`Name::skip_rr`].
 /// This caps the work done when following pointer chains, bounding loop
 /// detection to a constant regardless of message size.
+///
+/// Together with the [`MAX_NAME_WIRE_LEN`] cap on visited label bytes this
+/// bounds a single skip to constant work.
 const MAX_SKIP_HOPS: usize = 16;
-
-/// Maximum total number of label-content bytes visited (across all
-/// pointer-followed segments) during a single [`Name::skip_rr`] call.
-/// Combined with [`MAX_SKIP_HOPS`] this gives two independent caps, either of
-/// which alone is sufficient to prevent unbounded work.
-const MAX_SKIP_BYTES: usize = 512;
 
 // ── Name ─────────────────────────────────────────────────────────────────────
 
@@ -174,10 +172,8 @@ impl Name {
                 return Err(Error::LabelTooLong(label_len));
             }
 
-            // Accumulate wire length: 1 (length byte already counted above as
-            // part of the constant `wire_len` increment below) + label bytes.
-            // wire_len was pre-set to 1 for the root; here we add 1 (length
-            // byte for this label) + label_len.
+            // Each label costs 1 length byte + its content bytes on the wire
+            // (wire_len started at 1 to account for the root terminator).
             wire_len = wire_len
                 .checked_add(1 + label_len)
                 .ok_or(Error::NameTooLong(usize::MAX))?;
@@ -241,14 +237,12 @@ impl Name {
     ///   in the message, and within the message bounds.  Forward and
     ///   out-of-range pointers are rejected with [`Error::InvalidPointerTarget`].
     /// - At most [`MAX_SKIP_HOPS`] pointer hops are followed.
-    /// - At most [`MAX_SKIP_BYTES`] total label-content bytes are visited.
-    ///
-    /// Either cap alone is sufficient to defeat pointer loops; both are enforced
-    /// as independent defence-in-depth guards.
+    /// - The total label-content bytes visited are capped at the RFC 1035
+    ///   255-byte name limit ([`MAX_NAME_WIRE_LEN`]).
     ///
     /// # Errors
     ///
-    /// - [`Error::NameSkipLimitExceeded`] — hop or byte cap exceeded.
+    /// - [`Error::NameSkipLimitExceeded`] — pointer-hop cap exceeded.
     /// - [`Error::InvalidPointerTarget`] — pointer target is forward or OOB.
     /// - [`Error::LabelTooLong`] — a label length byte exceeds 63.
     /// - [`Error::NameTooLong`] — total label bytes processed exceed 255.
@@ -308,26 +302,16 @@ impl Name {
 
                 let target = u16::from_be_bytes([len_byte & 0x3F, low_byte]) as usize;
 
-                // Pointer must point strictly backwards and within message.
-                // "Strictly before cur_pos" prevents same-position loops and
-                // forward pointers.  We check against the position *after*
-                // consuming the 2-byte pointer word, but since the pointer
-                // target must be before the pointer itself we use cur_pos
-                // (which now points one-past the second byte of the pointer).
-                // A valid pointer target must be < (cur_pos - 2) is too strict
-                // (it could legitimately point to the byte just before the
-                // pointer), so we allow target < cur_pos to catch forward
-                // pointers, combined with a target-within-message check.
+                // A pointer target must lie within the message and strictly
+                // before the pointer word itself.  Backwards-only pointers
+                // make self-references and forward jumps impossible, so any
+                // chain strictly decreases and cannot loop.
                 if target >= msg_len {
                     return Err(Error::InvalidPointerTarget {
                         target: target as u16,
                         msg_len,
                     });
                 }
-                // Reject forward pointers: target must be strictly before the
-                // start of this pointer word (cur_pos - 2 is where the pointer
-                // started).  This prevents a pointer pointing to itself or
-                // forward.
                 let pointer_start = cur_pos - 2;
                 if target >= pointer_start {
                     return Err(Error::InvalidPointerTarget {
@@ -368,16 +352,10 @@ impl Name {
                 return Err(Error::LabelTooLong(label_len));
             }
 
+            // Bound the total label bytes visited (across pointer-followed
+            // segments) by the RFC 1035 255-byte name limit: no valid name can
+            // exceed it, and it caps the work a crafted chain can demand.
             total_label_bytes = total_label_bytes.saturating_add(label_len);
-            if total_label_bytes > MAX_SKIP_BYTES {
-                return Err(Error::NameSkipLimitExceeded);
-            }
-
-            // Also enforce overall name wire-length limit (not strictly required
-            // for skipping but prevents accepting names that would be invalid
-            // to materialize later).
-            // wire length = all (1 + label_len) segments + 1 root byte.
-            // We track label bytes only; add generous headroom.
             if total_label_bytes > MAX_NAME_WIRE_LEN {
                 return Err(Error::NameTooLong(total_label_bytes));
             }

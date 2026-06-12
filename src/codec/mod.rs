@@ -88,12 +88,12 @@ pub enum Error {
     #[error("name too long: {0} bytes (maximum is 255)")]
     NameTooLong(usize),
 
-    /// The name-skip helper in the RR section exceeded the hop or byte cap
+    /// The name-skip helper in the RR section exceeded the pointer-hop cap
     /// while following compression pointers.
     ///
-    /// This indicates either a pointer loop or a pathologically deep chain
-    /// crafted to exhaust resources.  The skip is aborted with this error
-    /// rather than looping indefinitely.
+    /// This indicates a pathologically deep pointer chain crafted to exhaust
+    /// resources.  The skip is aborted with this error rather than looping
+    /// indefinitely.
     #[error("name skip limit exceeded while following compression pointers")]
     NameSkipLimitExceeded,
 
