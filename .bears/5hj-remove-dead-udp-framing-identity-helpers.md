@@ -1,10 +1,10 @@
 ---
 id: "5hj"
 title: Remove dead UDP framing identity helpers
-status: open
+status: done
 priority: P3
 created: "2026-06-12T23:03:04.162211955Z"
-updated: "2026-06-12T23:03:04.162211955Z"
+updated: "2026-06-12T23:10:24.729220887Z"
 tags:
   - refactor
   - codec
