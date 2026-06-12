@@ -238,23 +238,13 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
+    use crate::test_support::a_query;
     use crate::{
-        codec::{header::Header, message::Query, name::Name, writer::Writer},
+        codec::message::Query,
         resolver::pipeline::{BoxError, DnsRequest, Outcome, PipelineResponse},
     };
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    /// Build a minimal DNS A-query datagram with the given transaction id.
-    fn build_a_query(id: u16, domain: &str) -> Bytes {
-        let mut w = Writer::with_capacity(64);
-        Header::new(id).with_qdcount(1).with_rd(true).write(&mut w);
-        let n: Name = domain.parse().expect("valid name in test helper");
-        n.write(&mut w);
-        w.write_u16(1u16); // QTYPE A
-        w.write_u16(1u16); // QCLASS IN
-        w.finish()
-    }
 
     /// Wrap raw datagram bytes as a [`DnsRequest`] from the given client socket.
     fn make_request(raw: Bytes, client: SocketAddr) -> DnsRequest {
@@ -278,7 +268,7 @@ mod tests {
         let config = ProtectiveConfig::default();
         let svc = build_protective_service(&config, tower::service_fn(stub_fn));
 
-        let raw = build_a_query(0x0001, "example.com");
+        let raw = a_query(0x0001, "example.com");
         let req = make_request(raw, "10.0.0.1:1234".parse().unwrap());
 
         let resp = svc.clone().oneshot(req).await.expect("must succeed");
@@ -303,9 +293,9 @@ mod tests {
         let ip1: SocketAddr = "1.1.1.1:1234".parse().unwrap();
         let ip2: SocketAddr = "2.2.2.2:1234".parse().unwrap();
 
-        let raw1 = build_a_query(0x0001, "example.com");
-        let raw2 = build_a_query(0x0002, "example.com");
-        let raw3 = build_a_query(0x0003, "example.com");
+        let raw1 = a_query(0x0001, "example.com");
+        let raw2 = a_query(0x0002, "example.com");
+        let raw3 = a_query(0x0003, "example.com");
 
         // First request from 1.1.1.1 must succeed.
         let r1 = svc.clone().oneshot(make_request(raw1, ip1)).await;
@@ -344,7 +334,7 @@ mod tests {
 
         let svc = build_protective_service(&config, slow_svc);
 
-        let raw = build_a_query(0x0004, "slow.example.com");
+        let raw = a_query(0x0004, "slow.example.com");
         let req = make_request(raw, "10.0.0.2:1234".parse().unwrap());
 
         let err = svc
@@ -389,8 +379,8 @@ mod tests {
 
         let svc = build_protective_service(&config, blocking_svc);
 
-        let raw_a = build_a_query(0x0005, "a.example.com");
-        let raw_b = build_a_query(0x0006, "b.example.com");
+        let raw_a = a_query(0x0005, "a.example.com");
+        let raw_b = a_query(0x0006, "b.example.com");
         let addr: SocketAddr = "10.0.0.3:1234".parse().unwrap();
 
         // Use an outer timeout to keep the test bounded.

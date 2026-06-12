@@ -1,10 +1,10 @@
 ---
 id: grg
 title: "Shared DNS test fixtures: mock UDP upstream and wire-query builders"
-status: open
+status: done
 priority: P3
 created: "2026-06-12T23:03:46.411571199Z"
-updated: "2026-06-12T23:03:46.411571199Z"
+updated: "2026-06-12T23:26:28.982163792Z"
 tags:
   - test
   - tech-debt

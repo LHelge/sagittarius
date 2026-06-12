@@ -202,23 +202,20 @@ mod tests {
     use std::{net::SocketAddr, sync::Arc, time::Duration};
 
     use bytes::Bytes;
-    use hickory_net::proto::op::{Message, MessageType, ResponseCode};
-    use hickory_net::proto::rr::rdata::{A, SOA};
-    use hickory_net::proto::rr::{Name, RData, Record};
-
-    use tokio::net::UdpSocket;
     use tokio::time::timeout;
     use tokio_util::task::TaskTracker;
     use tower::ServiceExt as _;
 
     use super::*;
     use crate::{
-        codec::{
-            header::Header, message::Query, name::Name as DnsName, reader::Reader, writer::Writer,
-        },
+        codec::{header::Header, message::Query, reader::Reader},
         resolver::{
             state::ResolverState,
             upstream::{UpstreamConfig, UpstreamPool, UpstreamTransport},
+        },
+        test_support::{
+            a_query, mock_udp_upstream, nxdomain_handler, nxdomain_with_soa_handler,
+            positive_a_handler,
         },
     };
 
@@ -248,55 +245,11 @@ mod tests {
         }
     }
 
-    /// Build a minimal DNS A query datagram for `name` with `id`.
-    fn build_a_query(id: u16, name: &str) -> Bytes {
-        let mut w = Writer::with_capacity(64);
-        Header::new(id).with_qdcount(1).with_rd(true).write(&mut w);
-        let n: DnsName = name.parse().expect("valid name");
-        n.write(&mut w);
-        w.write_u16(1u16); // QTYPE A
-        w.write_u16(1u16); // QCLASS IN
-        w.finish()
-    }
-
     /// Build a [`DnsRequest`] from a raw datagram.
     fn make_request(raw: Bytes) -> DnsRequest {
         let client: SocketAddr = "127.0.0.1:5353".parse().unwrap();
         let query = Query::try_from(raw).expect("valid query");
         DnsRequest::new(query, client)
-    }
-
-    /// Spawn a UDP mock upstream on an ephemeral port.
-    ///
-    /// For each datagram received the request is parsed with hickory, handed to
-    /// `handler`, and — if it returns `Some(response)` — the response is
-    /// serialised and sent back.  Returning `None` simulates a dead / silent
-    /// upstream.
-    async fn spawn_mock_udp<F>(mut handler: F) -> SocketAddr
-    where
-        F: FnMut(Message) -> Option<Message> + Send + 'static,
-    {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let addr = sock.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 512];
-            loop {
-                let Ok((len, peer)) = sock.recv_from(&mut buf).await else {
-                    break;
-                };
-                let Ok(req) = Message::from_vec(&buf[..len]) else {
-                    continue;
-                };
-                if let Some(resp) = handler(req)
-                    && let Ok(resp_bytes) = resp.to_vec()
-                {
-                    let _ = sock.send_to(&resp_bytes, peer).await;
-                }
-            }
-        });
-
-        addr
     }
 
     /// Parse the DNS header from raw bytes.
@@ -316,16 +269,7 @@ mod tests {
     async fn forward_returns_reply_with_client_id() {
         let client_query_id: u16 = 0xBEEF;
 
-        let addr = spawn_mock_udp(|req| {
-            let mut resp = req.clone();
-            resp.metadata.message_type = MessageType::Response;
-            resp.metadata.response_code = ResponseCode::NoError;
-            let name = Name::from_ascii("example.com.").unwrap();
-            let rdata = RData::A(A::new(93, 184, 216, 34));
-            resp.add_answer(Record::from_rdata(name, 300, rdata));
-            Some(resp)
-        })
-        .await;
+        let addr = mock_udp_upstream(positive_a_handler).await;
 
         let tracker = TaskTracker::new();
         let pool = UpstreamPool::connect(
@@ -343,7 +287,7 @@ mod tests {
 
         let svc = ForwardService::new(pool, state);
 
-        let raw = build_a_query(client_query_id, "example.com");
+        let raw = a_query(client_query_id, "example.com");
         let req = make_request(raw);
 
         let out = timeout(Duration::from_secs(5), svc.oneshot(req))
@@ -370,16 +314,7 @@ mod tests {
     /// `cache_layer` tests).
     #[tokio::test]
     async fn positive_answer_directive_stores_min_ttl() {
-        let addr = spawn_mock_udp(|req| {
-            let mut resp = req.clone();
-            resp.metadata.message_type = MessageType::Response;
-            resp.metadata.response_code = ResponseCode::NoError;
-            let name = Name::from_ascii("example.com.").unwrap();
-            let rdata = RData::A(A::new(93, 184, 216, 34));
-            resp.add_answer(Record::from_rdata(name, 300, rdata));
-            Some(resp)
-        })
-        .await;
+        let addr = mock_udp_upstream(positive_a_handler).await;
 
         let tracker = TaskTracker::new();
         let pool = UpstreamPool::connect(
@@ -397,7 +332,7 @@ mod tests {
 
         let svc = ForwardService::new(pool, state);
 
-        let raw = build_a_query(0x1234, "example.com");
+        let raw = a_query(0x1234, "example.com");
         let req = make_request(raw);
 
         let out = timeout(Duration::from_secs(5), svc.oneshot(req))
@@ -418,19 +353,7 @@ mod tests {
     /// leaf does not distinguish sign — it forwards and emits a directive).
     #[tokio::test]
     async fn negative_with_soa_directive_stores() {
-        let addr = spawn_mock_udp(|req| {
-            let mut resp = req.clone();
-            resp.metadata.message_type = MessageType::Response;
-            resp.metadata.response_code = ResponseCode::NXDomain;
-            // Add a SOA to the authority section.
-            let zone = Name::from_ascii("example.com.").unwrap();
-            let mname = Name::from_ascii("ns1.example.com.").unwrap();
-            let rname = Name::from_ascii("hostmaster.example.com.").unwrap();
-            let soa = SOA::new(mname, rname, 1, 3600, 900, 604800, 60);
-            resp.add_authority(Record::from_rdata(zone, 120, RData::SOA(soa)));
-            Some(resp)
-        })
-        .await;
+        let addr = mock_udp_upstream(nxdomain_with_soa_handler).await;
 
         let tracker = TaskTracker::new();
         let pool = UpstreamPool::connect(
@@ -448,7 +371,7 @@ mod tests {
 
         let svc = ForwardService::new(pool, state);
 
-        let raw = build_a_query(0x5678, "example.com");
+        let raw = a_query(0x5678, "example.com");
         let req = make_request(raw);
 
         let out = timeout(Duration::from_secs(5), svc.oneshot(req))
@@ -472,14 +395,7 @@ mod tests {
     /// NXDOMAIN with **no** SOA (`negative_ttl == None`) must yield `Skip`.
     #[tokio::test]
     async fn negative_without_soa_directive_skips() {
-        let addr = spawn_mock_udp(|req| {
-            let mut resp = req.clone();
-            resp.metadata.message_type = MessageType::Response;
-            resp.metadata.response_code = ResponseCode::NXDomain;
-            // No SOA in authority — negative_ttl will be None.
-            Some(resp)
-        })
-        .await;
+        let addr = mock_udp_upstream(nxdomain_handler).await;
 
         let tracker = TaskTracker::new();
         let pool = UpstreamPool::connect(
@@ -497,7 +413,7 @@ mod tests {
 
         let svc = ForwardService::new(pool, state);
 
-        let raw = build_a_query(0x9ABC, "example.com");
+        let raw = a_query(0x9ABC, "example.com");
         let req = make_request(raw);
 
         let out = timeout(Duration::from_secs(5), svc.oneshot(req))
@@ -535,7 +451,7 @@ mod tests {
         let svc = ForwardService::new(pool, state);
 
         let client_id: u16 = 0xDEAD;
-        let raw = build_a_query(client_id, "example.com");
+        let raw = a_query(client_id, "example.com");
         let req = make_request(raw);
 
         let out = timeout(Duration::from_secs(5), svc.oneshot(req))

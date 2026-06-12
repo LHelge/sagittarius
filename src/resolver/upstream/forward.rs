@@ -129,63 +129,14 @@ impl UpstreamClient {
 mod tests {
     use std::net::SocketAddr;
 
-    use hickory_net::proto::op::{Message, MessageType, ResponseCode};
-    use hickory_net::proto::rr::rdata::{A, SOA};
-    use hickory_net::proto::rr::{Name, RData, Record};
-    use tokio::net::UdpSocket;
+    use hickory_net::proto::op::{MessageType, ResponseCode};
 
     use super::*;
-    use crate::codec::message::{Qclass, Qtype, Question};
     use crate::resolver::upstream::{UpstreamConfig, UpstreamTransport};
-
-    // ── Mock UDP upstream ─────────────────────────────────────────────────────
-
-    /// Spawn a UDP mock upstream on an ephemeral port.
-    ///
-    /// For each datagram received, the request is parsed with hickory, handed
-    /// to `handler`, and — if it returns `Some(response)` — the response is
-    /// serialized and sent back to the peer.  Returning `None` simulates a
-    /// dead upstream (nothing is sent, so `forward()` will time out).
-    ///
-    /// Returns the bound [`SocketAddr`] so the caller can build an
-    /// [`UpstreamConfig::Udp`] pointing at it.
-    async fn spawn_mock_udp<F>(mut handler: F) -> SocketAddr
-    where
-        F: FnMut(Message) -> Option<Message> + Send + 'static,
-    {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let addr = sock.local_addr().unwrap();
-
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 512];
-            loop {
-                let Ok((len, peer)) = sock.recv_from(&mut buf).await else {
-                    break;
-                };
-                let Ok(req) = Message::from_vec(&buf[..len]) else {
-                    continue;
-                };
-                if let Some(resp) = handler(req)
-                    && let Ok(resp_bytes) = resp.to_vec()
-                {
-                    let _ = sock.send_to(&resp_bytes, peer).await;
-                }
-                // None → send nothing (timeout path)
-            }
-        });
-
-        addr
-    }
-
-    /// Build the stock question used in every test:
-    /// `example.com. A IN`
-    fn stock_question() -> Question {
-        Question {
-            name: "example.com".parse().unwrap(),
-            qtype: Qtype::A,
-            qclass: Qclass::In,
-        }
-    }
+    use crate::test_support::{
+        mock_udp_upstream, nxdomain_handler, nxdomain_with_soa_handler, positive_a_handler,
+        silent_handler, stock_question,
+    };
 
     /// Helper: connect a UDP `UpstreamClient` to `addr` and spawn its background.
     async fn udp_client(addr: SocketAddr) -> UpstreamClient {
@@ -207,17 +158,7 @@ mod tests {
     /// re-parse with both the hickory TtlScan and the project codec.
     #[tokio::test]
     async fn positive_a_answer() {
-        let addr = spawn_mock_udp(|req| {
-            let mut resp = req.clone();
-            resp.metadata.message_type = MessageType::Response;
-            resp.metadata.response_code = ResponseCode::NoError;
-
-            let name = Name::from_ascii("example.com.").unwrap();
-            let rdata = RData::A(A::new(93, 184, 216, 34));
-            resp.add_answer(Record::from_rdata(name, 300, rdata));
-            Some(resp)
-        })
-        .await;
+        let addr = mock_udp_upstream(positive_a_handler).await;
 
         let client = udp_client(addr).await;
         let result = client
@@ -250,19 +191,7 @@ mod tests {
     /// RFC 2308: negative_ttl = min(120, 60) = 60.
     #[tokio::test]
     async fn nxdomain_with_soa() {
-        let addr = spawn_mock_udp(|req| {
-            let mut resp = req.clone();
-            resp.metadata.message_type = MessageType::Response;
-            resp.metadata.response_code = ResponseCode::NXDomain;
-
-            let zone = Name::from_ascii("example.com.").unwrap();
-            let mname = Name::from_ascii("ns1.example.com.").unwrap();
-            let rname = Name::from_ascii("hostmaster.example.com.").unwrap();
-            let soa = SOA::new(mname, rname, 1, 3600, 900, 604800, 60);
-            resp.add_authority(Record::from_rdata(zone, 120, RData::SOA(soa)));
-            Some(resp)
-        })
-        .await;
+        let addr = mock_udp_upstream(nxdomain_with_soa_handler).await;
 
         let client = udp_client(addr).await;
         let result = client
@@ -283,14 +212,7 @@ mod tests {
     /// NXDOMAIN with no SOA in authority → negative_ttl is None.
     #[tokio::test]
     async fn nxdomain_without_soa() {
-        let addr = spawn_mock_udp(|req| {
-            let mut resp = req.clone();
-            resp.metadata.message_type = MessageType::Response;
-            resp.metadata.response_code = ResponseCode::NXDomain;
-            // No SOA added
-            Some(resp)
-        })
-        .await;
+        let addr = mock_udp_upstream(nxdomain_handler).await;
 
         let client = udp_client(addr).await;
         let result = client
@@ -310,8 +232,7 @@ mod tests {
     /// NOERROR with no answer records (NODATA) → is_negative.
     #[tokio::test]
     async fn nodata_noerror_no_answer() {
-        let addr = spawn_mock_udp(|req| {
-            let mut resp = req.clone();
+        let addr = mock_udp_upstream(|mut resp| {
             resp.metadata.message_type = MessageType::Response;
             resp.metadata.response_code = ResponseCode::NoError;
             // No answers — NODATA
@@ -336,7 +257,7 @@ mod tests {
     /// Mock never replies.  forward() must return Error::Timeout quickly.
     #[tokio::test]
     async fn timeout_when_upstream_silent() {
-        let addr = spawn_mock_udp(|_req| None /* never reply */).await;
+        let addr = mock_udp_upstream(silent_handler).await;
 
         let client = udp_client(addr).await;
 
