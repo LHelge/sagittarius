@@ -404,13 +404,13 @@ where
                     match result {
                         Ok((len, peer)) => {
                             let raw = Bytes::copy_from_slice(&buf[..len]);
-                                let handler = self.clone();
-                                let sock = socket.clone();
+                            let handler = self.clone();
+                            let sock = socket.clone();
 
-                                handlers.spawn(async move {
-                                    let _permit = permit;
-                                    handler.handle_datagram(raw, peer, sock).await;
-                                });
+                            handlers.spawn(async move {
+                                let _permit = permit;
+                                handler.handle_datagram(raw, peer, sock).await;
+                            });
                         }
                         Err(e) => {
                             warn!(error = %e, "UDP recv_from error");
@@ -429,7 +429,7 @@ where
         let query = match Query::try_from(raw) {
             Ok(q) => q,
             Err(e) => {
-                if let Some(id) = e.id() {
+                if let Some(id) = e.id {
                     trace!(peer = %peer, id, "UDP FORMERR");
                     let formerr = Response::formerr(id);
                     let _ = socket.send_to(&formerr, peer).await;
@@ -552,7 +552,7 @@ where
             let query = match Query::try_from(raw) {
                 Ok(q) => q,
                 Err(e) => {
-                    if let Some(id) = e.id() {
+                    if let Some(id) = e.id {
                         // Recoverable FORMERR — send it and continue the pipeline.
                         let formerr = Response::formerr(id);
                         let framed = match framing::tcp::try_encode_length_prefix(&formerr) {

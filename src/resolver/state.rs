@@ -259,11 +259,7 @@ impl ResolverState {
     ///   ([`resolver::Error::InvalidLocalRecord`]).
     pub async fn hydrate(db: &Db) -> resolver::Result<Arc<Self>> {
         // ── Settings ──────────────────────────────────────────────────────────
-        let settings = db
-            .settings()
-            .get()
-            .await
-            .map_err(resolver::Error::Storage)?;
+        let settings = db.settings().get().await?;
 
         let cache = DnsCache::new(
             settings.cache_capacity,
@@ -274,31 +270,14 @@ impl ResolverState {
         let runtime_settings = RuntimeSettings::from(&settings);
 
         // ── Blacklist & allowlist ─────────────────────────────────────────────
-        let blacklist_names = db
-            .blacklist()
-            .load_all()
-            .await
-            .map_err(resolver::Error::Storage)?;
-
-        let blacklist = blacklist_names.into_iter().collect::<MatchSet>();
-
-        let allowlist_names = db
-            .allowlist()
-            .load_all()
-            .await
-            .map_err(resolver::Error::Storage)?;
-
-        let allowlist = allowlist_names.into_iter().collect::<MatchSet>();
+        let blacklist = db.blacklist().load_all().await?.into_iter().collect();
+        let allowlist = db.allowlist().load_all().await?.into_iter().collect();
 
         // Blocklist starts empty; E7 fills it on first refresh.
         let blocklist = AttributedSet::empty();
 
         // ── Local records ─────────────────────────────────────────────────────
-        let local_rows = db
-            .local_records()
-            .load_all()
-            .await
-            .map_err(resolver::Error::Storage)?;
+        let local_rows = db.local_records().load_all().await?;
 
         let local = LocalMatcher::new(build_local_records(local_rows)?);
 
