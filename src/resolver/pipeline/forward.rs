@@ -47,11 +47,7 @@ use bytes::{Bytes, BytesMut};
 use tower::Service;
 
 use crate::{
-    codec::{
-        header::Rcode,
-        synth::{EdnsInfo, Response},
-        ttl::TtlScan,
-    },
+    codec::{header::Rcode, synth::Response, ttl::TtlScan},
     resolver::{
         pipeline::{
             BoxError, DnsRequest, Outcome, PipelineResponse,
@@ -109,7 +105,6 @@ impl Service<DnsRequest> for ForwardService {
             // borrows of `req` across await points.
             let question = req.question().clone();
             let client_id = req.header().id;
-            let edns = EdnsInfo::scan(req.query()); // for the SERVFAIL path
 
             match pool.forward(&question).await {
                 Ok(fr) => {
@@ -167,8 +162,7 @@ impl Service<DnsRequest> for ForwardService {
                         error = %e,
                         "all upstreams failed; returning SERVFAIL"
                     );
-                    let bytes =
-                        Response::error_response(req.query(), Rcode::ServFail, edns.as_ref());
+                    let bytes = Response::error_response(req.query(), Rcode::ServFail, req.edns());
                     Ok(ForwardOutput::new(
                         PipelineResponse::new(bytes, Outcome::Servfail),
                         CacheDirective::Skip,

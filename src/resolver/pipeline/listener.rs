@@ -46,11 +46,7 @@ use tower::{Service, ServiceExt as _};
 use tracing::{debug, trace, warn};
 
 use crate::{
-    codec::{
-        framing,
-        message::Query,
-        synth::{EdnsInfo, Response},
-    },
+    codec::{framing, message::Query, synth::Response},
     resolver::pipeline::{BoxError, DnsRequest, PipelineResponse, middleware::ClassifyRejection},
 };
 
@@ -366,21 +362,18 @@ where
         }
     }
 
-    /// Drive `service` for a successfully-parsed `query` from `client`.
+    /// Drive `service` for a successfully-parsed request.
     ///
     /// Takes the (already-cloned) service by value so the returned future
     /// borrows nothing from `self` — keeping the per-handler futures `Send`
     /// without requiring `S: Sync`.  Service errors are mapped to synthesized
     /// error responses via [`ClassifyRejection::rejection_policy`].
-    async fn run_service(service: S, query: &Query, client: SocketAddr) -> Bytes {
-        let edns = EdnsInfo::scan(query);
-        let req = DnsRequest::new(query.clone(), client);
-
-        match service.oneshot(req).await {
+    async fn run_service(service: S, req: &DnsRequest) -> Bytes {
+        match service.oneshot(req.clone()).await {
             Ok(PipelineResponse { bytes, .. }) => bytes,
             Err(boxerr) => {
                 let (_, rcode) = boxerr.rejection_policy();
-                Response::error_response(query, rcode, edns.as_ref())
+                Response::error_response(req.query(), rcode, req.edns())
             }
         }
     }
@@ -447,12 +440,12 @@ where
             }
         };
 
-        let edns = EdnsInfo::scan(&query);
-        let reply = Self::run_service(self.service.clone(), &query, peer).await;
+        let req = DnsRequest::new(query, peer);
+        let reply = Self::run_service(self.service.clone(), &req).await;
 
         // UDP size check: truncate if reply exceeds the client-advertised limit.
-        let limit = edns
-            .as_ref()
+        let limit = req
+            .edns()
             .map(|e| e.udp_payload_size as usize)
             .unwrap_or(UDP_DEFAULT_LIMIT)
             .min(UDP_MAX_LIMIT);
@@ -464,7 +457,7 @@ where
                 limit,
                 "UDP reply exceeds limit; sending TC=1"
             );
-            Response::truncated(&query, edns.as_ref())
+            Response::truncated(req.query(), req.edns())
         } else {
             reply
         };
@@ -582,7 +575,8 @@ where
             };
 
             // TCP: no size limit, no TC bit — send the full reply.
-            let reply = Self::run_service(self.service.clone(), &query, peer).await;
+            let req = DnsRequest::new(query, peer);
+            let reply = Self::run_service(self.service.clone(), &req).await;
             let framed = match framing::tcp::try_encode_length_prefix(&reply) {
                 Ok(frame) => frame,
                 Err(e) => {
@@ -616,7 +610,7 @@ mod tests {
             header::{Header, Rcode},
             name::Name,
             reader::Reader,
-            synth::{EdnsInfo, Response},
+            synth::Response,
             writer::Writer,
         },
         resolver::pipeline::{BoxError, DnsRequest, Outcome, PipelineResponse},
@@ -643,8 +637,7 @@ mod tests {
 
     /// NoError stub: synthesizes a NOERROR/NODATA response.
     fn noerror_service(req: DnsRequest) -> std::future::Ready<Result<PipelineResponse, BoxError>> {
-        let edns = EdnsInfo::scan(req.query());
-        let bytes = Response::error_response(req.query(), Rcode::NoError, edns.as_ref());
+        let bytes = Response::error_response(req.query(), Rcode::NoError, req.edns());
         std::future::ready(Ok(PipelineResponse::new(bytes, Outcome::Forwarded)))
     }
 
@@ -932,10 +925,8 @@ mod tests {
             let (token, tracker) = spawn_listeners(
                 listeners,
                 tower::service_fn(|req: DnsRequest| {
-                    let edns = EdnsInfo::scan(req.query());
                     let mut resp =
-                        Response::error_response(req.query(), Rcode::NoError, edns.as_ref())
-                            .to_vec();
+                        Response::error_response(req.query(), Rcode::NoError, req.edns()).to_vec();
                     resp.resize(600, 0u8);
                     let bytes = Bytes::from(resp);
                     std::future::ready(Ok::<_, BoxError>(PipelineResponse::new(

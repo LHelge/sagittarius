@@ -27,7 +27,7 @@ use std::{
 use tower::{Layer, Service};
 
 use crate::{
-    codec::synth::{EdnsInfo, LocalRecord, Response},
+    codec::synth::{LocalRecord, Response},
     resolver::{
         local::{LocalMatch, RecordData},
         pipeline::{BoxError, DnsRequest, Outcome, PipelineResponse},
@@ -95,9 +95,10 @@ where
             let name = req.question().name.clone();
             let qtype = req.question().qtype;
 
-            // Compute EDNS info once; borrowing req.query() here is fine
-            // because the checks below only read small owned values.
-            let edns = EdnsInfo::scan(req.query());
+            // EDNS info was scanned once at request construction; clone the
+            // small owned value out so stage 3 can take `&mut req` while the
+            // later stages still synthesize with it.
+            let edns = req.edns().cloned();
 
             // Clone block_mode out of the arc-swap Guard so we never hold
             // the Guard across an .await boundary.
