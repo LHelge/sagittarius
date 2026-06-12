@@ -67,7 +67,20 @@ The full design is documented in [`SPEC.md`](SPEC.md).
 
 ## Install
 
-Pick whichever fits; all three give the same single binary.
+Pick whichever fits; all of them give the same single binary.
+
+**Quick install (Linux + systemd).** Downloads the latest release binary
+(checksum-verified), creates an unprivileged `sagittarius` user, and installs
+and starts the hardened systemd service from
+[`deploy/sagittarius.service`](deploy/sagittarius.service):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/LHelge/sagittarius/main/deploy/install.sh | sudo sh
+```
+
+Re-running the script upgrades an existing install in place. The admin UI is
+then reachable on port 8080 of the host. (As with any `curl | sh`, feel free
+to download [`deploy/install.sh`](deploy/install.sh) and read it first.)
 
 **Prebuilt binary.** Download a Linux `x86_64` or `aarch64` tarball from the
 [latest release](https://github.com/LHelge/sagittarius/releases/latest), verify
@@ -130,16 +143,20 @@ Notes:
 
 The [`deploy/`](deploy/) directory has ready-to-adapt examples:
 
+- [`deploy/install.sh`](deploy/install.sh) — the **quick-install script** (see
+  [Install](#install)) that downloads the latest release and sets up the
+  systemd service below.
 - [`deploy/sagittarius.service`](deploy/sagittarius.service) — a hardened
   **systemd** unit that runs Sagittarius as a dedicated unprivileged user with
   `CAP_NET_BIND_SERVICE` for port 53, the database under
-  `/var/lib/sagittarius`, and graceful `SIGTERM` shutdown.
+  `/var/lib/sagittarius`, graceful `SIGTERM` shutdown, and the admin UI on
+  `0.0.0.0:8080` so it is reachable from the LAN out of the box.
 - [`deploy/Caddyfile`](deploy/Caddyfile) — a **reverse-proxy** snippet that
-  terminates TLS (automatic certificates) in front of the loopback admin UI.
+  terminates TLS (automatic certificates) in front of a loopback admin UI.
 
-Bind the admin interface to loopback or a trusted network and reach it only
-through the proxy; the forwarded scheme/host headers it sets are trusted for
-secure-cookie and CSRF origin decisions.
+For TLS or exposure beyond a trusted network, bind the admin interface to
+loopback and reach it only through the proxy; the forwarded scheme/host
+headers it sets are trusted for secure-cookie and CSRF origin decisions.
 
 > Detailed installation and configuration docs will be added as the project
 > stabilizes.
