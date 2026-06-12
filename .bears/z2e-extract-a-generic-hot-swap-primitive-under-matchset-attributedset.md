@@ -1,10 +1,10 @@
 ---
 id: z2e
 title: Extract a generic hot-swap primitive under MatchSet/AttributedSet
-status: open
+status: done
 priority: P3
 created: "2026-06-12T23:03:14.983125291Z"
-updated: "2026-06-12T23:03:14.983125291Z"
+updated: "2026-06-12T23:19:13.756571046Z"
 tags:
   - refactor
   - resolver
