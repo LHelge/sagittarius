@@ -112,7 +112,7 @@ impl Name {
 
     /// Construct from a pre-validated, already-normalized string.
     ///
-    /// # Safety
+    /// # Invariants
     ///
     /// The caller must ensure:
     /// - `s` is lowercase and ends with `'.'`.

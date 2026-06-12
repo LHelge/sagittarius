@@ -4,7 +4,9 @@
 //! [`BlocklistScheduler`] orchestrates the full lifecycle of external blocklist
 //! sources: it runs an **offline-cache warm-up** at startup (no network) and
 //! then drives a **periodic refresh** loop that fetches, parses, and atomically
-//! installs an updated [`MatchSet`] into the shared [`ResolverState`].
+//! installs an updated [`AttributedSet`] into the shared [`ResolverState`].
+//!
+//! [`AttributedSet`]: crate::resolver::matchset::AttributedSet
 //!
 //! # Pipeline
 //!
@@ -377,7 +379,9 @@ impl BlocklistScheduler {
     /// Run a single full network refresh cycle.
     ///
     /// Fetches all enabled sources, parses them, and atomically installs the
-    /// merged domain set into the live [`MatchSet`].  Per-source errors are
+    /// merged `Name → blocklist_id` map into the live
+    /// [`AttributedSet`](crate::resolver::matchset::AttributedSet).
+    /// Per-source errors are
     /// handled resiliently — a failing source falls back to its cached body so
     /// it is NOT dropped from the live set.
     ///

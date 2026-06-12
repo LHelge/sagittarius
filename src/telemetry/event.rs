@@ -109,7 +109,7 @@ impl QueryEvent {
             target: "sagittarius::query",
             client = %self.client,
             qname = %self.qname,
-            qtype = ?self.qtype,
+            qtype = %self.qtype,
             outcome = %self.outcome,
             rcode = ?self.rcode,
             latency_ms = self.latency.as_millis() as u64,

@@ -2,10 +2,10 @@
 id: cde
 title: Refactoring round 2 — cleanups from the 2026-06-13 whole-project review
 type: epic
-status: open
+status: done
 priority: P3
 created: "2026-05-31T18:34:52.879217300Z"
-updated: "2026-06-12T23:02:34.591646742Z"
+updated: "2026-06-12T23:28:57.456896717Z"
 tags:
   - refactor
   - tech-debt
