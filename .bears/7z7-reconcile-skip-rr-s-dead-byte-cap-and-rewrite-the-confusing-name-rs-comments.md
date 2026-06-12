@@ -1,10 +1,10 @@
 ---
 id: "7z7"
 title: Reconcile skip_rr's dead byte-cap and rewrite the confusing name.rs comments
-status: open
+status: done
 priority: P3
 created: "2026-06-12T23:02:56.779837204Z"
-updated: "2026-06-12T23:02:56.779837204Z"
+updated: "2026-06-12T23:12:16.488859733Z"
 tags:
   - refactor
   - codec
