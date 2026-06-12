@@ -357,14 +357,11 @@ impl std::fmt::Debug for ResolverState {
 mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    use tempfile::TempDir;
-
     use super::*;
     use crate::{
         codec::{message::Qtype, name::Name},
         resolver::local::LocalMatch,
         storage::{
-            Db,
             lists::{AllowlistRepository, BlacklistRepository},
             local_records::{LocalRecordRepository, NewLocalRecord, RecordType},
             settings::{BlockingMode, Settings},
@@ -372,13 +369,6 @@ mod tests {
     };
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    async fn open_temp_db() -> (TempDir, Db) {
-        let dir = TempDir::new().expect("temp dir");
-        let path = dir.path().join("test.db");
-        let db = Db::connect(&path).await.expect("connect");
-        (dir, db)
-    }
 
     fn name(s: &str) -> Name {
         s.parse().expect("valid domain name")
@@ -485,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_reflects_blacklist_and_allowlist() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let bl = db.blacklist();
         bl.add("ads.example.com").await.expect("add to blacklist");
@@ -506,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_blocklist_is_empty() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
         assert!(
             state.blocklist().is_empty(),
@@ -516,7 +506,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_reflects_local_records() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let repo = db.local_records();
         repo.add(NewLocalRecord {
@@ -558,7 +548,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_settings_reflect_seed() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let s = state.settings();
@@ -574,7 +564,7 @@ mod tests {
 
     #[tokio::test]
     async fn settings_swap_is_visible_to_subsequent_readers() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         // Original: null-ip mode.
@@ -595,7 +585,7 @@ mod tests {
     async fn settings_swap_concurrent_reader_observes_new_value() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = Arc::new(ResolverState::hydrate(&db).await.expect("hydrate"));
 
         let state_r = Arc::clone(&state);
@@ -631,7 +621,7 @@ mod tests {
 
     #[tokio::test]
     async fn hydration_empty_db_succeeds() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate empty db");
 
         assert!(state.blacklist().is_empty());
@@ -648,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolver_state_debug_does_not_panic() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
         let s = format!("{state:?}");
         assert!(!s.is_empty());
@@ -658,7 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn settings_full_arc_outlives_swap() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         // Hold a full Arc to the old settings snapshot.

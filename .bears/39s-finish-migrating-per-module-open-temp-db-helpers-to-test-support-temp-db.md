@@ -1,10 +1,10 @@
 ---
 id: "39s"
 title: "Finish migrating per-module open_temp_db helpers to test_support::temp_db"
-status: open
+status: done
 priority: P3
 created: "2026-06-12T23:03:33.909386343Z"
-updated: "2026-06-12T23:03:33.909386343Z"
+updated: "2026-06-12T23:22:42.485622278Z"
 tags:
   - test
   - tech-debt

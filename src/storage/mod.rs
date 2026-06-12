@@ -192,14 +192,6 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// Helper: create a temp dir and open a fresh DB inside it.
-    async fn open_temp_db() -> (TempDir, Db) {
-        let dir = TempDir::new().expect("create temp dir");
-        let path = dir.path().join("test.db");
-        let db = Db::connect(&path).await.expect("connect to fresh DB");
-        (dir, db)
-    }
-
     #[tokio::test]
     async fn connect_creates_db_file() {
         let dir = TempDir::new().expect("create temp dir");
@@ -212,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn connect_applies_migrations() {
         // Connecting to a fresh DB must run migrations without error.
-        let (_dir, _db) = open_temp_db().await;
+        let (_dir, _db) = crate::test_support::temp_db().await;
     }
 
     // ── Schema presence ───────────────────────────────────────────────────────
@@ -220,7 +212,7 @@ mod tests {
     /// Assert that every v0.1 config table was created by the migration.
     #[tokio::test]
     async fn schema_all_tables_exist() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let expected = [
             "settings",
@@ -250,7 +242,7 @@ mod tests {
     /// Spot-check key columns on representative tables via PRAGMA table_info.
     #[tokio::test]
     async fn schema_key_columns_exist() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         // (table, column_name) pairs that must exist.
         let expected_columns: &[(&str, &str)] = &[
@@ -321,7 +313,7 @@ mod tests {
     /// Verify that the expected indexes were created.
     #[tokio::test]
     async fn schema_indexes_exist() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let expected_indexes: &[(&str, &str)] = &[
             ("upstreams", "idx_upstreams_enabled_sort"),
@@ -352,7 +344,7 @@ mod tests {
     /// The settings CHECK (id = 1) must reject a row with id <> 1.
     #[tokio::test]
     async fn settings_check_id_rejects_nonone() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let result = sqlx::query(
             "INSERT INTO settings \
@@ -374,7 +366,7 @@ mod tests {
     /// INSERT — without ON CONFLICT DO NOTHING — must fail.
     #[tokio::test]
     async fn settings_check_id_rejects_second_row() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         // The seed migration inserted id = 1; a plain INSERT must therefore
         // fail with a PRIMARY KEY (and CHECK) violation.
@@ -396,7 +388,7 @@ mod tests {
     /// A FK violation on blocklist_cache.blocklist_id must be rejected.
     #[tokio::test]
     async fn fk_blocklist_cache_rejects_missing_parent() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         // blocklist_id = 9999 does not exist in blocklists.
         let result = sqlx::query(
@@ -414,7 +406,7 @@ mod tests {
     /// A FK violation on sessions.user_id must be rejected.
     #[tokio::test]
     async fn fk_sessions_rejects_missing_user() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let result = sqlx::query(
             "INSERT INTO sessions (id, token_hash, user_id, expires_at) \
@@ -432,7 +424,7 @@ mod tests {
     /// UNIQUE on blacklist.domain must reject a duplicate domain.
     #[tokio::test]
     async fn unique_blacklist_domain() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         sqlx::query("INSERT INTO blacklist (domain) VALUES ('ads.example.com')")
             .execute(db.pool())
@@ -452,7 +444,7 @@ mod tests {
     /// UNIQUE on allowlist.domain must reject a duplicate domain.
     #[tokio::test]
     async fn unique_allowlist_domain() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         sqlx::query("INSERT INTO allowlist (domain) VALUES ('safe.example.com')")
             .execute(db.pool())
@@ -473,7 +465,7 @@ mod tests {
     /// fail, but same name + different type must succeed.
     #[tokio::test]
     async fn unique_local_records_name_type() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         // First record: A record for router.home.lan.
         sqlx::query(
@@ -540,7 +532,7 @@ mod tests {
 
     #[tokio::test]
     async fn wal_mode_is_active() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let mode: String = sqlx::query_scalar("PRAGMA journal_mode;")
             .fetch_one(db.pool())
             .await
@@ -550,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_vacuum_is_incremental_on_fresh_db() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         // 0 = NONE, 1 = FULL, 2 = INCREMENTAL.
         let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum;")
             .fetch_one(db.pool())
@@ -564,7 +556,7 @@ mod tests {
     /// The query_log table and all its columns must exist after migration.
     #[tokio::test]
     async fn query_log_table_and_columns_exist() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let table_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'query_log'",
@@ -600,7 +592,7 @@ mod tests {
     /// The retention-purge index on query_log.ts must exist.
     #[tokio::test]
     async fn query_log_ts_index_exists() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master \
              WHERE type = 'index' AND tbl_name = 'query_log' AND name = 'idx_query_log_ts'",
@@ -614,7 +606,7 @@ mod tests {
     /// The new settings columns must exist with their seeded defaults (1 / 30).
     #[tokio::test]
     async fn query_log_settings_defaults() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let enabled: i64 =
             sqlx::query_scalar("SELECT query_log_enabled FROM settings WHERE id = 1")
@@ -634,7 +626,7 @@ mod tests {
     /// The down migration must cleanly drop the table, index, and both columns.
     #[tokio::test]
     async fn query_log_down_migration_is_clean_inverse() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let down_sql = include_str!("../../migrations/20260529130933_query_log.down.sql");
         sqlx::raw_sql(down_sql)
@@ -678,7 +670,7 @@ mod tests {
     /// The blocklist_id attribution column must exist and be nullable.
     #[tokio::test]
     async fn query_log_blocklist_id_column_exists_and_nullable() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let notnull: Option<i64> = sqlx::query_scalar(
             "SELECT \"notnull\" FROM pragma_table_info('query_log') WHERE name = 'blocklist_id'",
@@ -698,7 +690,7 @@ mod tests {
     /// rest of the query_log table intact.
     #[tokio::test]
     async fn query_log_blocklist_id_down_migration_is_clean_inverse() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let down_sql =
             include_str!("../../migrations/20260529130934_query_log_blocklist_id.down.sql");
@@ -735,7 +727,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_keys_are_enforced() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let fk: i64 = sqlx::query_scalar("PRAGMA foreign_keys;")
             .fetch_one(db.pool())
             .await
@@ -745,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn trivial_query_round_trips() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let val: i64 = sqlx::query_scalar("SELECT 1;")
             .fetch_one(db.pool())
             .await
@@ -783,7 +775,7 @@ mod tests {
     /// Cloudflare default resolvers seeded by the seed-defaults migration.
     #[tokio::test]
     async fn seed_upstreams_count_and_addresses() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstreams")
             .fetch_one(db.pool())
@@ -805,7 +797,7 @@ mod tests {
     /// Both seeded upstreams must use UDP transport and be enabled.
     #[tokio::test]
     async fn seed_upstreams_transport_and_enabled() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         // Use runtime (non-macro) query to stay offline-compilable.
         let rows: Vec<(String, String, i64)> =
@@ -828,7 +820,7 @@ mod tests {
     /// (id = 1) with all the pinned seed values.
     #[tokio::test]
     async fn seed_settings_defaults() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings")
             .fetch_one(db.pool())
@@ -912,7 +904,7 @@ mod tests {
     /// are preserved and no duplicate rows are created.
     #[tokio::test]
     async fn seed_idempotency_preserves_admin_edits() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
 
         // Simulate admin changes: different cache_max_ttl and disable one upstream.
         sqlx::query("UPDATE settings SET cache_max_ttl = 7200 WHERE id = 1")
