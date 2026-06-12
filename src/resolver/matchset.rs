@@ -8,11 +8,12 @@
 //!
 //! # Design
 //!
-//! The DNS hot path reads the current snapshot with a cheap atomic load and
-//! **never blocks**.  An admin edit or blocklist refresh builds a fresh
-//! [`HashSet`]/[`HashMap`] *off* the hot path and atomically installs it with
-//! [`MatchSet::store`]/[`AttributedSet::store`], so no reader ever sees a torn
-//! or partially-updated set.  This is the core SPEC §3.2 guarantee.
+//! Both sets are thin domain wrappers over the shared [`HotSwap`] core, which
+//! owns the SPEC §3.2 rebuild-and-swap guarantee: the DNS hot path reads the
+//! current snapshot with a cheap atomic load and **never blocks**, while an
+//! admin edit or blocklist refresh builds a fresh [`HashSet`]/[`HashMap`]
+//! *off* the hot path and installs it atomically, so no reader ever sees a
+//! torn or partially-updated set.
 //!
 //! Three independent sets are used — admin blacklist and allowlist as
 //! [`MatchSet`]s, the aggregated blocklist as an [`AttributedSet`] — with
@@ -27,6 +28,66 @@ use std::{
 use arc_swap::{ArcSwap, Guard};
 
 use crate::codec::name::Name;
+
+// ── HotSwap ───────────────────────────────────────────────────────────────────
+
+/// Lock-free, hot-swappable snapshot holder — the SPEC §3.2 rebuild-and-swap
+/// core shared by [`MatchSet`] and [`AttributedSet`].
+///
+/// Readers load the current snapshot with a cheap atomic operation and never
+/// block.  Writers build a complete replacement value *off* the hot path and
+/// install it atomically with [`HotSwap::store`]: readers that are mid-load
+/// continue using the previous snapshot until their [`Guard`]/[`Arc`] drops,
+/// new readers immediately see the new value, and no reader ever observes a
+/// torn or partially-updated view.
+pub struct HotSwap<T> {
+    inner: ArcSwap<T>,
+}
+
+impl<T> HotSwap<T> {
+    /// Wrap `value` as the initial snapshot.
+    #[must_use]
+    pub fn new(value: T) -> Self {
+        Self {
+            inner: ArcSwap::from_pointee(value),
+        }
+    }
+
+    /// Load the current snapshot as a short-lived [`Guard`].
+    ///
+    /// The [`Guard`] holds a reference to the current [`Arc`] without
+    /// incrementing its reference count, making it slightly cheaper than
+    /// [`HotSwap::load_full`].  Prefer this for short-lived reads (single
+    /// method call); use [`load_full`](HotSwap::load_full) when the snapshot
+    /// must outlive an await point or be stored in a struct.
+    #[must_use]
+    pub fn snapshot(&self) -> Guard<Arc<T>> {
+        self.inner.load()
+    }
+
+    /// Load the current snapshot as a full, owned [`Arc`].
+    ///
+    /// Increments the reference count, so the snapshot stays alive as long as
+    /// the returned [`Arc`] is held.
+    #[must_use]
+    pub fn load_full(&self) -> Arc<T> {
+        self.inner.load_full()
+    }
+
+    /// Atomically install `value` as the new current snapshot.
+    pub fn store(&self, value: T) {
+        self.store_arc(Arc::new(value));
+    }
+
+    /// Atomically install a pre-boxed snapshot.
+    ///
+    /// Useful when the caller has already wrapped the value in an [`Arc`],
+    /// for example to share the same snapshot across multiple data structures
+    /// without an extra allocation.
+    pub fn store_arc(&self, arc: Arc<T>) {
+        self.inner.store(arc);
+    }
+}
 
 // ── MatchSet ──────────────────────────────────────────────────────────────────
 
@@ -52,7 +113,7 @@ use crate::codec::name::Name;
 /// assert!(!set.contains(&"safe.example.com".parse().unwrap()));
 /// ```
 pub struct MatchSet {
-    inner: ArcSwap<HashSet<Name>>,
+    inner: HotSwap<HashSet<Name>>,
 }
 
 impl MatchSet {
@@ -60,7 +121,7 @@ impl MatchSet {
     #[must_use]
     pub fn new(set: HashSet<Name>) -> Self {
         Self {
-            inner: ArcSwap::from_pointee(set),
+            inner: HotSwap::new(set),
         }
     }
 
@@ -81,26 +142,18 @@ impl MatchSet {
     /// This is the per-query lookup; it never blocks.
     #[must_use]
     pub fn contains(&self, name: &Name) -> bool {
-        self.inner.load().contains(name)
+        self.inner.snapshot().contains(name)
     }
 
-    /// Load the current snapshot as a short-lived [`Guard`].
-    ///
-    /// The returned [`Guard`] holds a reference to the current [`Arc`] without
-    /// incrementing its reference count, making it slightly cheaper than
-    /// [`MatchSet::load_full`].  Prefer this for short-lived reads (single
-    /// method call); use [`load_full`](MatchSet::load_full) when you need to
-    /// keep the snapshot alive across await points or store it in a struct.
+    /// Load the current snapshot as a short-lived [`Guard`]
+    /// (see [`HotSwap::snapshot`]).
     #[must_use]
     pub fn snapshot(&self) -> Guard<Arc<HashSet<Name>>> {
-        self.inner.load()
+        self.inner.snapshot()
     }
 
-    /// Load the current snapshot as a full, owned [`Arc`].
-    ///
-    /// Increments the reference count, so the snapshot stays alive as long as
-    /// the returned [`Arc`] is held.  Use this when you need to keep the
-    /// snapshot alive across an await point or store it alongside other data.
+    /// Load the current snapshot as a full, owned [`Arc`]
+    /// (see [`HotSwap::load_full`]).
     #[must_use]
     pub fn load_full(&self) -> Arc<HashSet<Name>> {
         self.inner.load_full()
@@ -109,35 +162,28 @@ impl MatchSet {
     /// Return the number of entries in the current snapshot.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.load().len()
+        self.inner.snapshot().len()
     }
 
     /// Return `true` if the current snapshot is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.inner.load().is_empty()
+        self.inner.snapshot().is_empty()
     }
 
     // ── Rebuild-and-swap writer ───────────────────────────────────────────────
 
     /// Atomically install `set` as the new current snapshot.
     ///
-    /// The caller builds the new [`HashSet`] *off* the hot path; this method
-    /// merely wraps it in an [`Arc`] and performs the atomic swap.  Readers
-    /// that are mid-load continue using the previous snapshot until their
-    /// [`Guard`]/[`Arc`] is dropped; new readers immediately see the new set.
-    /// No reader ever observes a torn or partially-updated view.
+    /// The caller builds the new [`HashSet`] *off* the hot path; the install
+    /// gives the [`HotSwap`] no-torn-read guarantee.
     pub fn store(&self, set: HashSet<Name>) {
-        self.store_arc(Arc::new(set));
+        self.inner.store(set);
     }
 
-    /// Atomically install a pre-boxed snapshot.
-    ///
-    /// Useful when the caller has already wrapped the set in an [`Arc`], for
-    /// example to share the same snapshot across multiple data structures
-    /// without an extra allocation.
+    /// Atomically install a pre-boxed snapshot (see [`HotSwap::store_arc`]).
     pub fn store_arc(&self, arc: Arc<HashSet<Name>>) {
-        self.inner.store(arc);
+        self.inner.store_arc(arc);
     }
 }
 
@@ -152,9 +198,8 @@ impl Default for MatchSet {
 
 impl fmt::Debug for MatchSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let snap = self.inner.load();
         f.debug_struct("MatchSet")
-            .field("len", &snap.len())
+            .field("len", &self.len())
             .finish()
     }
 }
@@ -205,7 +250,7 @@ impl FromIterator<Name> for MatchSet {
 ///
 /// [`DecisionStack`]: crate::resolver::pipeline
 pub struct AttributedSet {
-    inner: ArcSwap<HashMap<Name, i64>>,
+    inner: HotSwap<HashMap<Name, i64>>,
 }
 
 impl AttributedSet {
@@ -213,7 +258,7 @@ impl AttributedSet {
     #[must_use]
     pub fn new(map: HashMap<Name, i64>) -> Self {
         Self {
-            inner: ArcSwap::from_pointee(map),
+            inner: HotSwap::new(map),
         }
     }
 
@@ -236,7 +281,7 @@ impl AttributedSet {
     /// layer stays a pure presence test.
     #[must_use]
     pub fn contains(&self, name: &Name) -> bool {
-        self.inner.load().contains_key(name)
+        self.inner.snapshot().contains_key(name)
     }
 
     /// Return the primary `blocklist_id` for `name`, or `None` if it is not a
@@ -246,20 +291,18 @@ impl AttributedSet {
     /// block to the source that introduced the name.
     #[must_use]
     pub fn primary_source(&self, name: &Name) -> Option<i64> {
-        self.inner.load().get(name).copied()
+        self.inner.snapshot().get(name).copied()
     }
 
-    /// Load the current snapshot as a short-lived [`Guard`].
+    /// Load the current snapshot as a short-lived [`Guard`]
+    /// (see [`HotSwap::snapshot`]).
     #[must_use]
     pub fn snapshot(&self) -> Guard<Arc<HashMap<Name, i64>>> {
-        self.inner.load()
+        self.inner.snapshot()
     }
 
-    /// Load the current snapshot as a full, owned [`Arc`].
-    ///
-    /// Increments the reference count so the snapshot stays alive as long as
-    /// the returned [`Arc`] is held — use it when the snapshot must outlive an
-    /// await point.
+    /// Load the current snapshot as a full, owned [`Arc`]
+    /// (see [`HotSwap::load_full`]).
     #[must_use]
     pub fn load_full(&self) -> Arc<HashMap<Name, i64>> {
         self.inner.load_full()
@@ -268,13 +311,13 @@ impl AttributedSet {
     /// Return the number of entries in the current snapshot.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.load().len()
+        self.inner.snapshot().len()
     }
 
     /// Return `true` if the current snapshot is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.inner.load().is_empty()
+        self.inner.snapshot().is_empty()
     }
 
     // ── Rebuild-and-swap writer ───────────────────────────────────────────────
@@ -282,15 +325,14 @@ impl AttributedSet {
     /// Atomically install `map` as the new current snapshot.
     ///
     /// The caller (the aggregator) builds the `Name → blocklist_id` map *off*
-    /// the hot path; this method wraps it in an [`Arc`] and performs the atomic
-    /// swap with the same no-torn-read guarantee as [`MatchSet::store`].
+    /// the hot path; the install gives the [`HotSwap`] no-torn-read guarantee.
     pub fn store(&self, map: HashMap<Name, i64>) {
-        self.store_arc(Arc::new(map));
+        self.inner.store(map);
     }
 
-    /// Atomically install a pre-boxed snapshot.
+    /// Atomically install a pre-boxed snapshot (see [`HotSwap::store_arc`]).
     pub fn store_arc(&self, arc: Arc<HashMap<Name, i64>>) {
-        self.inner.store(arc);
+        self.inner.store_arc(arc);
     }
 }
 
@@ -303,9 +345,8 @@ impl Default for AttributedSet {
 
 impl fmt::Debug for AttributedSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let snap = self.inner.load();
         f.debug_struct("AttributedSet")
-            .field("len", &snap.len())
+            .field("len", &self.len())
             .finish()
     }
 }
