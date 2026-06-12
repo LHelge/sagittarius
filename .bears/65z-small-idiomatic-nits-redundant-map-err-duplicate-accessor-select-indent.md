@@ -1,10 +1,10 @@
 ---
 id: "65z"
 title: "Small idiomatic nits: redundant map_err, duplicate accessor, select! indent"
-status: open
+status: done
 priority: P3
 created: "2026-06-12T23:03:24.930533675Z"
-updated: "2026-06-12T23:03:24.930533675Z"
+updated: "2026-06-12T23:21:10.828509873Z"
 tags:
   - refactor
 parent: cde

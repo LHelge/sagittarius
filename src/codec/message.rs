@@ -263,14 +263,6 @@ pub struct ParseError {
 }
 
 impl ParseError {
-    /// Return the transaction ID, if available.
-    ///
-    /// Convenience accessor — identical to reading `self.id`.
-    #[must_use]
-    pub fn id(&self) -> Option<u16> {
-        self.id
-    }
-
     /// Construct a [`ParseError`] with no transaction ID.
     fn without_id(kind: Error) -> Self {
         Self { id: None, kind }
@@ -671,11 +663,7 @@ mod tests {
             "unexpected error kind: {:?}",
             err.kind
         );
-        assert_eq!(
-            err.id(),
-            Some(0x1111),
-            "id must be Some when header was read"
-        );
+        assert_eq!(err.id, Some(0x1111), "id must be Some when header was read");
     }
 
     #[test]
@@ -687,7 +675,7 @@ mod tests {
             "unexpected error kind: {:?}",
             err.kind
         );
-        assert_eq!(err.id(), Some(0x2222));
+        assert_eq!(err.id, Some(0x2222));
     }
 
     // ── Compression pointer in question ───────────────────────────────────────
@@ -709,7 +697,7 @@ mod tests {
             "unexpected error kind: {:?}",
             err.kind
         );
-        assert_eq!(err.id(), Some(0x3333), "id must be Some");
+        assert_eq!(err.id, Some(0x3333), "id must be Some");
     }
 
     // ── Truncated question ────────────────────────────────────────────────────
@@ -729,7 +717,7 @@ mod tests {
             "unexpected error kind: {:?}",
             err.kind
         );
-        assert_eq!(err.id(), Some(0x4444), "id must be Some");
+        assert_eq!(err.id, Some(0x4444), "id must be Some");
     }
 
     #[test]
@@ -748,7 +736,7 @@ mod tests {
             "unexpected error kind: {:?}",
             err.kind
         );
-        assert_eq!(err.id(), Some(0x5555));
+        assert_eq!(err.id, Some(0x5555));
     }
 
     #[test]
@@ -768,7 +756,7 @@ mod tests {
             "unexpected error kind: {:?}",
             err.kind
         );
-        assert_eq!(err.id(), Some(0x6666));
+        assert_eq!(err.id, Some(0x6666));
     }
 
     // ── Label length violation ────────────────────────────────────────────────
@@ -792,7 +780,7 @@ mod tests {
             "unexpected error kind: {:?}",
             err.kind
         );
-        assert_eq!(err.id(), Some(0x7777));
+        assert_eq!(err.id, Some(0x7777));
     }
 
     // ── Header unreadable — id must be None ───────────────────────────────────
@@ -808,8 +796,7 @@ mod tests {
                 err.kind
             );
             assert_eq!(
-                err.id(),
-                None,
+                err.id, None,
                 "n={n}: id must be None when header is unreadable"
             );
         }
@@ -831,7 +818,7 @@ mod tests {
             err.kind
         );
         // Size is checked before header read → id is None.
-        assert_eq!(err.id(), None, "id must be None for oversized message");
+        assert_eq!(err.id, None, "id must be None for oversized message");
     }
 
     #[test]
