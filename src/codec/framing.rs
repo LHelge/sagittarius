@@ -5,8 +5,8 @@
 //! ## UDP
 //!
 //! A UDP datagram carries exactly **one** DNS message with no additional
-//! framing — the datagram boundary is the message boundary.  The helpers
-//! here are trivial pass-throughs that document this property.
+//! framing — the datagram boundary is the message boundary, so UDP needs no
+//! helpers here.
 //!
 //! ## TCP
 //!
@@ -23,35 +23,6 @@
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::codec::Error;
-
-// ── UDP ──────────────────────────────────────────────────────────────────────
-
-/// UDP framing utilities.
-///
-/// A UDP datagram is exactly one DNS message with no additional framing.
-/// These helpers are trivial pass-throughs that make the intent explicit in
-/// call sites.
-pub mod udp {
-    use bytes::Bytes;
-
-    /// Return the DNS message bytes carried by a UDP datagram.
-    ///
-    /// A UDP datagram boundary is the message boundary, so no framing
-    /// needs to be stripped — this function returns `datagram` unchanged.
-    #[must_use]
-    pub fn unwrap_datagram(datagram: Bytes) -> Bytes {
-        datagram
-    }
-
-    /// Wrap a DNS message as a UDP datagram.
-    ///
-    /// UDP carries exactly one DNS message per datagram with no framing
-    /// envelope — this function returns `message` unchanged.
-    #[must_use]
-    pub fn wrap_datagram(message: Bytes) -> Bytes {
-        message
-    }
-}
 
 // ── TCP ───────────────────────────────────────────────────────────────────────
 
@@ -124,20 +95,6 @@ pub mod tcp {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── UDP ──────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn udp_unwrap_is_identity() {
-        let msg = Bytes::from_static(b"dns-message");
-        assert_eq!(udp::unwrap_datagram(msg.clone()), msg);
-    }
-
-    #[test]
-    fn udp_wrap_is_identity() {
-        let msg = Bytes::from_static(b"dns-message");
-        assert_eq!(udp::wrap_datagram(msg.clone()), msg);
-    }
 
     // ── TCP encode ────────────────────────────────────────────────────────────
 
