@@ -215,7 +215,7 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     use bytes::Bytes;
-    use tempfile::TempDir;
+
     use tower::ServiceExt as _;
 
     use super::*;
@@ -232,18 +232,9 @@ mod tests {
             pipeline::{BoxError, DnsRequest, Outcome, PipelineResponse},
             state::{ResolverState, RuntimeSettings},
         },
-        storage::Db,
     };
 
     // ── Test helpers ──────────────────────────────────────────────────────────
-
-    /// Open a temporary SQLite database and return the handle.
-    async fn open_temp_db() -> (TempDir, Db) {
-        let dir = TempDir::new().expect("temp dir");
-        let path = dir.path().join("test.db");
-        let db = Db::connect(&path).await.expect("connect");
-        (dir, db)
-    }
 
     /// Parse a domain name.
     fn name(s: &str) -> Name {
@@ -302,7 +293,7 @@ mod tests {
     /// `BlockedByAdmin` — the allowlist cannot override the admin blacklist.
     #[tokio::test]
     async fn blacklisted_and_allowlisted_still_blocked_by_admin() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         // Install both blacklist and allowlist containing the same name.
@@ -331,7 +322,7 @@ mod tests {
     /// inner service (allowlist bypasses blocklist → Forwarded from stub).
     #[tokio::test]
     async fn allowlisted_and_blocklisted_forwards() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let target = name("safe.example.com");
@@ -359,7 +350,7 @@ mod tests {
     /// same name is also on the blacklist and blocklist.
     #[tokio::test]
     async fn local_record_wins_over_all_blocking() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let target = name("router.home.lan");
@@ -399,7 +390,7 @@ mod tests {
     /// the result must be `Outcome::LocalNoData` (not forwarded, not blocked).
     #[tokio::test]
     async fn local_name_exists_but_qtype_absent_returns_nodata() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         // Install an A record only.
@@ -426,7 +417,7 @@ mod tests {
     /// `Outcome::BlockedByBlocklist`.
     #[tokio::test]
     async fn plain_blocklist_hit_returns_blocked_by_blocklist() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let target = name("tracker.bad.example");
@@ -451,7 +442,7 @@ mod tests {
     /// inner service and return `Outcome::Forwarded`.
     #[tokio::test]
     async fn plain_non_match_falls_through_to_forwarded() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
         // All lists and cache are empty after hydration.
 
@@ -473,7 +464,7 @@ mod tests {
     /// NoError (null-IP mode for A query), and the answer must carry 0.0.0.0.
     #[tokio::test]
     async fn blocklist_null_ip_response_is_well_formed() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         // Ensure the settings are in null-ip mode (the seeded default).
@@ -510,7 +501,7 @@ mod tests {
     /// Verify synthesized block response in NxDomain mode returns RCODE=NXDOMAIN.
     #[tokio::test]
     async fn admin_blacklist_nxdomain_response_is_well_formed() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         // Swap settings to NxDomain blocking mode.
@@ -543,7 +534,7 @@ mod tests {
     /// `DecisionLayer` must produce the same stack as `DecisionStack::new`.
     #[tokio::test]
     async fn decision_layer_wraps_correctly() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let layer = DecisionLayer::new(state);
@@ -561,7 +552,7 @@ mod tests {
     /// response must have AA=1, RCODE=NOERROR, and ANCOUNT=1 with the right IP.
     #[tokio::test]
     async fn local_a_record_response_is_authoritative() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let ip: Ipv4Addr = "192.168.1.42".parse().unwrap();
@@ -588,7 +579,7 @@ mod tests {
     /// A local NODATA response must have AA=1, RCODE=NOERROR, ANCOUNT=0.
     #[tokio::test]
     async fn local_nodata_response_is_authoritative_nodata() {
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         // A-only record; AAAA query → NODATA.

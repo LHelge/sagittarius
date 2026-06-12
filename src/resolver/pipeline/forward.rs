@@ -205,7 +205,7 @@ mod tests {
     use hickory_net::proto::op::{Message, MessageType, ResponseCode};
     use hickory_net::proto::rr::rdata::{A, SOA};
     use hickory_net::proto::rr::{Name, RData, Record};
-    use tempfile::TempDir;
+
     use tokio::net::UdpSocket;
     use tokio::time::timeout;
     use tokio_util::task::TaskTracker;
@@ -220,7 +220,6 @@ mod tests {
             state::ResolverState,
             upstream::{UpstreamConfig, UpstreamPool, UpstreamTransport},
         },
-        storage::Db,
     };
 
     #[test]
@@ -238,14 +237,6 @@ mod tests {
     }
 
     // ── Test helpers ──────────────────────────────────────────────────────────
-
-    /// Open a temporary SQLite database and return the handle.
-    async fn open_temp_db() -> (TempDir, Db) {
-        let dir = TempDir::new().expect("temp dir");
-        let path = dir.path().join("test.db");
-        let db = Db::connect(&path).await.expect("connect");
-        (dir, db)
-    }
 
     /// Build a UDP [`UpstreamConfig`] pointing at `addr`.
     fn udp_config(addr: SocketAddr) -> UpstreamConfig {
@@ -347,7 +338,7 @@ mod tests {
         .await;
         let pool = Arc::new(SharedUpstreamPool::new(pool));
 
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let svc = ForwardService::new(pool, state);
@@ -401,7 +392,7 @@ mod tests {
         .await;
         let pool = Arc::new(SharedUpstreamPool::new(pool));
 
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let svc = ForwardService::new(pool, state);
@@ -452,7 +443,7 @@ mod tests {
         .await;
         let pool = Arc::new(SharedUpstreamPool::new(pool));
 
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let svc = ForwardService::new(pool, state);
@@ -501,7 +492,7 @@ mod tests {
         .await;
         let pool = Arc::new(SharedUpstreamPool::new(pool));
 
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let svc = ForwardService::new(pool, state);
@@ -538,7 +529,7 @@ mod tests {
         .await;
         let pool = Arc::new(SharedUpstreamPool::new(pool));
 
-        let (_dir, db) = open_temp_db().await;
+        let (_dir, db) = crate::test_support::temp_db().await;
         let state = ResolverState::hydrate(&db).await.expect("hydrate");
 
         let svc = ForwardService::new(pool, state);
