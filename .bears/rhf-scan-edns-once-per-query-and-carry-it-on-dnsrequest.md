@@ -1,10 +1,10 @@
 ---
 id: rhf
 title: Scan EDNS once per query and carry it on DnsRequest
-status: open
+status: done
 priority: P3
 created: "2026-06-12T23:02:44.740882508Z"
-updated: "2026-06-12T23:02:44.740882508Z"
+updated: "2026-06-12T23:16:29.293009752Z"
 tags:
   - refactor
   - resolver

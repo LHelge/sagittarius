@@ -46,6 +46,7 @@ use bytes::Bytes;
 use crate::codec::{
     header::Header,
     message::{Query, Question},
+    synth::EdnsInfo,
 };
 
 // ── BoxError ──────────────────────────────────────────────────────────────────
@@ -69,6 +70,10 @@ pub struct DnsRequest {
     query: Query,
     /// Source address of the client that sent this query.
     client: SocketAddr,
+    /// EDNS information from the query's OPT pseudo-RR, scanned **once** at
+    /// construction and shared by every consumer (UDP size limit, response
+    /// synthesis in the decision layers, the SERVFAIL path).
+    edns: Option<EdnsInfo>,
     /// Set by the allowlist layer to tell the blocklist layer to stand down.
     ///
     /// `false` by default.  When `true`, a [`crate::resolver::matchset`] hit
@@ -79,12 +84,16 @@ pub struct DnsRequest {
 impl DnsRequest {
     /// Create a new [`DnsRequest`].
     ///
-    /// `allow_bypass` starts as `false`; the allowlist layer may flip it via
-    /// [`DnsRequest::set_allow_bypass`].
+    /// Scans the query's additional section for EDNS information here, once,
+    /// so the pipeline layers can read [`DnsRequest::edns`] instead of
+    /// re-walking the RR sections.  `allow_bypass` starts as `false`; the
+    /// allowlist layer may flip it via [`DnsRequest::set_allow_bypass`].
     pub fn new(query: Query, client: SocketAddr) -> Self {
+        let edns = EdnsInfo::scan(&query);
         Self {
             query,
             client,
+            edns,
             allow_bypass: false,
         }
     }
@@ -118,6 +127,14 @@ impl DnsRequest {
     /// The client's socket address.
     pub fn client(&self) -> SocketAddr {
         self.client
+    }
+
+    /// EDNS information from the query's OPT pseudo-RR, if it carried one.
+    ///
+    /// Scanned once in [`DnsRequest::new`]; pass to the
+    /// [`crate::codec::synth::Response`] builders when synthesizing replies.
+    pub fn edns(&self) -> Option<&EdnsInfo> {
+        self.edns.as_ref()
     }
 
     /// Whether the allowlist layer has granted bypass for blocklist matching.
@@ -338,6 +355,41 @@ mod tests {
         // And can be cleared
         req.set_allow_bypass(false);
         assert!(!req.allow_bypass());
+    }
+
+    /// The EDNS info is scanned once at construction: absent without an OPT,
+    /// present (and matching a fresh scan) with one.
+    #[test]
+    fn dns_request_carries_edns_info() {
+        let client: SocketAddr = "127.0.0.1:5353".parse().unwrap();
+
+        // Plain query — no OPT, no EDNS info.
+        let plain = Query::try_from(build_a_query(0x0001, "plain.example")).unwrap();
+        assert!(DnsRequest::new(plain, client).edns().is_none());
+
+        // Query with an OPT RR advertising a 4096-byte UDP payload.
+        let mut w = Writer::with_capacity(64);
+        Header::new(0x0002)
+            .with_qdcount(1)
+            .with_arcount(1)
+            .write(&mut w);
+        let name: Name = "edns.example".parse().unwrap();
+        name.write(&mut w);
+        w.write_u16(1); // QTYPE A
+        w.write_u16(1); // QCLASS IN
+        w.write_u8(0x00); // OPT owner: root
+        w.write_u16(41); // TYPE OPT
+        w.write_u16(4096); // CLASS = UDP payload size
+        w.write_u32(0); // extended RCODE / version / flags
+        w.write_u16(0); // RDLENGTH
+        let query = Query::try_from(w.finish()).unwrap();
+
+        let req = DnsRequest::new(query, client);
+        let edns = req.edns().expect("OPT query must carry EDNS info");
+        assert_eq!(edns.udp_payload_size, 4096);
+        // The carried value matches a fresh scan of the same query.
+        let fresh = EdnsInfo::scan(req.query()).expect("fresh scan finds the OPT");
+        assert_eq!(fresh.udp_payload_size, edns.udp_payload_size);
     }
 
     // ── Outcome classifiers ───────────────────────────────────────────────────
