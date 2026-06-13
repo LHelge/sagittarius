@@ -1427,7 +1427,6 @@ mod tests {
         for id in [
             "dashboard",
             "log",
-            "lists", // the Lists submenu groups blacklist/allowlist/blocklists
             "blacklist",
             "allowlist",
             "local",

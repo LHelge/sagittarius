@@ -50,6 +50,13 @@
   gap: 0.25rem;
 }
 
+/* Trim the bar height: Pico pads each top-level nav <li> generously; tighten
+ * the vertical padding so the bar isn't taller than it needs to be. */
+.sgt-topbar > nav > ul > li {
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+}
+
 .sgt-brand {
   display: inline-flex;
   align-items: center;
@@ -60,6 +67,8 @@
 
 .sgt-brand img {
   display: block;
+  width: 22px;
+  height: 22px;
 }
 
 .sgt-brand strong {
@@ -168,11 +177,11 @@ summary:has(.sgt-icon) {
   font-size: 1.1em;
 }
 
-/* Strip Pico's select-style chrome from BOTH topbar dropdown summaries (Lists
- * and Pause): Pico's `details.dropdown>summary:not([role])` (specificity 0,2,2)
- * paints a border, a form background and a muted placeholder colour, so match
- * that specificity to undo it and blend the summaries into the bar. The ▾ caret
- * (a ::after image) is left intact to signal the menu. */
+/* Strip Pico's select-style chrome from the topbar Pause dropdown summary:
+ * Pico's `details.dropdown>summary:not([role])` (specificity 0,2,2) paints a
+ * border, a form background and a muted placeholder colour, so match that
+ * specificity to undo it and blend the summary into the bar. The ▾ caret (a
+ * ::after image) is left intact to signal the menu. */
 .sgt-topbar details.dropdown summary {
   height: auto;
   border: none;
@@ -186,41 +195,6 @@ summary:has(.sgt-icon) {
   border: none;
   background: transparent;
   color: var(--sgt-accent);
-}
-
-/* ── "Lists" submenu — blends in as a borderless nav item ─────────────────── */
-
-.sgt-lists-menu {
-  margin: 0;
-}
-
-.sgt-topbar .sgt-lists-menu summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  width: auto;
-  padding: 0.25rem 0.6rem;
-  background: transparent;
-  border: none;
-  border-radius: var(--pico-border-radius);
-  color: inherit;
-  cursor: pointer;
-}
-
-.sgt-topbar .sgt-lists-menu summary[aria-current="page"] {
-  background: color-mix(in srgb, var(--sgt-accent) 18%, transparent);
-  color: var(--sgt-accent);
-  font-weight: 600;
-}
-
-.sgt-lists-menu summary .sgt-icon {
-  font-size: 1.1em;
-}
-
-.sgt-lists-menu ul a {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
 }
 
 /* ── Pause control + banner (E12) ────────────────────────────────────────── */
@@ -446,7 +420,7 @@ summary:has(.sgt-icon) {
 @media (max-width: 768px) {
   .sgt-topbar nav {
     flex-wrap: wrap;
-    row-gap: 0.25rem;
+    row-gap: 0;
   }
 
   .sgt-nav-toggle {
@@ -455,12 +429,11 @@ summary:has(.sgt-icon) {
     margin-left: auto;
   }
 
+  /* Both the links and the action controls collapse behind the hamburger. */
   .sgt-nav,
   .sgt-nav-actions {
     order: 2;
-    flex: 1 1 100%;
-    flex-direction: column;
-    align-items: stretch;
+    flex-basis: 100%;
     display: none;
   }
 
@@ -469,9 +442,32 @@ summary:has(.sgt-icon) {
     display: flex;
   }
 
-  /* Roomier tap targets for links once they're stacked in the drawer. */
+  /* Links stack vertically … */
+  .sgt-nav {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* … and the action icons (pause, theme, settings, logout) share one row
+   * beneath them, set off by a thin divider. */
+  .sgt-nav-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.3rem;
+    padding-top: 0.3rem;
+    border-top: 1px solid var(--pico-muted-border-color);
+  }
+
+  /* Tight drawer rows. */
+  .sgt-topbar > nav > ul > li {
+    padding-top: 0.15rem;
+    padding-bottom: 0.15rem;
+  }
+
   .sgt-nav a {
-    padding: 0.5rem 0.6rem;
+    padding: 0.3rem 0.5rem;
   }
 
   /* Stack multi-field add/action forms so each control is full-width and
