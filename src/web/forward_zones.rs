@@ -37,6 +37,10 @@ impl AppState {
         let rows = self.db.forward_zones().list_enabled().await?;
         let set = crate::resolver::forward_zone::ForwardZoneSet::build(&rows, &self.tracker).await;
         self.resolver.store_forward_zones(set);
+        // Conditional forwarding decides how private reverse queries resolve, so
+        // a zone edit can change a client's hostname — drop cached reverse
+        // lookups (E14) so the change shows on the next render, not after the TTL.
+        self.reverse.clear();
         Ok(())
     }
 

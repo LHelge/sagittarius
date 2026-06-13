@@ -119,6 +119,17 @@ where
         self.cache.get(&ip).await.flatten()
     }
 
+    /// Drop every cached result.
+    ///
+    /// Called when the data that drives reverse resolution changes (local-record
+    /// or forward-zone edits) so stale entries — in particular a sticky negative
+    /// "no hostname" result cached *before* the matching record was added — do
+    /// not survive the edit for the rest of the TTL window. The next render
+    /// re-resolves against the fresh state.
+    pub fn clear(&self) {
+        self.cache.invalidate_all();
+    }
+
     /// Warm the cache for `ip` in the background, if it is not already cached.
     ///
     /// Fire-and-forget: spawns a detached task that runs [`lookup`](Self::lookup)
@@ -331,6 +342,85 @@ mod tests {
             1,
             "negative result must be cached (one query only)"
         );
+    }
+
+    /// A stub whose PTR target can change between calls, counting queries — so
+    /// a test can prove the cache is (or is not) re-queried.
+    #[derive(Clone)]
+    struct ToggleService {
+        target: Arc<std::sync::Mutex<Option<&'static str>>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Service<DnsRequest> for ToggleService {
+        type Response = PipelineResponse;
+        type Error = BoxError;
+        type Future = std::future::Ready<Result<PipelineResponse, BoxError>>;
+
+        fn poll_ready(
+            &mut self,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, req: DnsRequest) -> Self::Future {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let bytes = match *self.target.lock().unwrap() {
+                Some(target) => ptr_response(&req, target),
+                None => {
+                    // QR=1 with no answers → a negative ("no hostname") result.
+                    let mut w = Writer::with_capacity(32);
+                    Header::new(req.header().id)
+                        .with_qr(true)
+                        .with_qdcount(1)
+                        .write(&mut w);
+                    req.question().name.write(&mut w);
+                    w.write_u16(u16::from(Qtype::Ptr));
+                    w.write_u16(1);
+                    w.finish()
+                }
+            };
+            std::future::ready(Ok(PipelineResponse::new(bytes, Outcome::Local)))
+        }
+    }
+
+    /// `clear()` drops a sticky negative entry so a record added *after* the
+    /// failed lookup is picked up on the next lookup (the no-restart fix).
+    #[tokio::test]
+    async fn clear_drops_a_sticky_negative_entry() {
+        let target = Arc::new(std::sync::Mutex::new(None));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let resolver = ReverseResolver::new(ToggleService {
+            target: Arc::clone(&target),
+            calls: Arc::clone(&calls),
+        });
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 9));
+
+        // No target yet → negative result, cached.
+        assert!(resolver.lookup(ip).await.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // A matching record now exists, but the negative entry is sticky: the
+        // cache is served without re-querying, so the client stays nameless.
+        *target.lock().unwrap() = Some("late.lan");
+        assert!(
+            resolver.lookup(ip).await.is_none(),
+            "stale negative result is served from the cache"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "must not re-query while the negative entry is cached"
+        );
+
+        // Clearing forces a fresh lookup, which now resolves.
+        resolver.clear();
+        assert_eq!(
+            resolver.lookup(ip).await.map(|n| n.to_string()),
+            Some("late.lan.".to_owned())
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "clear() forces a re-query");
     }
 
     #[tokio::test]
