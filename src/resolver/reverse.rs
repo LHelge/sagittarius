@@ -119,6 +119,22 @@ where
         self.cache.get(&ip).await.flatten()
     }
 
+    /// Warm the cache for `ip` in the background, if it is not already cached.
+    ///
+    /// Fire-and-forget: spawns a detached task that runs [`lookup`](Self::lookup)
+    /// (single-flighted, so duplicate warms collapse). The render layer calls
+    /// this on a cache miss so the *next* page render shows the hostname.
+    ///
+    /// The [`Mutex`](std::sync::Mutex) makes `ReverseResolver` `Sync` even when
+    /// the inner service is only `Send` (a boxed `tower` service), so an
+    /// `Arc<Self>` is `Send` and can cross the spawn boundary.
+    pub fn warm(self: &Arc<Self>, ip: IpAddr) {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            this.lookup(ip).await;
+        });
+    }
+
     /// Issue the PTR query through the internal service and extract the name.
     async fn resolve(service: S, ip: IpAddr) -> Option<Name> {
         let raw = ptr_query_datagram(&Name::reverse_query(ip));
@@ -126,28 +142,6 @@ where
         let request = DnsRequest::new(query, synthetic_client());
         let response = service.oneshot(request).await.ok()?;
         extract_ptr(&response.bytes)
-    }
-}
-
-impl<S> ReverseResolver<S>
-where
-    S: Service<DnsRequest, Response = PipelineResponse, Error = BoxError>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    S::Future: Send + 'static,
-{
-    /// Warm the cache for `ip` in the background, if it is not already cached.
-    ///
-    /// Fire-and-forget: spawns a detached task that runs [`lookup`](Self::lookup)
-    /// (single-flighted, so duplicate warms collapse). The render layer calls
-    /// this on a cache miss so the *next* page render shows the hostname.
-    pub fn warm(self: &Arc<Self>, ip: IpAddr) {
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            this.lookup(ip).await;
-        });
     }
 }
 

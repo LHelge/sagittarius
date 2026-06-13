@@ -67,10 +67,15 @@ impl AppState {
         // page() is newest-first, so the last row carries the smallest id — the
         // cursor for loading the next older page.
         let oldest = records.last().map(|r| r.id).unwrap_or(0);
-        let rows: Vec<String> = records
-            .iter()
-            .filter_map(|r| LogRowView::from_record(r).render().ok())
-            .collect();
+        let mut rows = Vec::with_capacity(records.len());
+        for r in &records {
+            // Decorate the client IP with its cached hostname (E14.2); never
+            // blocks — a miss renders the IP and warms the cache for next time.
+            let client = state.client_label(&r.client).await;
+            if let Ok(html) = LogRowView::from_record(r, client).render() {
+                rows.push(html);
+            }
+        }
         LogPageTemplate {
             chrome: state.chrome("log", &user).await,
             rows,
@@ -100,10 +105,13 @@ impl AppState {
             Err(e) => return WebError::from(e).into_response(),
         };
         let new_oldest = records.last().map(|r| r.id).unwrap_or(0);
-        let html: String = records
-            .iter()
-            .filter_map(|r| LogRowView::from_record(r).render().ok())
-            .collect();
+        let mut html = String::new();
+        for r in &records {
+            let client = state.client_label(&r.client).await;
+            if let Ok(row) = LogRowView::from_record(r, client).render() {
+                html.push_str(&row);
+            }
+        }
 
         // Append the older rows (if any), then update the scroll-back cursor.
         let mut events = Vec::new();
@@ -134,7 +142,11 @@ impl AppState {
             loop {
                 match rx.recv().await {
                     Ok(ev) => {
-                        yield Ok(row_event(&ev));
+                        // Decorate the client with its cached hostname (E14.2);
+                        // a miss renders the IP and warms the cache in the
+                        // background for subsequent rows.
+                        let client = state.client_label_ip(ev.client.ip()).await;
+                        yield Ok(row_event(&ev, client));
                         yield Ok(counters_event(&stats));
                     }
                     // Drop-oldest semantics: a lagging subscriber skips the
@@ -150,8 +162,10 @@ impl AppState {
 }
 
 /// Build the `PatchElements` event that prepends one query row.
-fn row_event(ev: &QueryEvent) -> Event {
-    let html = LogRowView::from_event(ev).render().unwrap_or_default();
+fn row_event(ev: &QueryEvent, client: String) -> Event {
+    let html = LogRowView::from_event(ev, client)
+        .render()
+        .unwrap_or_default();
     PatchElements::new(html)
         .selector("#log-body")
         .mode(ElementPatchMode::Prepend)
@@ -193,10 +207,12 @@ struct LogRowView {
 
 impl LogRowView {
     /// Build a row from a live broadcast [`QueryEvent`] (no DB id yet).
-    fn from_event(ev: &QueryEvent) -> Self {
+    ///
+    /// `client` is the pre-decorated client label (`"hostname (ip)"` or the
+    /// bare IP), resolved from the E14.1 reverse-lookup cache by the caller.
+    fn from_event(ev: &QueryEvent, client: String) -> Self {
         // Display the bare domain; the canonical trailing dot stays internal.
         let qname = ev.qname.to_string().display_domain().to_owned();
-        let client = ev.client.ip().to_string();
         Self::build(
             0,
             client,
@@ -210,11 +226,13 @@ impl LogRowView {
     }
 
     /// Build a row from a persisted [`QueryLogRecord`] (carries its DB id).
-    fn from_record(record: &QueryLogRecord) -> Self {
+    ///
+    /// `client` is the pre-decorated client label (see [`from_event`](Self::from_event)).
+    fn from_record(record: &QueryLogRecord, client: String) -> Self {
         let qname = record.qname.display_domain().to_owned();
         Self::build(
             record.id,
-            record.client.clone(),
+            client,
             qname,
             record.qtype.clone(),
             record.outcome.to_string(),
@@ -321,9 +339,12 @@ mod tests {
 
     #[test]
     fn row_renders_outcome_filter_and_search() {
-        let html = LogRowView::from_event(&event("ads.example.com", Outcome::BlockedByBlocklist))
-            .render()
-            .expect("render row");
+        let html = LogRowView::from_event(
+            &event("ads.example.com", Outcome::BlockedByBlocklist),
+            "192.168.1.5".to_owned(),
+        )
+        .render()
+        .expect("render row");
         // Displayed without the canonical trailing dot.
         assert!(html.contains("ads.example.com"));
         assert!(!html.contains("ads.example.com."));
@@ -342,7 +363,7 @@ mod tests {
     fn row_action_is_keyed_on_outcome() {
         // Resolved rows (cached/forwarded) offer Block.
         for o in [Outcome::Cached, Outcome::Forwarded] {
-            let html = LogRowView::from_event(&event("good.example.com", o))
+            let html = LogRowView::from_event(&event("good.example.com", o), "10.0.0.1".to_owned())
                 .render()
                 .unwrap();
             assert!(html.contains("Block"), "{o:?} must offer block");
@@ -351,7 +372,7 @@ mod tests {
 
         // Both kinds of blocked row offer Unblock.
         for o in [Outcome::BlockedByAdmin, Outcome::BlockedByBlocklist] {
-            let html = LogRowView::from_event(&event("ads.example.com", o))
+            let html = LogRowView::from_event(&event("ads.example.com", o), "10.0.0.1".to_owned())
                 .render()
                 .unwrap();
             assert!(html.contains("Unblock"), "{o:?} must offer unblock");
@@ -360,7 +381,7 @@ mod tests {
 
         // Local / error rows offer no action (rendered as a dash).
         for o in [Outcome::Local, Outcome::LocalNoData, Outcome::Servfail] {
-            let html = LogRowView::from_event(&event("x.example.com", o))
+            let html = LogRowView::from_event(&event("x.example.com", o), "10.0.0.1".to_owned())
                 .render()
                 .unwrap();
             assert!(!html.contains("Block"), "{o:?} must offer no action");
