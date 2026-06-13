@@ -322,7 +322,7 @@ impl Response {
                         edns,
                     )
                 }
-                Qtype::Other(_) => {
+                Qtype::Ptr | Qtype::Other(_) => {
                     // NODATA — NOERROR with zero answers.
                     Self::build(query, Rcode::NoError, false, &[], edns)
                 }

@@ -125,10 +125,11 @@ impl NameEntry {
                 },
                 None => LocalMatch::NameExistsNoData,
             },
-            // Any non-A/AAAA qtype: the name exists locally but we hold no
-            // record of that type.  Return NODATA — do NOT forward the private
-            // name upstream.
-            Qtype::Other(_) => LocalMatch::NameExistsNoData,
+            // Any other qtype on a forward local name: the name exists locally
+            // but we hold no record of that type.  Return NODATA — do NOT
+            // forward the private name upstream.  PTR for IPs we own is answered
+            // separately from a reverse (IP→name) index (E13.2), not here.
+            Qtype::Ptr | Qtype::Other(_) => LocalMatch::NameExistsNoData,
         }
     }
 }
