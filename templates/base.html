@@ -6,10 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <title>{% block title %}sagittarius{% endblock %}</title>
-    <link rel="icon" type="image/png" href="/assets/icon.png" />
-    <link rel="stylesheet" href="/assets/pico.pumpkin.min.css" />
-    <link rel="stylesheet" href="/assets/app.css" />
-    <script type="module" src="/assets/datastar.js"></script>
+    <link rel="icon" type="image/png" href="/assets/icon.png?v={{ chrome.asset_version }}" />
+    <link rel="stylesheet" href="/assets/pico.pumpkin.min.css?v={{ chrome.asset_version }}" />
+    <link rel="stylesheet" href="/assets/app.css?v={{ chrome.asset_version }}" />
+    <script type="module" src="/assets/datastar.js?v={{ chrome.asset_version }}"></script>
   </head>
   <body{% if chrome.authenticated %} data-signals:csrf="'{{ chrome.csrf_token }}'"{% endif %}>
     {% if chrome.show_nav %}

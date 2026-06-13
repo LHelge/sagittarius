@@ -97,6 +97,12 @@ impl Icons {
         Assets::serve(SPRITE.as_bytes(), "image/svg+xml; charset=utf-8")
     }
 
+    /// The rendered sprite bytes — folded into the asset cache-busting
+    /// fingerprint (see [`super::assets`]) so a changed icon set busts caches.
+    pub(crate) fn sprite_bytes() -> &'static [u8] {
+        SPRITE.as_bytes()
+    }
+
     /// Render every icon in [`ICONS`] into one hidden `<svg>` of `<symbol>`s.
     fn build_sprite() -> String {
         let mut out =
