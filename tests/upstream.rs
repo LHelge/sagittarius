@@ -21,8 +21,8 @@ use sagittarius::codec::message::{Qclass, Qtype, Question};
 use sagittarius::codec::ttl::TtlScan;
 use sagittarius::resolver::upstream::{
     DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, Error, ForwardResult, SharedUpstreamPool,
-    UpstreamClient, UpstreamConfig, UpstreamHealth, UpstreamPool, UpstreamSelector,
-    UpstreamTransport,
+    UpstreamClient, UpstreamConfig, UpstreamHealth, UpstreamObservation, UpstreamPool,
+    UpstreamSelector, UpstreamTransport,
 };
 
 // ── Mock harness ──────────────────────────────────────────────────────────────
@@ -175,8 +175,8 @@ fn silent(_req: Message) -> Option<Message> {
 struct InOrder;
 
 impl UpstreamSelector for InOrder {
-    fn order(&self, n: usize) -> Vec<usize> {
-        (0..n).collect()
+    fn order(&self, upstreams: &[UpstreamObservation]) -> Vec<usize> {
+        (0..upstreams.len()).collect()
     }
 }
 

@@ -20,7 +20,8 @@ pub use client::{UpstreamBackground, UpstreamClient};
 pub use forward::{DEFAULT_QUERY_TIMEOUT, ForwardResult};
 pub use health::{UpstreamHealth, UpstreamHealthRow};
 pub use pool::{
-    DEFAULT_FAILOVER_BUDGET, RandomSelector, SharedUpstreamPool, UpstreamPool, UpstreamSelector,
+    DEFAULT_FAILOVER_BUDGET, LatencyWeightedSelector, RandomSelector, SharedUpstreamPool,
+    UpstreamObservation, UpstreamPool, UpstreamSelector,
 };
 
 // ── Transport enum ────────────────────────────────────────────────────────────
