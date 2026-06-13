@@ -49,23 +49,15 @@
             <details class="dropdown sgt-pause-menu">
               <summary class="sgt-icon-btn sgt-pause-summary">{% call ui::icon("pause") %}{% endcall %}Pause</summary>
               <ul dir="rtl">
-                {% for mins in [5, 30, 60] %}
+                {% for (mins, label) in [(5, "5 min"), (30, "30 min"), (60, "1 h"), (1440, "24 h")] %}
                 <li>
                   <form method="post" action="/blocking/pause" class="sgt-inline-form">
                     <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
                     <input type="hidden" name="minutes" value="{{ mins }}" />
-                    <button type="submit" class="sgt-pause-opt">Pause for {{ mins }} min</button>
+                    <button type="submit" class="sgt-pause-opt">Pause for {{ label }}</button>
                   </form>
                 </li>
                 {% endfor %}
-                <li>
-                  <form method="post" action="/blocking/pause" class="sgt-pause-custom" role="group">
-                    <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
-                    <input type="number" name="minutes" min="1" max="1440" value="15"
-                           aria-label="Custom pause minutes" />
-                    <button type="submit" class="sgt-btn-sm">Pause</button>
-                  </form>
-                </li>
               </ul>
             </details>
           </li>
