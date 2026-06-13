@@ -1,16 +1,16 @@
 ---
 id: tqc
 title: E14.2 · Render hostnames in live log + top-clients
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:24:30.745948259Z
-updated: 2026-05-30T20:24:30.745948259Z
+created: "2026-05-30T20:24:30.745948259Z"
+updated: "2026-06-13T18:55:46.452934581Z"
 tags:
-- web
+  - web
 depends_on:
-- akd
-- 8w6
-- 5kt
+  - akd
+  - "8w6"
+  - "5kt"
 parent: tcb
 ---
 

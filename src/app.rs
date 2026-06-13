@@ -219,6 +219,18 @@ impl App {
                 .with_query_log(query_log_tx, Arc::clone(&query_log_state)),
         );
 
+        // ── Internal reverse-lookup service (E14) ─────────────────────────────
+        // A second handle onto the internal decision→cache→forward stack (no
+        // telemetry/protective layers), used only to resolve client IPs to
+        // hostnames for the admin UI — off the hot path, so it never pollutes
+        // the live log. Shares the same state and upstream pool as the engine.
+        let reverse = Arc::new(crate::resolver::reverse::ReverseResolver::new(
+            crate::resolver::pipeline::engine::build_internal_service(
+                Arc::clone(&state),
+                Arc::clone(&pool),
+            ),
+        ));
+
         // ── Web admin shared state ────────────────────────────────────────────
         // Built from clones before the originals are moved into the engine, so
         // the DNS engine and the admin UI share the same `ResolverState`,
@@ -234,6 +246,7 @@ impl App {
             upstream_pool: Arc::clone(&pool),
             tracker: self.tracker.clone(),
             started_at: std::time::Instant::now(),
+            reverse,
         };
 
         let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());

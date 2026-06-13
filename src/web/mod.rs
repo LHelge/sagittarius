@@ -53,7 +53,9 @@ use tracing::warn;
 use crate::{
     blocklist::scheduler::RefreshTrigger,
     config::SessionCookieSecurePolicy,
-    resolver::{state::ResolverState, upstream::SharedUpstreamPool},
+    resolver::{
+        reverse::SharedReverseResolver, state::ResolverState, upstream::SharedUpstreamPool,
+    },
     storage::{Db, settings::SettingsRepository},
     telemetry::TelemetrySink,
     web::{assets::Assets, icons::Icons},
@@ -141,6 +143,11 @@ pub struct AppState {
     /// The app task tracker, used to register the background drivers of a
     /// rebuilt upstream pool (E8.9).
     pub tracker: TaskTracker,
+    /// Internal reverse-lookup service for client-hostname decoration (E14).
+    ///
+    /// Resolves client IPs to hostnames off the hot path, from a bounded cache;
+    /// the live log and dashboard top-clients read cached names at render time.
+    pub reverse: SharedReverseResolver,
     /// Process start instant, for the dashboard uptime figure (E15.7).
     pub started_at: std::time::Instant,
 }
@@ -183,6 +190,32 @@ impl AppState {
             csrf_token: self.csrf_token(&user.session_id).into_string(),
             pause_remaining: self.pause_remaining(),
             asset_version: Assets::fingerprint(),
+        }
+    }
+
+    /// Display label for a client given as an IP **string** (e.g. a persisted
+    /// `query_log.client` value): `"hostname (ip)"` when a hostname is cached,
+    /// otherwise the bare IP.  Unparsable values pass through verbatim.
+    ///
+    /// Reads only the cache (never blocks on the network) and warms a miss in
+    /// the background so the next render shows the name (E14.2).
+    pub(crate) async fn client_label(&self, ip: &str) -> String {
+        match ip.parse::<std::net::IpAddr>() {
+            Ok(addr) => self.client_label_ip(addr).await,
+            Err(_) => ip.to_owned(),
+        }
+    }
+
+    /// Display label for a client [`IpAddr`](std::net::IpAddr): `"hostname (ip)"`
+    /// when cached, otherwise the bare IP (warming the cache for next time).
+    pub(crate) async fn client_label_ip(&self, ip: std::net::IpAddr) -> String {
+        use crate::web::render::DomainDisplay as _;
+        match self.reverse.cached(ip).await {
+            Some(name) => format!("{} ({ip})", name.to_string().display_domain()),
+            None => {
+                self.reverse.warm(ip);
+                ip.to_string()
+            }
         }
     }
 
@@ -358,6 +391,12 @@ impl AppState {
         ));
         let scheduler =
             BlocklistScheduler::new(db.blocklists(), Arc::clone(&resolver), Fetcher::new());
+        let reverse = Arc::new(crate::resolver::reverse::ReverseResolver::new(
+            crate::resolver::pipeline::engine::build_internal_service(
+                Arc::clone(&resolver),
+                Arc::clone(&upstream_pool),
+            ),
+        ));
         AppState {
             db,
             resolver,
@@ -369,6 +408,7 @@ impl AppState {
             upstream_pool,
             tracker,
             started_at: std::time::Instant::now(),
+            reverse,
         }
     }
 }
@@ -942,6 +982,161 @@ mod tests {
         assert!(
             !page.contains("old.test"),
             "rows older than 24h are excluded"
+        );
+
+        ts.shutdown().await;
+    }
+
+    /// E14.2: the live log decorates a client IP with its cached hostname
+    /// (`hostname (ip)`), and falls back to the bare IP when none is cached.
+    #[tokio::test]
+    async fn live_log_decorates_client_with_hostname() {
+        use crate::{
+            resolver::local::{LocalRecords, RecordData},
+            resolver::pipeline::Outcome,
+            storage::query_log::{QueryLogRecord, QueryLogRepository},
+        };
+
+        let ts = TestServer::login().await;
+
+        // A local A record gives the reverse index (E13.2) a hostname for the
+        // private client IP; the reverse resolver shares this resolver state.
+        let mut b = LocalRecords::builder();
+        b.add(
+            "desktop.home.lan",
+            RecordData::A("192.168.1.50".parse().unwrap()),
+            300,
+        )
+        .unwrap();
+        ts.app.resolver.local().store(b.build());
+
+        // Warm the reverse cache synchronously so the render finds the name
+        // (rendering itself only reads the cache, never blocks on a lookup).
+        let resolved = ts.app.reverse.lookup("192.168.1.50".parse().unwrap()).await;
+        assert_eq!(
+            resolved.map(|n| n.to_string()),
+            Some("desktop.home.lan.".to_owned())
+        );
+
+        let row = |row_ts: i64, client: &str, name: &str| QueryLogRecord {
+            id: 0,
+            ts: row_ts,
+            client: client.to_owned(),
+            qname: name.to_owned(),
+            qtype: "A".to_owned(),
+            outcome: Outcome::Forwarded,
+            rcode: Some(0),
+            upstream: None,
+            latency_ms: 1,
+            blocklist_id: None,
+        };
+        ts.app
+            .db
+            .query_log()
+            .insert_batch(&[
+                row(2, "192.168.1.50", "known.test."),
+                // A client we hold no hostname for renders the bare IP.
+                row(1, "203.0.113.9", "unknown.test."),
+            ])
+            .await
+            .unwrap();
+
+        let page = ts
+            .client
+            .get(ts.url("/log"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        assert!(
+            page.contains("desktop.home.lan (192.168.1.50)"),
+            "cached hostname must render as 'hostname (ip)'"
+        );
+        assert!(page.contains("203.0.113.9"), "uncached client shows the IP");
+        assert!(
+            !page.contains("203.0.113.9 ("),
+            "uncached client must not be decorated"
+        );
+
+        ts.shutdown().await;
+    }
+
+    /// E14.2: the dashboard top-clients table decorates IPs with hostnames,
+    /// while aggregation stays keyed by IP (two names for one IP don't split
+    /// the count — the hostname is display-only).
+    #[tokio::test]
+    async fn dashboard_top_clients_show_hostnames_grouped_by_ip() {
+        use crate::{
+            resolver::local::{LocalRecords, RecordData},
+            resolver::pipeline::Outcome,
+            storage::query_log::{QueryLogRecord, QueryLogRepository},
+            time::Clock,
+        };
+
+        let ts = TestServer::login().await;
+
+        let mut b = LocalRecords::builder();
+        b.add(
+            "phone.home.lan",
+            RecordData::A("192.168.1.77".parse().unwrap()),
+            300,
+        )
+        .unwrap();
+        ts.app.resolver.local().store(b.build());
+        ts.app
+            .reverse
+            .lookup("192.168.1.77".parse().unwrap())
+            .await
+            .expect("warm reverse cache");
+
+        // Three in-window queries from one IP under two different domains: the
+        // top-clients table must show a single grouped row for that IP.
+        let now = Clock::now_millis();
+        let row = |name: &str| QueryLogRecord {
+            id: 0,
+            ts: now - 1_000,
+            client: "192.168.1.77".to_owned(),
+            qname: name.to_owned(),
+            qtype: "A".to_owned(),
+            outcome: Outcome::Forwarded,
+            rcode: Some(0),
+            upstream: None,
+            latency_ms: 1,
+            blocklist_id: None,
+        };
+        ts.app
+            .db
+            .query_log()
+            .insert_batch(&[row("a.test."), row("a.test."), row("b.test.")])
+            .await
+            .unwrap();
+
+        let page = ts
+            .client
+            .get(ts.url("/"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        assert!(
+            page.contains("phone.home.lan (192.168.1.77)"),
+            "top-client IP must be decorated with its hostname"
+        );
+        // Aggregation is keyed by IP: a single grouped count of 3, not split.
+        let label_pos = page
+            .find("phone.home.lan (192.168.1.77)")
+            .expect("decorated client present");
+        assert!(
+            page[label_pos..].contains('3'),
+            "the three queries for the IP must aggregate into one count"
         );
 
         ts.shutdown().await;

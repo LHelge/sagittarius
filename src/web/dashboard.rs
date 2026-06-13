@@ -69,11 +69,26 @@ impl AppState {
 
         let system = SystemInfo::capture(&state);
 
+        // Decorate top-client IPs with their cached hostnames (E14.2).
+        // Aggregation stays keyed by IP; the hostname is display-only and is
+        // resolved once per distinct IP from the reverse-lookup cache (a miss
+        // renders the bare IP and warms the cache for the next render).
+        let mut top_clients = Vec::with_capacity(snapshot.top_clients.len());
+        for (ip, count) in &snapshot.top_clients {
+            top_clients.push((state.client_label_ip(*ip).await, group(*count)));
+        }
+        let mut window_top_clients = Vec::with_capacity(window.top_clients.len());
+        for (ip, count) in &window.top_clients {
+            window_top_clients.push((state.client_label(ip).await, group((*count).max(0) as u64)));
+        }
+
         DashboardTemplate::new(
             state.chrome("dashboard", &user).await,
             snapshot,
             blocklist_size,
             window,
+            top_clients,
+            window_top_clients,
             upstreams,
             system,
         )
@@ -201,11 +216,14 @@ struct DashboardTemplate {
 }
 
 impl DashboardTemplate {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         chrome: Chrome,
         snap: StatsSnapshot,
         blocklist_size: usize,
         window: WindowStats,
+        top_clients: Vec<(String, String)>,
+        window_top_clients: Vec<(String, String)>,
         upstreams: Vec<UpstreamRow>,
         system: SystemInfo,
     ) -> Self {
@@ -223,11 +241,9 @@ impl DashboardTemplate {
                 .into_iter()
                 .map(|(d, c)| (d.display_domain().to_owned(), group(c)))
                 .collect(),
-            top_clients: snap
-                .top_clients
-                .into_iter()
-                .map(|(ip, c)| (ip.to_string(), group(c)))
-                .collect(),
+            // Client lists arrive pre-decorated with hostnames (E14.2); the
+            // decoration is async + state-bound, so it happens in the handler.
+            top_clients,
             window_total: group(window.counts.total.max(0) as u64),
             window_blocked: group(window.counts.blocked.max(0) as u64),
             window_cached: group(window.counts.cached.max(0) as u64),
@@ -237,11 +253,7 @@ impl DashboardTemplate {
                 .into_iter()
                 .map(|(d, c)| (d.display_domain().to_owned(), group(c.max(0) as u64)))
                 .collect(),
-            window_top_clients: window
-                .top_clients
-                .into_iter()
-                .map(|(ip, c)| (ip, group(c.max(0) as u64)))
-                .collect(),
+            window_top_clients,
         }
     }
 }
@@ -319,10 +331,18 @@ mod tests {
             top_domains: vec![("win.example.com.".to_owned(), 77)],
             top_clients: vec![("10.9.8.7".to_owned(), 64)],
         };
-        let html =
-            DashboardTemplate::new(test_chrome(), snap, 65432, window, vec![], test_system())
-                .render()
-                .expect("render");
+        let html = DashboardTemplate::new(
+            test_chrome(),
+            snap,
+            65432,
+            window,
+            vec![("192.168.1.10".to_owned(), "120".to_owned())],
+            vec![("10.9.8.7".to_owned(), "64".to_owned())],
+            vec![],
+            test_system(),
+        )
+        .render()
+        .expect("render");
         // Live counters seeded as raw Datastar signal values.
         assert!(html.contains("queries: 1000"));
         assert!(html.contains("blocked: 382"));
@@ -356,9 +376,18 @@ mod tests {
             top_domains: vec![],
             top_clients: vec![],
         };
-        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, vec![], test_system())
-            .render()
-            .expect("render");
+        let html = DashboardTemplate::new(
+            test_chrome(),
+            snap,
+            0,
+            window,
+            vec![],
+            vec![],
+            vec![],
+            test_system(),
+        )
+        .render()
+        .expect("render");
         assert!(html.contains("No queries in the last 24 hours."));
     }
 
@@ -399,9 +428,18 @@ mod tests {
                 last_error: Some("upstream UDP query timed out".to_owned()),
             }),
         ];
-        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, rows, test_system())
-            .render()
-            .expect("render");
+        let html = DashboardTemplate::new(
+            test_chrome(),
+            snap,
+            0,
+            window,
+            vec![],
+            vec![],
+            rows,
+            test_system(),
+        )
+        .render()
+        .expect("render");
 
         assert!(html.contains("1.1.1.1:53"));
         assert!(
@@ -432,9 +470,18 @@ mod tests {
             top_domains: vec![],
             top_clients: vec![],
         };
-        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, vec![], test_system())
-            .render()
-            .expect("render");
+        let html = DashboardTemplate::new(
+            test_chrome(),
+            snap,
+            0,
+            window,
+            vec![],
+            vec![],
+            vec![],
+            test_system(),
+        )
+        .render()
+        .expect("render");
 
         assert!(html.contains("System"));
         assert!(html.contains("9.9.9"), "version shown");
