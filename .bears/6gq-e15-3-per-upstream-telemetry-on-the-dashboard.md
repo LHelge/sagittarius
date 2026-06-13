@@ -1,14 +1,14 @@
 ---
-id: 6gq
+id: "6gq"
 title: E15.3 · Per-upstream telemetry on the dashboard
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:47:51.594000247Z
-updated: 2026-05-30T20:47:51.594000247Z
+created: "2026-05-30T20:47:51.594000247Z"
+updated: "2026-06-13T13:03:45.339939445Z"
 tags:
-- web
+  - web
 depends_on:
-- y7h
+  - y7h
 parent: xa8
 ---
 
