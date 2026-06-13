@@ -112,6 +112,7 @@ impl QueryEvent {
             qtype = %self.qtype,
             outcome = %self.outcome,
             rcode = ?self.rcode,
+            upstream = ?self.upstream,
             latency_ms = self.latency.as_millis() as u64,
             "query processed",
         );

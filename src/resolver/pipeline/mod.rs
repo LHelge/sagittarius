@@ -291,12 +291,28 @@ pub struct PipelineResponse {
     pub bytes: Bytes,
     /// How the query was answered.
     pub outcome: Outcome,
+    /// The upstream resolver that produced the answer, when the query was
+    /// forwarded (E15). `None` for locally-answered, blocked, cached, or error
+    /// responses, which never touch an upstream. The telemetry layer reads this
+    /// to populate [`QueryEvent::upstream`](crate::telemetry::QueryEvent).
+    pub upstream: Option<SocketAddr>,
 }
 
 impl PipelineResponse {
-    /// Create a new [`PipelineResponse`].
+    /// Create a new [`PipelineResponse`] with no upstream attribution.
     pub fn new(bytes: Bytes, outcome: Outcome) -> Self {
-        Self { bytes, outcome }
+        Self {
+            bytes,
+            outcome,
+            upstream: None,
+        }
+    }
+
+    /// Attach the upstream resolver that produced this answer (E15).
+    #[must_use]
+    pub fn with_upstream(mut self, upstream: SocketAddr) -> Self {
+        self.upstream = Some(upstream);
+        self
     }
 }
 

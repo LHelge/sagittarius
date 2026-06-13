@@ -1,13 +1,13 @@
 ---
 id: x3v
 title: E15.1 · Surface answering upstream + per-attempt latency
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:47:14.131751902Z
-updated: 2026-05-30T20:47:14.131751902Z
+created: "2026-05-30T20:47:14.131751902Z"
+updated: "2026-06-13T12:49:09.988868552Z"
 tags:
-- upstream
-- dns
+  - upstream
+  - dns
 parent: xa8
 ---
 
