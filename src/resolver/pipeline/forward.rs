@@ -106,7 +106,17 @@ impl Service<DnsRequest> for ForwardService {
             let question = req.question().clone();
             let client_id = req.header().id;
 
-            match pool.forward(&question).await {
+            // E13.4: when the decision stack tagged this query with a forward
+            // zone target, route it to that zone's resolver (held in the shared
+            // ForwardZoneSet snapshot) instead of the default upstream pool. The
+            // result type is identical, so the cache-directive and txn-id logic
+            // below is unchanged.
+            let forward_result = match req.forward_target() {
+                Some(target) => state.forward_zones().forward(target, &question).await,
+                None => pool.forward(&question).await,
+            };
+
+            match forward_result {
                 Ok(fr) => {
                     // ── Cache-store policy (SPEC §5 step 9, §8) ───────────────
                     //

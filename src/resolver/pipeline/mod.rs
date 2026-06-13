@@ -79,6 +79,12 @@ pub struct DnsRequest {
     /// `false` by default.  When `true`, a [`crate::resolver::matchset`] hit
     /// in the blocklist layer should be skipped and the request forwarded.
     allow_bypass: bool,
+    /// Conditional-forward target set by the decision stack (E13.4) when the
+    /// query name matched an enabled forward zone.
+    ///
+    /// `None` for the normal path. When `Some(addr)`, the forward leaf routes the
+    /// query to this resolver instead of the default upstream pool.
+    forward_target: Option<SocketAddr>,
 }
 
 impl DnsRequest {
@@ -95,6 +101,7 @@ impl DnsRequest {
             client,
             edns,
             allow_bypass: false,
+            forward_target: None,
         }
     }
 
@@ -150,6 +157,20 @@ impl DnsRequest {
     /// allowlist entry, instructing the blocklist layer to skip its check.
     pub fn set_allow_bypass(&mut self, value: bool) {
         self.allow_bypass = value;
+    }
+
+    /// The conditional-forward target, if the decision stack routed this query
+    /// to a forward zone (E13.4).  `None` for the normal upstream path.
+    pub fn forward_target(&self) -> Option<SocketAddr> {
+        self.forward_target
+    }
+
+    /// Tag this request with a conditional-forward target.
+    ///
+    /// Called by the decision stack when the query name matches an enabled
+    /// forward zone; the forward leaf reads it to route to that resolver.
+    pub fn set_forward_target(&mut self, target: SocketAddr) {
+        self.forward_target = Some(target);
     }
 }
 

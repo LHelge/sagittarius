@@ -156,6 +156,21 @@ where
                 LocalMatch::Miss => {} // fall through
             }
 
+            // ── Stage 1c: Conditional forwarding (E13.4) ──────────────────────
+            //
+            // A query whose name falls under an enabled forward zone is routed
+            // to that zone's target resolver instead of the upstream pool. This
+            // sits below local records (a local PTR answer wins) and above the
+            // blocking stages — you do not block your own reverse zones. On a
+            // match we tag the request and fall through to the cache → forward
+            // leaf, so zone answers are cached exactly like upstream answers.
+            // `forward_zones()` returns an owned Arc; `match_target` is a cheap
+            // synchronous suffix probe (most-specific wins).
+            if let Some(target) = state.forward_zones().match_target(&name) {
+                req.set_forward_target(target);
+                return inner.call(req).await;
+            }
+
             // ── Pause gate (E12) ──────────────────────────────────────────────
             //
             // When blocking is paused, skip every blocking stage (blacklist,
@@ -246,7 +261,9 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
-    use crate::test_support::{a_query, aaaa_query, ptr_query};
+    use crate::test_support::{
+        a_query, aaaa_query, mock_udp_upstream, positive_a_handler, ptr_query,
+    };
     use crate::{
         codec::{
             header::{Header, Rcode},
@@ -255,11 +272,19 @@ mod tests {
             reader::Reader,
         },
         resolver::{
+            forward_zone::ForwardZoneSet,
             local::{LocalRecords, RecordData as LRecordData},
-            pipeline::{BoxError, DnsRequest, Outcome, PipelineResponse},
+            pipeline::{
+                BoxError, DnsRequest, Outcome, PipelineResponse, cache_layer::CacheService,
+                forward::ForwardService,
+            },
             state::{ResolverState, RuntimeSettings},
+            upstream::{RandomSelector, SharedUpstreamPool, UpstreamPool},
         },
+        storage::forward_zones::ForwardZone,
     };
+    use std::time::Duration;
+    use tokio_util::task::TaskTracker;
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -775,5 +800,157 @@ mod tests {
         assert!(hdr.aa(), "NODATA response must be authoritative");
         assert_eq!(hdr.rcode(), Rcode::NoError);
         assert_eq!(hdr.ancount, 0, "NODATA must have no answer RRs");
+    }
+
+    // ── Conditional forwarding (E13.4) ────────────────────────────────────────
+
+    /// An empty default upstream pool, so a query that is *not* zone-routed
+    /// SERVFAILs — making "Forwarded to the zone target" unambiguous.
+    async fn empty_pool() -> Arc<SharedUpstreamPool> {
+        let tracker = TaskTracker::new();
+        let pool = UpstreamPool::connect(
+            &[],
+            &tracker,
+            Arc::new(RandomSelector),
+            0,
+            Duration::from_millis(500),
+        )
+        .await;
+        Arc::new(SharedUpstreamPool::new(pool))
+    }
+
+    /// Build and install a forward-zone set mapping each `(suffix, target)` into
+    /// the shared state.
+    async fn install_zones(state: &Arc<ResolverState>, zones: &[(&str, std::net::SocketAddr)]) {
+        let tracker = TaskTracker::new();
+        let rows: Vec<ForwardZone> = zones
+            .iter()
+            .enumerate()
+            .map(|(i, (suffix, target))| ForwardZone {
+                id: i as i64 + 1,
+                zone_suffix: (*suffix).to_owned(),
+                target: Some(target.to_string()),
+                enabled: true,
+                sort_order: i as i64,
+            })
+            .collect();
+        let set = ForwardZoneSet::build(&rows, &tracker).await;
+        state.store_forward_zones(set);
+    }
+
+    /// A decision stack whose inner is the *real* cache → forward leaf, so the
+    /// forward-target tag set by the zone stage is actually honoured.
+    fn stack_with_real_inner(
+        state: Arc<ResolverState>,
+        pool: Arc<SharedUpstreamPool>,
+    ) -> DecisionStack<CacheService<ForwardService>> {
+        let forward = ForwardService::new(pool, state.clone());
+        let cached = CacheService::new(state.clone(), forward);
+        DecisionStack::new(state, cached)
+    }
+
+    /// A PTR query under an enabled zone forwards to that zone's target and the
+    /// answer is cached for the next identical query.
+    #[tokio::test]
+    async fn ptr_under_enabled_zone_forwards_and_caches() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let zone_addr = mock_udp_upstream(positive_a_handler).await;
+        install_zones(&state, &[("168.192.in-addr.arpa", zone_addr)]).await;
+
+        let stack = stack_with_real_inner(state, empty_pool().await);
+
+        let raw = ptr_query(0x0001, "1.1.168.192.in-addr.arpa");
+        let resp = stack.clone().oneshot(make_request(raw)).await.unwrap();
+        assert_eq!(
+            resp.outcome,
+            Outcome::Forwarded,
+            "zone-matched query must be forwarded, not SERVFAIL"
+        );
+        assert_eq!(
+            resp.upstream,
+            Some(zone_addr),
+            "must forward to the zone's target resolver"
+        );
+
+        // Second identical query is served from the cache.
+        let raw2 = ptr_query(0x0002, "1.1.168.192.in-addr.arpa");
+        let resp2 = stack.oneshot(make_request(raw2)).await.unwrap();
+        assert_eq!(
+            resp2.outcome,
+            Outcome::Cached,
+            "second identical zone query must be served from cache"
+        );
+    }
+
+    /// A query that matches no enabled zone falls through to the normal pipeline
+    /// (here: the empty upstream pool → SERVFAIL), proving it was not zone-routed.
+    #[tokio::test]
+    async fn non_zone_query_falls_through() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let zone_addr = mock_udp_upstream(positive_a_handler).await;
+        install_zones(&state, &[("168.192.in-addr.arpa", zone_addr)]).await;
+
+        let stack = stack_with_real_inner(state, empty_pool().await);
+
+        let raw = a_query(0x0003, "example.com");
+        let resp = stack.oneshot(make_request(raw)).await.unwrap();
+        assert_eq!(
+            resp.outcome,
+            Outcome::Servfail,
+            "a non-matching name must take the normal upstream path"
+        );
+    }
+
+    /// With no enabled zones (empty set, the disabled/untargeted default), even a
+    /// reverse query is ignored by the forwarder and takes the normal path.
+    #[tokio::test]
+    async fn no_enabled_zones_ignores_reverse_query() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+        // Seeded zones are all disabled with NULL target, so the live set is empty.
+
+        let stack = stack_with_real_inner(state, empty_pool().await);
+
+        let raw = ptr_query(0x0004, "1.1.168.192.in-addr.arpa");
+        let resp = stack.oneshot(make_request(raw)).await.unwrap();
+        assert_eq!(
+            resp.outcome,
+            Outcome::Servfail,
+            "with no enabled zones the reverse query must not be zone-routed"
+        );
+    }
+
+    /// When two enabled zones overlap, the most-specific one wins on the hot path.
+    #[tokio::test]
+    async fn most_specific_zone_wins_in_pipeline() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let general = mock_udp_upstream(positive_a_handler).await;
+        let specific = mock_udp_upstream(positive_a_handler).await;
+        install_zones(
+            &state,
+            &[
+                ("10.in-addr.arpa", general),
+                ("0.10.in-addr.arpa", specific),
+            ],
+        )
+        .await;
+
+        let stack = stack_with_real_inner(state, empty_pool().await);
+
+        // Falls under both zones; the more-specific 0.10.in-addr.arpa must win.
+        let raw = ptr_query(0x0005, "5.1.0.10.in-addr.arpa");
+        let resp = stack.oneshot(make_request(raw)).await.unwrap();
+        assert_eq!(resp.outcome, Outcome::Forwarded);
+        assert_eq!(
+            resp.upstream,
+            Some(specific),
+            "the most-specific zone's target must answer"
+        );
     }
 }

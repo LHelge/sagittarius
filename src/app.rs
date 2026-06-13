@@ -29,7 +29,7 @@ use crate::{
         state::ResolverState,
         upstream::{SharedUpstreamPool, UpstreamConfig},
     },
-    storage::{Db, upstreams::UpstreamRepository},
+    storage::{Db, forward_zones::ForwardZoneRepository, upstreams::UpstreamRepository},
     telemetry::{
         LiveLog, QUERY_LOG_CHANNEL_CAPACITY, QueryLogPurger, QueryLogWriter, Stats, TelemetrySink,
     },
@@ -197,6 +197,16 @@ impl App {
             .await,
         ));
         drop(settings);
+
+        // ── Conditional-forward zones (E13.4) ─────────────────────────────────
+        // Build the zone forwarders from the enabled-and-targeted rows and
+        // install them into the shared state before serving, so reverse-DNS /
+        // split-horizon queries route correctly from the first datagram.
+        let forward_zone_rows = db.forward_zones().list_enabled().await?;
+        let forward_zones =
+            crate::resolver::forward_zone::ForwardZoneSet::build(&forward_zone_rows, &self.tracker)
+                .await;
+        state.store_forward_zones(forward_zones);
 
         // Persist query events off the hot path: the sink `try_send`s onto a
         // bounded channel that a dedicated writer task drains into SQLite.

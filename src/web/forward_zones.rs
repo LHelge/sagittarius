@@ -30,6 +30,16 @@ use crate::{
 };
 
 impl AppState {
+    /// Rebuild the live conditional-forward zone set from the enabled-and-targeted
+    /// rows and swap it into the shared resolver state, so a zone edit takes
+    /// effect immediately (mirrors [`rebuild_upstream_pool`](Self::rebuild_upstream_pool)).
+    pub(crate) async fn rebuild_forward_zones(&self) -> WebResult<()> {
+        let rows = self.db.forward_zones().list_enabled().await?;
+        let set = crate::resolver::forward_zone::ForwardZoneSet::build(&rows, &self.tracker).await;
+        self.resolver.store_forward_zones(set);
+        Ok(())
+    }
+
     async fn render_forwarding(
         &self,
         user: &CurrentUser,
@@ -85,7 +95,7 @@ impl AppState {
             .forward_zones()
             .set_target(form.id, target.as_deref())
             .await?;
-        Ok(())
+        self.rebuild_forward_zones().await
     }
 
     /// `POST /forwarding/toggle` — enable/disable one zone.
@@ -99,6 +109,7 @@ impl AppState {
             .forward_zones()
             .set_enabled(form.id, form.enabled)
             .await?;
+        state.rebuild_forward_zones().await?;
         Ok(Redirect::to("/forwarding").into_response())
     }
 
@@ -130,7 +141,7 @@ impl AppState {
             repo.set_target(zone.id, Some(&target)).await?;
             repo.set_enabled(zone.id, true).await?;
         }
-        Ok(())
+        self.rebuild_forward_zones().await
     }
 }
 
