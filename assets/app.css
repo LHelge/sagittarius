@@ -13,6 +13,22 @@
   --sgt-accent: var(--pico-primary);
 }
 
+/* ── Icons ───────────────────────────────────────────────────────────────── */
+
+/* Inline Lucide icon (served as a sprite from /assets/icons.svg, see
+ * src/web/icons.rs). Sized to the surrounding text (1em) and inheriting its
+ * colour via currentColor, so icons track font-size and theme automatically.
+ * The slight negative baseline nudge aligns the optical centre with text. */
+.sgt-icon {
+  width: 1em;
+  height: 1em;
+  display: inline-block;
+  vertical-align: -0.125em;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+}
+
 /* ── Top navigation bar ─────────────────────────────────────────────────── */
 
 .sgt-topbar {

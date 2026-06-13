@@ -82,7 +82,10 @@ impl Assets {
 
     /// Build a cacheable response for a static byte slice with a fixed
     /// content type.
-    fn serve(body: &'static [u8], content_type: &'static str) -> Response {
+    ///
+    /// Shared with the generated icon sprite (`super::icons`) so every vendored
+    /// asset gets identical immutable-cache headers from one place.
+    pub(crate) fn serve(body: &'static [u8], content_type: &'static str) -> Response {
         (
             [
                 (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),

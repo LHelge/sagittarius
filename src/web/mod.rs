@@ -25,6 +25,7 @@ pub mod crypto;
 pub mod csrf;
 pub mod dashboard;
 pub mod forward_zones;
+pub mod icons;
 pub mod lists;
 pub mod live_log;
 pub mod origin;
@@ -55,7 +56,7 @@ use crate::{
     resolver::{state::ResolverState, upstream::SharedUpstreamPool},
     storage::{Db, settings::SettingsRepository},
     telemetry::TelemetrySink,
-    web::assets::Assets,
+    web::{assets::Assets, icons::Icons},
 };
 use tokio_util::task::TaskTracker;
 
@@ -255,6 +256,7 @@ impl AppState {
             .route("/assets/datastar.js", get(Assets::datastar_js))
             .route("/assets/pico.pumpkin.min.css", get(Assets::pico_css))
             .route("/assets/app.css", get(Assets::app_css))
+            .route("/assets/icons.svg", get(Icons::sprite))
             .route("/assets/icon.png", get(Assets::icon_png))
             .route("/favicon.ico", get(Assets::icon_png))
             // CSRF protection wraps every route; it self-skips safe methods and
