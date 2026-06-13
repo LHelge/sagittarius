@@ -1,14 +1,14 @@
 ---
-id: 2pd
+id: "2pd"
 title: E13.4 · Conditional-forward routing (hot path)
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:23:58.736362293Z
-updated: 2026-05-30T20:23:58.736362293Z
+created: "2026-05-30T20:23:58.736362293Z"
+updated: "2026-06-13T14:50:00.254310055Z"
 tags:
-- dns
+  - dns
 depends_on:
-- gkd
+  - gkd
 parent: s2e
 ---
 

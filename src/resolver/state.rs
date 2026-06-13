@@ -44,6 +44,7 @@ use crate::{
     resolver::{
         self,
         cache::DnsCache,
+        forward_zone::ForwardZoneSet,
         local::{LocalMatcher, LocalRecords, RecordData},
         matchset::{AttributedSet, MatchSet},
     },
@@ -169,6 +170,13 @@ pub struct ResolverState {
     cache: DnsCache,
     /// Hot-swappable operational settings snapshot.
     settings: ArcSwap<RuntimeSettings>,
+    /// Hot-swappable conditional-forward zone set (E13.4).
+    ///
+    /// Starts empty at hydration; the app wiring builds the real set (which
+    /// needs a [`TaskTracker`](tokio_util::task::TaskTracker) to connect the
+    /// forwarders) and installs it before serving. Admin edits rebuild and swap
+    /// it via [`store_forward_zones`](Self::store_forward_zones).
+    forward_zones: ArcSwap<ForwardZoneSet>,
     /// Unix-second deadline until which all blocking is paused (E12).
     ///
     /// `0` means active (not paused). When `Clock::now_secs()` is below a
@@ -258,6 +266,27 @@ impl ResolverState {
     /// immediately (SPEC §3.2).
     pub fn store_settings(&self, new_settings: RuntimeSettings) {
         self.settings.store(Arc::new(new_settings));
+    }
+
+    // ── Conditional-forward zones (E13.4) ─────────────────────────────────────
+
+    /// Load the current [`ForwardZoneSet`] snapshot as an owned [`Arc`].
+    ///
+    /// Returns a full `Arc` (not a borrow guard) so the hot path can hold the
+    /// snapshot alive across the `.await` of a zone forward without blocking a
+    /// concurrent [`store_forward_zones`](Self::store_forward_zones).
+    #[must_use]
+    pub fn forward_zones(&self) -> Arc<ForwardZoneSet> {
+        self.forward_zones.load_full()
+    }
+
+    /// Atomically install a freshly-built [`ForwardZoneSet`].
+    ///
+    /// The app wiring calls this once at startup; the admin UI calls it after
+    /// persisting a forward-zone change. In-flight queries finish on the old
+    /// snapshot.
+    pub fn store_forward_zones(&self, set: ForwardZoneSet) {
+        self.forward_zones.store(Arc::new(set));
     }
 
     // ── Pause control (E12) ───────────────────────────────────────────────────
@@ -354,6 +383,8 @@ impl ResolverState {
             local,
             cache,
             settings: ArcSwap::from_pointee(runtime_settings),
+            // Empty until the app wiring builds the real forwarders (E13.4).
+            forward_zones: ArcSwap::from_pointee(ForwardZoneSet::empty()),
             paused_until: AtomicI64::new(0),
         }))
     }

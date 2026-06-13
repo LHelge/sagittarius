@@ -30,6 +30,7 @@
 //! | [`upstream`] | Hickory-backed upstream transport clients (UDP/TCP/DoT/DoH) (SPEC §7) |
 
 pub mod cache;
+pub mod forward_zone;
 pub mod local;
 pub mod matchset;
 pub mod pipeline;
