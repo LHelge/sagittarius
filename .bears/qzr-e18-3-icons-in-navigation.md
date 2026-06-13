@@ -1,10 +1,10 @@
 ---
 id: qzr
 title: E18.3 — Icons in navigation
-status: open
+status: done
 priority: P2
 created: "2026-06-13T14:58:58.649284182Z"
-updated: "2026-06-13T14:58:58.649284182Z"
+updated: "2026-06-13T16:50:49.407645404Z"
 tags:
   - web
   - ui
