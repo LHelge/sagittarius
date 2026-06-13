@@ -46,7 +46,11 @@ use tower::{Service, ServiceExt as _};
 use tracing::{debug, trace, warn};
 
 use crate::{
-    codec::{framing, message::Query, synth::Response},
+    codec::{
+        framing,
+        message::{Query, RejectAction},
+        synth::Response,
+    },
     resolver::pipeline::{BoxError, DnsRequest, PipelineResponse, middleware::ClassifyRejection},
 };
 
@@ -442,12 +446,18 @@ where
         let query = match Query::try_from(raw) {
             Ok(q) => q,
             Err(e) => {
-                if let Some(id) = e.id {
-                    trace!(peer = %peer, id, "UDP FORMERR");
-                    let formerr = Response::formerr(id);
-                    let _ = socket.send_to(&formerr, peer).await;
-                } else {
-                    trace!(peer = %peer, "UDP datagram too short to recover id; dropping");
+                match e.reject_action() {
+                    RejectAction::Drop => {
+                        trace!(peer = %peer, "UDP datagram dropped (response or unrecoverable)");
+                    }
+                    RejectAction::FormErr(id) => {
+                        trace!(peer = %peer, id, "UDP FORMERR");
+                        let _ = socket.send_to(&Response::formerr(id), peer).await;
+                    }
+                    RejectAction::NotImp(id) => {
+                        trace!(peer = %peer, id, "UDP NOTIMP (unsupported opcode)");
+                        let _ = socket.send_to(&Response::notimp(id), peer).await;
+                    }
                 }
                 return;
             }
@@ -561,25 +571,27 @@ where
             let query = match Query::try_from(raw) {
                 Ok(q) => q,
                 Err(e) => {
-                    if let Some(id) = e.id {
-                        // Recoverable FORMERR — send it and continue the pipeline.
-                        let formerr = Response::formerr(id);
-                        let framed = match framing::tcp::try_encode_length_prefix(&formerr) {
-                            Ok(frame) => frame,
-                            Err(e) => {
-                                debug!(peer = %peer, error = %e, "TCP FORMERR too large to frame");
-                                return;
-                            }
-                        };
-                        if stream.write_all(&framed).await.is_err() {
+                    // Pick the error reply (or close on a drop), then frame and
+                    // send it and continue the pipelined connection.
+                    let reply = match e.reject_action() {
+                        RejectAction::FormErr(id) => Response::formerr(id),
+                        RejectAction::NotImp(id) => Response::notimp(id),
+                        RejectAction::Drop => {
+                            trace!(peer = %peer, "TCP message dropped (response or unrecoverable); closing");
                             return;
                         }
-                        continue;
-                    } else {
-                        // Unrecoverable — close the connection.
-                        trace!(peer = %peer, "TCP unrecoverable parse error; closing");
+                    };
+                    let framed = match framing::tcp::try_encode_length_prefix(&reply) {
+                        Ok(frame) => frame,
+                        Err(e) => {
+                            debug!(peer = %peer, error = %e, "TCP error reply too large to frame");
+                            return;
+                        }
+                    };
+                    if stream.write_all(&framed).await.is_err() {
                         return;
                     }
+                    continue;
                 }
             };
 
