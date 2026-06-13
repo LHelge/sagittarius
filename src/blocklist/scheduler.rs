@@ -220,6 +220,26 @@ impl BlocklistScheduler {
         let text = String::from_utf8_lossy(&body);
         let names = Parser::from(source.format).parse(&text);
         let count = names.len();
+
+        // A 200 that parses to zero domains is almost always breakage — an empty
+        // body, a soft-404 HTML error page, or a moved endpoint — not a list
+        // someone deliberately emptied. Accepting it would silently drop the
+        // source's contribution and, worse, overwrite the on-disk cache,
+        // poisoning the last-good fallback for the next 304/error. Treat it as a
+        // soft failure: keep the cached content and leave the cache + validators
+        // untouched so the next cycle re-fetches.
+        if count == 0 {
+            warn!(
+                id = source.id,
+                url = %source.url,
+                "refresh: 200 but parsed zero domains; keeping last-good cache"
+            );
+            summary.failed += 1;
+            return self
+                .add_cached_source(source, aggregator, "empty 200 body")
+                .await;
+        }
+
         aggregator.add(source.id, names);
 
         if let Err(e) = self.repo.save_cache(source.id, &body).await {
@@ -732,6 +752,67 @@ mod tests {
         assert!(
             state.blocklist().contains(&tracker),
             "tracker must be present after 304"
+        );
+    }
+
+    /// A 200 that parses to zero domains (empty body or a soft-404 HTML page)
+    /// must be rejected as a soft failure: keep the last-good cached domains and
+    /// do not overwrite the on-disk cache.
+    #[tokio::test]
+    async fn refresh_once_empty_200_retains_cached_domains() {
+        let server = MockServer::start().await;
+
+        // The server now returns a 200 with an empty body (e.g. URL rot).
+        Mock::given(method("GET"))
+            .and(path("/hosts.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(""))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/hosts.txt", server.uri());
+
+        let (_dir, db) = open_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+        let repo = db.blocklists();
+
+        let src = repo
+            .insert(NewBlocklist {
+                url,
+                format: BlocklistFormat::Hosts,
+                enabled: true,
+            })
+            .await
+            .expect("insert");
+
+        // Pre-seed the last-good cache with two domains.
+        let body = b"0.0.0.0 ads.example.com\n0.0.0.0 tracker.example.org\n";
+        repo.save_cache(src.id, body).await.expect("save_cache");
+
+        let scheduler = make_scheduler(&db, Arc::clone(&state));
+        let summary = scheduler.refresh_once().await.expect("refresh_once");
+
+        // The empty 200 is counted as a failure, not a fetch.
+        assert_eq!(summary.fetched, 0, "empty body must not count as fetched");
+        assert_eq!(summary.failed, 1, "empty 200 is a soft failure");
+
+        // Last-good domains survive (fell back to the cache).
+        let ads: crate::codec::name::Name = "ads.example.com".parse().unwrap();
+        let tracker: crate::codec::name::Name = "tracker.example.org".parse().unwrap();
+        assert!(
+            state.blocklist().contains(&ads),
+            "ads must survive an empty 200"
+        );
+        assert!(
+            state.blocklist().contains(&tracker),
+            "tracker must survive an empty 200"
+        );
+
+        // The on-disk cache must NOT have been overwritten by the empty body.
+        let cached = repo.load_cache(src.id).await.expect("load_cache");
+        assert_eq!(
+            cached.map(|c| c.content),
+            Some(body.to_vec()),
+            "the empty body must not poison the last-good cache"
         );
     }
 
