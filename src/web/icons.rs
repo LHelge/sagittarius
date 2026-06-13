@@ -55,6 +55,24 @@ const ICONS: &[(&str, &icondata_core::IconData)] = &[
     ("add", icondata_lu::LuPlus),
     ("remove", icondata_lu::LuTrash2),
     ("refresh", icondata_lu::LuRefreshCw),
+    // Dashboard section headings.
+    ("live", icondata_lu::LuActivity),
+    ("system", icondata_lu::LuServer),
+    ("history", icondata_lu::LuHistory),
+    ("health", icondata_lu::LuHeartPulse),
+    ("talkers", icondata_lu::LuTrendingUp),
+    // Dashboard stat-card metrics.
+    ("queries", icondata_lu::LuActivity),
+    ("blocked", icondata_lu::LuBan),
+    ("ratio", icondata_lu::LuPercent),
+    ("cached", icondata_lu::LuDatabase),
+    ("forwarded", icondata_lu::LuForward),
+    ("domains", icondata_lu::LuList),
+    ("clients", icondata_lu::LuUsers),
+    ("version", icondata_lu::LuTag),
+    ("uptime", icondata_lu::LuClock),
+    ("qps", icondata_lu::LuGauge),
+    ("memory", icondata_lu::LuMemoryStick),
 ];
 
 /// The rendered sprite, built once on first request and cached for the process
