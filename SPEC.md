@@ -212,6 +212,16 @@ DoT/DoH); it is not used to deserialize received messages on the hot path.
      queries, blocked count/ratio, top domains, top clients) maintained as
      queries flow. These are the *since-startup* live figures; the dashboard also
      shows a restart-surviving window computed from `query_log` (§9).
+   - **Reverse-lookup cache** — a bounded, TTL'd `moka` map (`IpAddr →
+     Option<name>`) backing the admin UI's client-hostname decoration (§9).
+     Names are resolved **off the hot path** through an internal copy of the
+     resolution stack — local PTR synth / conditional forwarding for private IPs,
+     the upstream pool otherwise (§5) — and the result, *including "no hostname"*
+     (negative caching), is remembered so a chatty log issues at most one lookup
+     per distinct IP per TTL window. Render-time reads consult only the cache;
+     misses render the bare IP and warm the entry in the background. The internal
+     stack omits the telemetry/protective layers, so these lookups never appear
+     in the live log or count toward stats.
 
 5. **Upstream client** — forwards cache-miss, non-blocked, non-local queries to
    configured upstream resolvers over plain UDP/TCP and encrypted DoT/DoH.
@@ -580,7 +590,9 @@ null-IP / custom, per the configured block mode) and authoritative local
 - **Capabilities:**
   - Dashboard: sections of figures (no charts). The **live (since-startup)**
     cards — total queries, blocked count/ratio, top blocked domains, top clients
-    — come from the in-memory runtime counters and update over SSE. A **last-24h
+    — come from the in-memory runtime counters and update over SSE. Top-client
+    entries are labelled with their **device hostname (IP fallback)**, resolved
+    internally and grouped by IP (§3.1). A **last-24h
     (persisted)** section is computed from `query_log` aggregates and so survives
     restart. A **System** panel shows version, uptime, queries/sec, cache fill
     (entries / capacity), and the process's own resident memory; uptime and qps
@@ -590,7 +602,10 @@ null-IP / custom, per the configured block mode) and authoritative local
   - Live query log: the page seeds the newest page of history from the
     `query_log` table and then streams the real-time tail over SSE, with
     **scroll-back** (`Load older` paginates further back by row id) and
-    client-side filtering. **One-click list management**: rows blocked by the
+    client-side filtering. Each row shows the client as its **device hostname
+    with an IP fallback** (`hostname (ip)`), resolved internally from the
+    reverse-lookup cache (§3.1) and searchable in the text filter. **One-click
+    list management**: rows blocked by the
     blocklist expose a *Whitelist* action (add to the allowlist), and
     forwarded/cached resolved rows expose a *Blacklist* action (add to the admin
     blacklist). Rows whose outcome would make the action ineffective (for
@@ -722,6 +737,17 @@ null-IP / custom, per the configured block mode) and authoritative local
   retention deliberately, or disable logging, to match their privacy obligations;
   the database file itself should be protected like any store of personal data.
   Log verbosity (the stdout stream) remains independently configurable.
+- For the admin UI's hostname decoration (§9), Sagittarius issues **reverse
+  (PTR) lookups for client IPs** through its own resolver — private IPs against
+  the LAN (local records / conditional forwarding), public client IPs via the
+  upstream pool, which discloses those IPs to the upstream like any other query.
+  Results are held in a bounded, negatively-cached runtime map (§3.1), so a busy
+  log triggers at most one lookup per distinct IP per TTL window. The decoration
+  is display-only and adds no new persistence beyond the client IP that
+  `query_log` already stores (above). There is no separate opt-out toggle in
+  v0.2; operators who must avoid the upstream PTR traffic can disable query
+  logging (which empties the surfaces that drive decoration) or restrict
+  upstream egress.
 
 ---
 
@@ -769,8 +795,10 @@ each feature is filled in as it lands; this list is the milestone scope.
   private `in-addr.arpa` / `ip6.arpa` zones to the router/DHCP via a general
   `forward_zones` mechanism (§4, §5) that also serves split-horizon forward
   zones later.
-- **Client hostname decoration** (E14) — show device hostnames (IP fallback) in
-  the live log and top-clients via internal, cached reverse lookups.
+- **Client hostname decoration** (E14) — *shipped*: shows device hostnames (IP
+  fallback) in the live log and dashboard top-clients via an internal,
+  bounded-and-negatively-cached reverse-lookup service (§3.1) that resolves
+  client IPs off the hot path. Depends on reverse DNS (E13) for private IPs.
 - **Upstream selection & health** (E15) — per-upstream response-time tracking
   and telemetry, plus selection strategies beyond random (latency-weighted and
   parallel).
