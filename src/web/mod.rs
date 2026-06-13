@@ -656,6 +656,26 @@ mod tests {
         assert_eq!(r.status(), 303, "expired session must redirect to login");
         assert_eq!(r.headers().get("location").unwrap(), "/login");
 
+        // Regression: the now-expired cookie is still in the browser. A login
+        // POST that carries it must NOT be CSRF-rejected — the dead session
+        // binds no token, so the guard treats it as pre-auth and the handler
+        // establishes a fresh session. (Previously this 403'd, locking the user
+        // out until they manually cleared the cookie.)
+        let r = client
+            .post(format!("{base}/login"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("origin", &base)
+            .header("cookie", &cookie)
+            .body("username=admin&password=s3cret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            303,
+            "login with a stale session cookie must not be CSRF-rejected"
+        );
+
         // Re-login, then logout: the cookie is cleared and the session deleted.
         let r = client
             .post(format!("{base}/login"))
