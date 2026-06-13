@@ -11,6 +11,11 @@
    * accretion-disc of the logo) so the accent stays in sync with the theme
    * across light/dark modes instead of being hardcoded here. */
   --sgt-accent: var(--pico-primary);
+
+  /* Pico sizes everything in rem, so trimming the root font-size scales the
+   * whole admin UI down a notch — titles, body text, inputs, and spacing —
+   * for a denser, less oversized feel. */
+  font-size: 87.5%;
 }
 
 /* ── Icons ───────────────────────────────────────────────────────────────── */
@@ -116,12 +121,106 @@ summary:has(.sgt-icon) {
   line-height: 1;
   background: transparent;
   border: none;
-  color: var(--pico-color);
+  /* `inherit`, not `var(--pico-color)`: Pico scopes --pico-color to #000 on
+   * form controls, which would render the icon black (invisible) in dark mode.
+   * Inheriting the navbar's text colour stays correct in both themes. */
+  color: inherit;
   cursor: pointer;
 }
 
 .sgt-hamburger:hover {
   color: var(--sgt-accent);
+}
+
+/* ── Far-right icon controls (settings, theme, pause, logout) ─────────────── */
+
+/* Borderless icon buttons/links — no Pico form chrome, just the glyph, which
+ * picks up the accent on hover/active. Scoped under .sgt-topbar so they beat
+ * Pico's button/summary styling. */
+.sgt-topbar .sgt-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+  width: auto;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-decoration: none;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sgt-topbar .sgt-icon-btn:hover,
+.sgt-topbar .sgt-icon-btn[aria-current="page"] {
+  background: transparent;
+  color: var(--sgt-accent);
+}
+
+/* Icon-only controls (settings, theme, logout) get a slightly larger glyph. */
+.sgt-topbar .sgt-icon-btn .sgt-icon {
+  font-size: 1.3rem;
+}
+
+/* Pause keeps a text label, so match its icon to the label size. */
+.sgt-topbar .sgt-pause-summary .sgt-icon {
+  font-size: 1.1em;
+}
+
+/* Strip Pico's select-style chrome from BOTH topbar dropdown summaries (Lists
+ * and Pause): Pico's `details.dropdown>summary:not([role])` (specificity 0,2,2)
+ * paints a border, a form background and a muted placeholder colour, so match
+ * that specificity to undo it and blend the summaries into the bar. The ▾ caret
+ * (a ::after image) is left intact to signal the menu. */
+.sgt-topbar details.dropdown summary {
+  height: auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+}
+
+.sgt-topbar details.dropdown summary:hover,
+.sgt-topbar details.dropdown summary:focus,
+.sgt-topbar details.dropdown summary:active {
+  border: none;
+  background: transparent;
+  color: var(--sgt-accent);
+}
+
+/* ── "Lists" submenu — blends in as a borderless nav item ─────────────────── */
+
+.sgt-lists-menu {
+  margin: 0;
+}
+
+.sgt-topbar .sgt-lists-menu summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: auto;
+  padding: 0.25rem 0.6rem;
+  background: transparent;
+  border: none;
+  border-radius: var(--pico-border-radius);
+  color: inherit;
+  cursor: pointer;
+}
+
+.sgt-topbar .sgt-lists-menu summary[aria-current="page"] {
+  background: color-mix(in srgb, var(--sgt-accent) 18%, transparent);
+  color: var(--sgt-accent);
+  font-weight: 600;
+}
+
+.sgt-lists-menu summary .sgt-icon {
+  font-size: 1.1em;
+}
+
+.sgt-lists-menu ul a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 /* ── Pause control + banner (E12) ────────────────────────────────────────── */
@@ -145,7 +244,9 @@ summary:has(.sgt-icon) {
   text-align: start;
   background: transparent;
   border: none;
-  color: var(--pico-color);
+  /* `inherit` rather than var(--pico-color); see .sgt-hamburger note — Pico's
+   * form-control --pico-color is black and would be invisible in dark mode. */
+  color: inherit;
   font-size: 0.85rem;
 }
 
