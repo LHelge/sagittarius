@@ -330,8 +330,13 @@ summary:has(.sgt-icon) {
 }
 .sgt-toast:empty { display: none; }
 
-/* Let dense management tables scroll horizontally on small screens. */
-.sgt-table-wrap { overflow-x: auto; }
+/* Let dense management tables scroll horizontally on small screens, with
+ * momentum scrolling on touch devices. The partially-clipped trailing column
+ * is the scroll affordance. */
+.sgt-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 
 /* ── Mobile navigation drawer ─────────────────────────────────────────────
  * Below this width the link row and authenticated controls collapse behind
@@ -366,5 +371,25 @@ summary:has(.sgt-icon) {
   /* Roomier tap targets for links once they're stacked in the drawer. */
   .sgt-nav a {
     padding: 0.5rem 0.6rem;
+  }
+
+  /* Stack multi-field add/action forms so each control is full-width and
+   * easily tappable instead of being crammed onto one line. (Only the
+   * top-level <form> rows — in-table <div> action groups keep their layout.) */
+  form.sgt-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* Comfortable touch targets for the dense table-row buttons. */
+  .sgt-btn-sm {
+    padding: 0.45rem 0.7rem;
+    font-size: 0.85rem;
+  }
+
+  /* The paused banner reads better with tighter padding on a phone. */
+  .sgt-paused {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.85rem;
   }
 }
