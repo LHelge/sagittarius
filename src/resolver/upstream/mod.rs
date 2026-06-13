@@ -13,10 +13,12 @@ use std::fmt;
 
 pub mod client;
 pub mod forward;
+pub mod health;
 pub mod pool;
 
 pub use client::{UpstreamBackground, UpstreamClient};
 pub use forward::{DEFAULT_QUERY_TIMEOUT, ForwardResult};
+pub use health::{UpstreamHealth, UpstreamHealthRow};
 pub use pool::{
     DEFAULT_FAILOVER_BUDGET, RandomSelector, SharedUpstreamPool, UpstreamPool, UpstreamSelector,
 };

@@ -21,7 +21,8 @@ use sagittarius::codec::message::{Qclass, Qtype, Question};
 use sagittarius::codec::ttl::TtlScan;
 use sagittarius::resolver::upstream::{
     DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, Error, ForwardResult, SharedUpstreamPool,
-    UpstreamClient, UpstreamConfig, UpstreamPool, UpstreamSelector, UpstreamTransport,
+    UpstreamClient, UpstreamConfig, UpstreamHealth, UpstreamPool, UpstreamSelector,
+    UpstreamTransport,
 };
 
 // ── Mock harness ──────────────────────────────────────────────────────────────
@@ -349,7 +350,7 @@ async fn pool_timeout_failover_to_second_upstream() {
     let q = example_com_a();
     let result = tokio::time::timeout(
         Duration::from_secs(5), // outer safety net
-        pool.forward(&q),
+        pool.forward(&q, &UpstreamHealth::new()),
     )
     .await
     .expect("safety timeout: failover took too long")
@@ -383,9 +384,12 @@ async fn pool_all_fail_returns_all_upstreams_failed() {
     .await;
 
     let q = example_com_a();
-    let result = tokio::time::timeout(Duration::from_secs(5), pool.forward(&q))
-        .await
-        .expect("safety timeout");
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        pool.forward(&q, &UpstreamHealth::new()),
+    )
+    .await
+    .expect("safety timeout");
 
     assert!(
         matches!(result, Err(Error::AllUpstreamsFailed { attempts: 2 })),
@@ -476,10 +480,13 @@ async fn pool_connect_with_defaults_random_selector() {
     let pool = UpstreamPool::connect_with_defaults(&[udp_config(addr)], &tracker).await;
 
     let q = example_com_a();
-    let result = tokio::time::timeout(Duration::from_secs(5), pool.forward(&q))
-        .await
-        .expect("safety timeout")
-        .expect("forward must succeed with RandomSelector");
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        pool.forward(&q, &UpstreamHealth::new()),
+    )
+    .await
+    .expect("safety timeout")
+    .expect("forward must succeed with RandomSelector");
 
     assert!(!result.is_negative);
 }
