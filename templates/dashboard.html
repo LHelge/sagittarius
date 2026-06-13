@@ -95,6 +95,36 @@
   </article>
 </div>
 
+<h2 class="sgt-section-title">Upstream health (since startup)</h2>
+{% if upstreams.is_empty() %}
+<p class="sgt-muted">No upstream queries yet.</p>
+{% else %}
+<div class="sgt-table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Upstream</th>
+        <th class="sgt-num">Queries</th>
+        <th class="sgt-num">Success</th>
+        <th class="sgt-num">Latency</th>
+        <th>Last error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in upstreams %}
+      <tr>
+        <td class="sgt-mono">{{ u.addr }}</td>
+        <td class="sgt-num">{{ u.queries }}</td>
+        <td class="sgt-num">{{ u.success_rate }}</td>
+        <td class="sgt-num">{{ u.latency }}</td>
+        <td class="sgt-mono">{% if u.last_error.is_empty() %}—{% else %}{{ u.last_error }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <h2 class="sgt-section-title">Top talkers (since startup)</h2>
 <div class="sgt-columns">
   <article>

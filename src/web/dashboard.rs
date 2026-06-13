@@ -19,6 +19,7 @@ use axum::{extract::State, response::IntoResponse};
 use std::time::Duration;
 
 use crate::{
+    resolver::upstream::UpstreamHealthRow,
     storage::query_log::{QueryLogCounts, QueryLogRepository},
     telemetry::StatsSnapshot,
     time::{self, Clock},
@@ -56,12 +57,47 @@ impl AppState {
                 .unwrap_or_default(),
         };
 
+        // Per-upstream health (E15.2): in-memory, since-startup, refreshed on
+        // navigation.
+        let upstreams = state
+            .upstream_pool
+            .health()
+            .snapshot()
+            .into_iter()
+            .map(UpstreamRow::from)
+            .collect();
+
         DashboardTemplate::new(
             state.chrome("dashboard", &user).await,
             snapshot,
             blocklist_size,
             window,
+            upstreams,
         )
+    }
+}
+
+/// A per-upstream health row, pre-formatted for display (E15.3).
+struct UpstreamRow {
+    addr: String,
+    queries: String,
+    success_rate: String,
+    latency: String,
+    last_error: String,
+}
+
+impl From<UpstreamHealthRow> for UpstreamRow {
+    fn from(row: UpstreamHealthRow) -> Self {
+        Self {
+            addr: row.addr.to_string(),
+            queries: group(row.attempts()),
+            success_rate: format!("{:.1}%", row.success_rate * 100.0),
+            latency: row
+                .ewma_latency_ms
+                .map(|ms| format!("{ms:.1} ms"))
+                .unwrap_or_else(|| "—".to_owned()),
+            last_error: row.last_error.unwrap_or_default(),
+        }
     }
 }
 
@@ -95,6 +131,8 @@ struct DashboardTemplate {
     window_forwarded: String,
     window_top_domains: Vec<(String, String)>,
     window_top_clients: Vec<(String, String)>,
+    // Per-upstream health (in-memory, since-startup).
+    upstreams: Vec<UpstreamRow>,
 }
 
 impl DashboardTemplate {
@@ -103,9 +141,11 @@ impl DashboardTemplate {
         snap: StatsSnapshot,
         blocklist_size: usize,
         window: WindowStats,
+        upstreams: Vec<UpstreamRow>,
     ) -> Self {
         Self {
             chrome,
+            upstreams,
             total: snap.total,
             blocked: snap.blocked,
             cached: snap.cached,
@@ -200,7 +240,7 @@ mod tests {
             top_domains: vec![("win.example.com.".to_owned(), 77)],
             top_clients: vec![("10.9.8.7".to_owned(), 64)],
         };
-        let html = DashboardTemplate::new(test_chrome(), snap, 65432, window)
+        let html = DashboardTemplate::new(test_chrome(), snap, 65432, window, vec![])
             .render()
             .expect("render");
         // Live counters seeded as raw Datastar signal values.
@@ -236,9 +276,61 @@ mod tests {
             top_domains: vec![],
             top_clients: vec![],
         };
-        let html = DashboardTemplate::new(test_chrome(), snap, 0, window)
+        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, vec![])
             .render()
             .expect("render");
         assert!(html.contains("No queries in the last 24 hours."));
+    }
+
+    /// The per-upstream health table renders address, success rate, latency,
+    /// and last error from the snapshot rows.
+    #[test]
+    fn upstream_health_table_renders() {
+        let snap = StatsSnapshot {
+            total: 0,
+            blocked: 0,
+            cached: 0,
+            forwarded: 0,
+            blocked_ratio: 0.0,
+            top_domains: vec![],
+            top_clients: vec![],
+        };
+        let window = WindowStats {
+            counts: QueryLogCounts::default(),
+            top_domains: vec![],
+            top_clients: vec![],
+        };
+        // One healthy upstream and one with a recorded failure (no latency yet).
+        let rows = vec![
+            UpstreamRow::from(UpstreamHealthRow {
+                addr: "1.1.1.1:53".parse().unwrap(),
+                successes: 99,
+                failures: 1,
+                success_rate: 0.99,
+                ewma_latency_ms: Some(12.34),
+                last_error: None,
+            }),
+            UpstreamRow::from(UpstreamHealthRow {
+                addr: "9.9.9.9:53".parse().unwrap(),
+                successes: 0,
+                failures: 3,
+                success_rate: 0.0,
+                ewma_latency_ms: None,
+                last_error: Some("upstream UDP query timed out".to_owned()),
+            }),
+        ];
+        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, rows)
+            .render()
+            .expect("render");
+
+        assert!(html.contains("1.1.1.1:53"));
+        assert!(
+            html.contains("99.0%"),
+            "success rate is formatted as a percent"
+        );
+        assert!(html.contains("12.3 ms"), "latency EWMA is shown in ms");
+        assert!(html.contains("9.9.9.9:53"));
+        assert!(html.contains("0.0%"));
+        assert!(html.contains("upstream UDP query timed out"));
     }
 }
