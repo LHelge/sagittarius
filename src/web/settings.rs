@@ -21,8 +21,8 @@ use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
     extract::State,
-    http::StatusCode,
-    response::{IntoResponse, Response},
+    http::{HeaderMap, StatusCode, Uri, header},
+    response::{IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
 
@@ -63,7 +63,6 @@ impl AppState {
                 .map(|i| i.to_string())
                 .unwrap_or_default(),
             blocklist_refresh_interval: s.blocklist_refresh_interval,
-            ui_theme: s.ui_theme,
             query_log_enabled: s.query_log_enabled,
             query_log_retention_days: s.query_log_retention_days,
             upstream_selection_strategy: s.upstream_selection_strategy.as_str(),
@@ -104,6 +103,36 @@ impl AppState {
         }
     }
 
+    /// `POST /theme/toggle` — flip the UI theme from the topbar sun/moon button.
+    ///
+    /// Theme is a persisted UI-only setting (read fresh into the page chrome on
+    /// every render). This flips it — anything not already `dark` becomes
+    /// `dark`, so the initial `auto` resolves to an explicit choice on first
+    /// click — and redirects (PRG) back to the page the toggle was clicked on.
+    pub async fn theme_toggle(
+        _user: CurrentUser,
+        State(state): State<AppState>,
+        headers: HeaderMap,
+    ) -> WebResult<Response> {
+        let mut settings = state.db.settings().get().await?;
+        settings.ui_theme = if settings.ui_theme == "dark" {
+            "light".to_owned()
+        } else {
+            "dark".to_owned()
+        };
+        state.db.settings().update(&settings).await?;
+
+        // Return to the originating page; take only the same-origin path from
+        // the Referer (never the full URL) so this can't become an open redirect.
+        let back = headers
+            .get(header::REFERER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<Uri>().ok())
+            .and_then(|u| u.path_and_query().map(|pq| pq.as_str().to_owned()))
+            .unwrap_or_else(|| "/".to_owned());
+        Ok(Redirect::to(&back).into_response())
+    }
+
     /// `POST /settings/clear-log` — delete all persisted query-log history.
     pub async fn settings_clear_log(
         user: CurrentUser,
@@ -118,7 +147,10 @@ impl AppState {
 
     /// Validate and persist a settings form, then refresh the live snapshot.
     async fn apply_settings(&self, form: SettingsForm) -> WebResult<()> {
-        let settings = form.into_settings()?;
+        // The theme is owned by the topbar toggle, not this form; preserve the
+        // stored value across an otherwise-unrelated settings save.
+        let ui_theme = self.db.settings().get().await?.ui_theme;
+        let settings = form.into_settings(ui_theme)?;
         self.db.settings().update(&settings).await?;
         // Apply to the live snapshot (capacity needs a restart; see module doc).
         self.resolver
@@ -143,7 +175,6 @@ pub struct SettingsForm {
     #[serde(default)]
     custom_block_ipv6: String,
     blocklist_refresh_interval: u32,
-    ui_theme: String,
     /// HTML checkbox: present (any value) when ticked, absent when unticked.
     #[serde(default)]
     query_log_enabled: Option<String>,
@@ -154,7 +185,11 @@ pub struct SettingsForm {
 
 impl SettingsForm {
     /// Validate the raw form into a typed [`Settings`].
-    fn into_settings(self) -> WebResult<Settings> {
+    ///
+    /// The UI theme is no longer part of this form — it is toggled from the
+    /// topbar (see [`AppState::theme_toggle`]) — so the caller passes the
+    /// currently-stored `ui_theme` through to preserve it across a save.
+    fn into_settings(self, ui_theme: String) -> WebResult<Settings> {
         if self.cache_min_ttl > self.cache_max_ttl {
             return Err(WebError::bad_request(
                 "Minimum cache TTL must not exceed the maximum.",
@@ -184,10 +219,6 @@ impl SettingsForm {
             )
         };
 
-        if !matches!(self.ui_theme.as_str(), "auto" | "light" | "dark") {
-            return Err(WebError::bad_request("Theme must be auto, light, or dark."));
-        }
-
         if self.query_log_retention_days == 0 {
             return Err(WebError::bad_request(
                 "Query-log retention must be at least 1 day.",
@@ -213,7 +244,7 @@ impl SettingsForm {
             custom_block_ipv4,
             custom_block_ipv6,
             blocklist_refresh_interval: self.blocklist_refresh_interval,
-            ui_theme: self.ui_theme,
+            ui_theme,
             query_log_enabled: self.query_log_enabled.is_some(),
             query_log_retention_days: self.query_log_retention_days,
             upstream_selection_strategy,
@@ -246,7 +277,6 @@ struct SettingsPageTemplate {
     custom_block_ipv4: String,
     custom_block_ipv6: String,
     blocklist_refresh_interval: u32,
-    ui_theme: String,
     query_log_enabled: bool,
     query_log_retention_days: u32,
     upstream_selection_strategy: &'static str,
@@ -278,7 +308,6 @@ mod tests {
             custom_block_ipv4: String::new(),
             custom_block_ipv6: String::new(),
             blocklist_refresh_interval: 7200,
-            ui_theme: "dark".to_owned(),
             query_log_enabled: Some("on".to_owned()),
             query_log_retention_days: 30,
             upstream_selection_strategy: "random".to_owned(),
@@ -295,7 +324,9 @@ mod tests {
         let s = st.db.settings().get().await.unwrap();
         assert_eq!(s.cache_max_ttl, 3600);
         assert_eq!(s.blocking_mode, BlockingMode::NxDomain);
-        assert_eq!(s.ui_theme, "dark");
+        // The theme is owned by the topbar toggle now, so a settings save
+        // leaves the stored value (the fresh-install default) untouched.
+        assert_eq!(s.ui_theme, "auto");
 
         // Live snapshot updated (blocking mode applies immediately).
         assert_eq!(st.resolver.settings().block_mode, BlockMode::NxDomain);
@@ -394,17 +425,6 @@ mod tests {
         st.apply_settings(f).await.expect("apply");
         let s = st.db.settings().get().await.unwrap();
         assert_eq!(s.custom_block_ipv4, Some("203.0.113.9".parse().unwrap()));
-    }
-
-    #[tokio::test]
-    async fn invalid_theme_is_rejected() {
-        let (_d, st) = state().await;
-        let mut f = base_form();
-        f.ui_theme = "neon".to_owned();
-        assert!(matches!(
-            st.apply_settings(f).await,
-            Err(WebError::BadRequest(_))
-        ));
     }
 
     #[tokio::test]

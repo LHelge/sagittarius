@@ -51,6 +51,8 @@ const ICONS: &[(&str, &icondata_core::IconData)] = &[
     ("close", icondata_lu::LuX),
     ("pause", icondata_lu::LuPause),
     ("logout", icondata_lu::LuLogOut),
+    ("sun", icondata_lu::LuSun),
+    ("moon", icondata_lu::LuMoon),
     // Common row / form actions.
     ("add", icondata_lu::LuPlus),
     ("remove", icondata_lu::LuTrash2),
