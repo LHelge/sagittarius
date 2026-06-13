@@ -236,19 +236,6 @@ summary:has(.sgt-icon) {
   color: var(--sgt-accent);
 }
 
-/* The custom-minutes row: a number input next to its submit button. */
-.sgt-pause-custom {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  margin: 0.25rem 0.5rem 0;
-}
-
-.sgt-pause-custom input {
-  margin: 0;
-  width: 5rem;
-}
-
 /* A prominent, full-width banner shown on every page while blocking is paused. */
 .sgt-paused {
   display: flex;
