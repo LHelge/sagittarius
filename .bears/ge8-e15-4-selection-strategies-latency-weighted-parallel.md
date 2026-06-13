@@ -1,15 +1,15 @@
 ---
 id: ge8
-title: 'E15.4 · Selection strategies: latency-weighted + parallel'
-status: open
+title: "E15.4 · Selection strategies: latency-weighted + parallel"
+status: done
 priority: P2
-created: 2026-05-30T20:47:58.600437282Z
-updated: 2026-05-30T20:47:58.600437282Z
+created: "2026-05-30T20:47:58.600437282Z"
+updated: "2026-06-13T13:23:59.583435708Z"
 tags:
-- upstream
-- dns
+  - upstream
+  - dns
 depends_on:
-- y7h
+  - y7h
 parent: xa8
 ---
 
