@@ -150,7 +150,7 @@ impl Service<DnsRequest> for ForwardService {
                     // re-patches per requesting client on serve.)
                     let reply = fr.bytes.with_txn_id(client_id);
                     Ok(ForwardOutput::new(
-                        PipelineResponse::new(reply, Outcome::Forwarded),
+                        PipelineResponse::new(reply, Outcome::Forwarded).with_upstream(fr.upstream),
                         directive,
                     ))
                 }
@@ -299,6 +299,14 @@ mod tests {
             out.reply.outcome,
             Outcome::Forwarded,
             "outcome must be Forwarded"
+        );
+
+        // E15: the forwarded reply carries the answering upstream up the stack
+        // (the telemetry layer reads this to populate QueryEvent.upstream).
+        assert_eq!(
+            out.reply.upstream,
+            Some(addr),
+            "forwarded reply must attribute the answering upstream"
         );
 
         // The reply's transaction ID must equal the client's query id.

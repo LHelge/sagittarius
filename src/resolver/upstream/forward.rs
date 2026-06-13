@@ -6,7 +6,8 @@
 //! module constant [`DEFAULT_QUERY_TIMEOUT`] is the recommended value and is
 //! what E5.3 (pool / failover) will pass in.
 
-use std::time::Duration;
+use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use hickory_net::proto::op::{DnsRequest, DnsRequestOptions, Message, Query, ResponseCode};
@@ -41,6 +42,11 @@ pub struct ForwardResult {
     pub negative_ttl: Option<u32>,
     /// `true` for NXDOMAIN, or NOERROR with no answer records (NODATA).
     pub is_negative: bool,
+    /// The upstream resolver that produced this answer (E15).
+    pub upstream: SocketAddr,
+    /// Wall-clock time for this successful exchange (E15). Used to populate
+    /// per-query telemetry and, later, per-upstream health stats (E15.2).
+    pub latency: Duration,
 }
 
 // ── UpstreamClient::forward ───────────────────────────────────────────────────
@@ -96,6 +102,7 @@ impl UpstreamClient {
 
         // ── Send and await the first response ─────────────────────────────────
 
+        let started = Instant::now();
         let response = tokio::time::timeout(timeout, self.handle().send(request).first_answer())
             .await
             .map_err(|_| Error::Timeout {
@@ -105,6 +112,7 @@ impl UpstreamClient {
                 transport: self.transport(),
                 source,
             })?;
+        let latency = started.elapsed();
 
         // ── Extract metadata before consuming the response ───────────────────
 
@@ -119,6 +127,8 @@ impl UpstreamClient {
             bytes,
             negative_ttl,
             is_negative,
+            upstream: self.addr(),
+            latency,
         })
     }
 }
@@ -168,6 +178,15 @@ mod tests {
 
         assert!(!result.is_negative, "A response must not be negative");
         assert_eq!(result.negative_ttl, None, "positive answer has no SOA");
+
+        // E15: the result attributes the answer to the upstream it came from,
+        // with a measured (non-zero) latency.
+        assert_eq!(result.upstream, addr, "must record the answering upstream");
+        assert!(
+            result.latency > Duration::ZERO,
+            "latency must be measured: {:?}",
+            result.latency
+        );
 
         // bytes must re-parse with the project TTL scanner
         let scan = crate::codec::ttl::TtlScan::scan(&result.bytes)

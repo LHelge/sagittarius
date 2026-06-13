@@ -115,11 +115,11 @@ where
             let result = inner.call(req).await;
 
             let latency = start.elapsed();
-            let (outcome, rcode) = match &result {
-                Ok(resp) => (resp.outcome, None),
+            let (outcome, rcode, upstream) = match &result {
+                Ok(resp) => (resp.outcome, None, resp.upstream),
                 Err(e) => {
                     let (o, rc) = e.rejection_policy();
-                    (o, Some(rc))
+                    (o, Some(rc), None)
                 }
             };
 
@@ -128,6 +128,9 @@ where
                 .with_latency(latency);
             if let Some(rc) = rcode {
                 ev = ev.with_rcode(rc);
+            }
+            if let Some(up) = upstream {
+                ev = ev.with_upstream(up);
             }
             sink.record(ev);
 

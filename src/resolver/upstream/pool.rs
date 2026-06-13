@@ -412,6 +412,13 @@ mod tests {
             !result.is_negative,
             "failover result must be a positive answer"
         );
+        // E15: the answer is attributed to the upstream that actually responded
+        // (the second one), not the silent first attempt.
+        assert_eq!(
+            result.upstream, answer_addr,
+            "must record the upstream that answered after failover"
+        );
+        assert!(result.latency > Duration::ZERO, "latency must be measured");
     }
 
     // ── Pool: all-fail ────────────────────────────────────────────────────────

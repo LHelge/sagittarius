@@ -4,7 +4,7 @@
 //! a hickory [`Client`], and returns the handle together with a background
 //! driver future that the caller must [`tokio::spawn`].
 
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use hickory_net::client::Client;
 use hickory_net::runtime::TokioRuntimeProvider;
@@ -34,12 +34,16 @@ pub type UpstreamBackground =
 pub struct UpstreamClient {
     handle: Client<TokioRuntimeProvider>,
     transport: UpstreamTransport,
+    /// The upstream's address, retained so the pool can attribute an answer (and
+    /// its latency) to a specific resolver (E15).
+    addr: SocketAddr,
 }
 
 impl std::fmt::Debug for UpstreamClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpstreamClient")
             .field("transport", &self.transport)
+            .field("addr", &self.addr)
             .finish_non_exhaustive()
     }
 }
@@ -70,6 +74,11 @@ impl UpstreamClient {
         self.transport
     }
 
+    /// Returns the address of the upstream resolver this client targets.
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
     // ── per-transport builders ────────────────────────────────────────────────
 
     async fn connect_udp(config: &UpstreamConfig) -> Result<(Self, UpstreamBackground)> {
@@ -84,6 +93,7 @@ impl UpstreamClient {
             Self {
                 handle: client,
                 transport: config.transport,
+                addr: config.addr,
             },
             Box::pin(bg),
         ))
@@ -104,6 +114,7 @@ impl UpstreamClient {
             Self {
                 handle: client,
                 transport: config.transport,
+                addr: config.addr,
             },
             Box::pin(bg),
         ))
@@ -132,6 +143,7 @@ impl UpstreamClient {
             Self {
                 handle: client,
                 transport: config.transport,
+                addr: config.addr,
             },
             Box::pin(bg),
         ))
@@ -168,6 +180,7 @@ impl UpstreamClient {
             Self {
                 handle: client,
                 transport: config.transport,
+                addr: config.addr,
             },
             Box::pin(bg),
         ))
