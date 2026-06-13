@@ -242,6 +242,20 @@ impl DnsCache {
         self.inner.entry_count()
     }
 
+    /// Invalidate every cached entry.
+    ///
+    /// Called when a configuration change can alter *which authority answers a
+    /// name* — notably a conditional-forward zone edit — so previously-cached
+    /// answers obtained via the default upstream pool do not keep being served
+    /// in place of the newly-routed zone target until they expire. Cheap and
+    /// rare (an admin edit), and the cache repopulates on the next miss.
+    ///
+    /// `moka`'s `invalidate_all` is lazy: entries stop being served immediately,
+    /// but `entry_count` may lag until pending maintenance runs.
+    pub fn clear(&self) {
+        self.inner.invalidate_all();
+    }
+
     /// Clamp a caller-supplied TTL (seconds) into this cache's `[min, max]`
     /// bounds.  `new` guarantees `min_ttl <= max_ttl`.
     #[inline]
@@ -481,6 +495,28 @@ mod tests {
             read_txn_id(&patched),
             client_id,
             "transaction ID must be patched to client_id"
+        );
+    }
+
+    /// `clear()` invalidates every entry, so a previously-cached answer misses
+    /// afterwards. Guards the conditional-forward zone-edit flush.
+    #[tokio::test]
+    async fn clear_invalidates_all_entries() {
+        let cache = DnsCache::new(100, 1, 3600);
+        let question = make_question("flush.example.com");
+        let msg = build_a_response(0xAAAA, "flush.example.com", 300);
+        let scan = TtlScan::scan(&msg.clone()).expect("scan");
+        cache
+            .insert(question.clone(), msg, scan.ttl_offsets, 300)
+            .await;
+        assert!(cache.get(&question, 0x1).await.is_some(), "entry cached");
+
+        cache.clear();
+        cache.run_pending_tasks().await;
+
+        assert!(
+            cache.get(&question, 0x1).await.is_none(),
+            "clear() must invalidate the entry"
         );
     }
 

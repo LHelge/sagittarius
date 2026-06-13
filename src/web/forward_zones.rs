@@ -37,9 +37,16 @@ impl AppState {
         let rows = self.db.forward_zones().list_enabled().await?;
         let set = crate::resolver::forward_zone::ForwardZoneSet::build(&rows, &self.tracker).await;
         self.resolver.store_forward_zones(set);
-        // Conditional forwarding decides how private reverse queries resolve, so
-        // a zone edit can change a client's hostname — drop cached reverse
-        // lookups (E14) so the change shows on the next render, not after the TTL.
+        // A zone edit changes *which authority answers* a reverse name, so flush
+        // the shared DNS response cache: an answer cached via the default
+        // upstream (e.g. an AS112 NXDOMAIN for a private reverse zone) would
+        // otherwise be served by the cache layer — which short-circuits before
+        // the forward-target tag is consulted — in place of the newly-routed
+        // zone target until it expired.
+        self.resolver.cache().clear();
+        // The reverse-lookup decoration (E14) is derived from those same answers
+        // and shares the DNS cache, so drop its cached results too; the next
+        // render re-resolves against the fresh zone routing.
         self.reverse.clear();
         Ok(())
     }
@@ -278,6 +285,78 @@ mod tests {
         let enabled = st.db.forward_zones().list_enabled().await.unwrap();
         assert_eq!(enabled.len(), 1);
         assert_eq!(enabled[0].target.as_deref(), Some("192.168.1.1"));
+    }
+
+    /// A zone edit flushes the shared DNS response cache, so an answer cached
+    /// via the default upstream (e.g. an NXDOMAIN for a private reverse zone)
+    /// stops being served by the cache layer — which short-circuits before the
+    /// forward-target tag — in place of the newly-routed zone target.
+    #[tokio::test]
+    async fn zone_edit_flushes_the_dns_cache() {
+        use crate::codec::{
+            header::{Header, Rcode},
+            message::{Qclass, Qtype, Question},
+            name::Name,
+            ttl::TtlScan,
+            writer::Writer,
+        };
+
+        let (_d, st) = state().await;
+
+        // Seed a cached PTR answer for a private reverse name, as if a prior
+        // query had been forwarded to the default upstream and cached.
+        let qname: Name = "1.1.168.192.in-addr.arpa".parse().unwrap();
+        let question = Question {
+            name: qname.clone(),
+            qtype: Qtype::Ptr,
+            qclass: Qclass::In,
+        };
+        let mut w = Writer::with_capacity(64);
+        Header::new(0x1234)
+            .with_qr(true)
+            .with_rcode(Rcode::NoError)
+            .with_qdcount(1)
+            .with_ancount(0)
+            .write(&mut w);
+        qname.write(&mut w);
+        w.write_u16(u16::from(Qtype::Ptr));
+        w.write_u16(1);
+        let bytes = w.finish();
+        let offsets = TtlScan::scan(&bytes)
+            .map(|s| s.ttl_offsets)
+            .unwrap_or_default();
+        st.resolver
+            .cache()
+            .insert(question.clone(), bytes, offsets, 300)
+            .await;
+        assert!(
+            st.resolver.cache().get(&question, 0x1).await.is_some(),
+            "precondition: the stale answer is cached"
+        );
+
+        // Configure a forward zone covering that reverse name.
+        let id = st
+            .db
+            .forward_zones()
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|z| z.zone_suffix == "168.192.in-addr.arpa")
+            .unwrap()
+            .id;
+        st.set_zone_target(SetTargetForm {
+            id,
+            target: "192.168.1.1".to_owned(),
+        })
+        .await
+        .expect("set target");
+
+        st.resolver.cache().run_pending_tasks().await;
+        assert!(
+            st.resolver.cache().get(&question, 0x1).await.is_none(),
+            "a zone edit must flush the stale cached answer so it routes to the new target"
+        );
     }
 
     #[tokio::test]
