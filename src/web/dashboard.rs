@@ -175,6 +175,7 @@ mod tests {
             show_nav: true,
             authenticated: true,
             csrf_token: "tok".to_owned(),
+            pause_remaining: None,
         }
     }
 
