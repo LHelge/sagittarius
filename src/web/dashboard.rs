@@ -140,9 +140,9 @@ fn process_rss_bytes() -> Option<u64> {
     Some(kb * 1024)
 }
 
-/// Format a byte count as mebibytes with one decimal (e.g. `14.2 MB`).
+/// Format a byte count as mebibytes with one decimal (e.g. `14.2 MiB`).
 fn format_mib(bytes: u64) -> String {
-    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// Humanize an uptime in seconds as `Nd Nh Nm` (server-render fallback before
@@ -306,7 +306,7 @@ mod tests {
             uptime: humanize_uptime(90_061),
             cache_entries: group(8_123),
             cache_capacity: group(100_000),
-            process_memory: "14.2 MB".to_owned(),
+            process_memory: "14.2 MiB".to_owned(),
         }
     }
 
@@ -488,7 +488,7 @@ mod tests {
         // 90_061s = 1d 1h 1m.
         assert!(html.contains("1d 1h 1m"), "uptime humanized");
         assert!(html.contains("8,123 / 100,000"), "cache fill shown");
-        assert!(html.contains("14.2 MB"), "process memory shown");
+        assert!(html.contains("14.2 MiB"), "process memory shown");
         // The uptime ticker drives the live uptime + queries/sec figures.
         assert!(html.contains("data-on-interval"));
     }
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn format_mib_rounds_to_one_decimal() {
-        assert_eq!(format_mib(14_889_779), "14.2 MB");
-        assert_eq!(format_mib(0), "0.0 MB");
+        assert_eq!(format_mib(14_889_779), "14.2 MiB");
+        assert_eq!(format_mib(0), "0.0 MiB");
     }
 }
