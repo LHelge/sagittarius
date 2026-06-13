@@ -1,15 +1,15 @@
 ---
 id: e5x
 title: E13.2 · Synthesize PTR answers from local records
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:23:52.217428115Z
-updated: 2026-05-30T20:23:52.217428115Z
+created: "2026-05-30T20:23:52.217428115Z"
+updated: "2026-06-13T14:32:20.625493933Z"
 tags:
-- dns
-- codec
+  - dns
+  - codec
 depends_on:
-- b8k
+  - b8k
 parent: s2e
 ---
 

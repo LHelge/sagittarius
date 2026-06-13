@@ -368,6 +368,31 @@ impl Response {
         Self::build_authoritative(query, Rcode::NoError, &[], edns)
     }
 
+    /// Synthesize an authoritative PTR answer for a reverse query whose address
+    /// we own locally (E13.2).
+    ///
+    /// The single answer RR has TYPE=PTR (12) and RDATA equal to `target`
+    /// encoded as an **uncompressed** DNS name.  The owner is the usual
+    /// `0xC0 0x0C` pointer to the question (the in-addr.arpa / ip6.arpa name).
+    /// AA=1, RCODE=NOERROR.
+    ///
+    /// `edns` is the EDNS info from [`EdnsInfo::scan`].
+    #[must_use]
+    pub fn local_ptr(query: &Query, target: &Name, ttl: u32, edns: Option<&EdnsInfo>) -> Bytes {
+        // PTR RDATA is a domain name.  Encode it (uncompressed) into a scratch
+        // buffer first so its byte length can be written as RDLENGTH.
+        let mut name_buf = Writer::with_capacity(target.as_str().len() + 1);
+        target.write(&mut name_buf);
+        let rdata = name_buf.finish();
+
+        let answers = [AnswerRr {
+            rtype: 12, // PTR
+            ttl,
+            rdata: &rdata,
+        }];
+        Self::build_authoritative(query, Rcode::NoError, &answers, edns)
+    }
+
     // ── Error responses ───────────────────────────────────────────────────────
 
     /// Synthesize a minimal error response for a successfully parsed query.
@@ -1013,6 +1038,32 @@ mod tests {
         assert!(hdr.aa(), "NODATA must be authoritative");
         assert_eq!(hdr.rcode(), Rcode::NoError);
         assert_eq!(hdr.ancount, 0);
+    }
+
+    #[test]
+    fn local_ptr_answer_carries_name_rdata() {
+        // A PTR query for 192.168.1.1's reverse name.
+        let raw = build_query(0x4242, true, "1.1.168.192.in-addr.arpa", 12);
+        let query = Query::try_from(raw).unwrap();
+        let target: Name = "router.home.lan".parse().unwrap();
+
+        let resp = Response::local_ptr(&query, &target, 300, None);
+
+        let hdr = parse_response_header(&resp);
+        assert_eq!(hdr.id, 0x4242);
+        assert!(hdr.aa(), "PTR answer must be authoritative");
+        assert_eq!(hdr.rcode(), Rcode::NoError);
+        assert_eq!(hdr.ancount, 1);
+
+        let (rtype, class, ttl, rdata) = read_first_answer(&resp);
+        assert_eq!(rtype, 12, "PTR type");
+        assert_eq!(class, CLASS_IN, "IN class");
+        assert_eq!(ttl, 300);
+
+        // RDATA is the uncompressed target name; decode it back.
+        let mut rr = Reader::new(rdata);
+        let decoded = Name::read_question(&mut rr).expect("PTR rdata is a valid name");
+        assert_eq!(decoded, target, "RDATA must encode the PTR target name");
     }
 
     // ── Error responses ───────────────────────────────────────────────────────

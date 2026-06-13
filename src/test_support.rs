@@ -61,6 +61,12 @@ pub(crate) fn aaaa_query(id: u16, name: &str) -> Bytes {
     wire_query(id, name, 28)
 }
 
+/// Build a minimal PTR query datagram for the reverse-zone `name`
+/// (e.g. `1.1.168.192.in-addr.arpa`).
+pub(crate) fn ptr_query(id: u16, name: &str) -> Bytes {
+    wire_query(id, name, 12)
+}
+
 /// The stock question used across the forwarding tests: `example.com. A IN`.
 pub(crate) fn stock_question() -> Question {
     Question {

@@ -27,6 +27,7 @@ use std::{
 use tower::{Layer, Service};
 
 use crate::{
+    codec::message::Qtype,
     codec::synth::{LocalRecord, Response},
     resolver::{
         local::{LocalMatch, RecordData},
@@ -108,6 +109,21 @@ where
             //
             // Local wins over all blocking.  The name is private to this
             // server and must never be forwarded.
+
+            // 1a. Reverse PTR: answer authoritatively for IPs we own.  A reverse
+            // query for an address we do NOT own falls through (Miss) so it can
+            // reach conditional forwarding / the upstream pool (E13.4) — we must
+            // not answer NODATA for arbitrary reverse zones (that is the
+            // router's job).  Local PTR synth therefore wins over forwarding.
+            if qtype == Qtype::Ptr
+                && let Some(ip) = name.reverse_addr()
+                && let Some((target, ttl)) = state.local().reverse_lookup(ip)
+            {
+                let bytes = Response::local_ptr(req.query(), &target, ttl, edns.as_ref());
+                return Ok(PipelineResponse::new(bytes, Outcome::Local));
+            }
+
+            // 1b. Forward records (A/AAAA and authoritative NODATA).
             match state.local().lookup(&name, qtype) {
                 LocalMatch::Answer { data, ttl } => {
                     // Map the typed data to a wire LocalRecord.
@@ -230,7 +246,7 @@ mod tests {
     use tower::ServiceExt as _;
 
     use super::*;
-    use crate::test_support::{a_query, aaaa_query};
+    use crate::test_support::{a_query, aaaa_query, ptr_query};
     use crate::{
         codec::{
             header::{Header, Rcode},
@@ -673,6 +689,60 @@ mod tests {
         assert!(hdr.aa(), "local record must set AA=1");
         assert_eq!(hdr.rcode(), Rcode::NoError);
         assert_eq!(hdr.ancount, 1);
+    }
+
+    /// A PTR query for an IP we own (a local A record) must be answered
+    /// authoritatively from the reverse index: Outcome::Local, AA=1, ANCOUNT=1.
+    #[tokio::test]
+    async fn ptr_for_local_record_is_authoritative() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let mut b = LocalRecords::builder();
+        b.add(
+            "router.home.lan",
+            LRecordData::A("192.168.1.1".parse().unwrap()),
+            300,
+        )
+        .unwrap();
+        state.local().store(b.build());
+
+        let query_id: u16 = 0x0ABC;
+        let raw = ptr_query(query_id, "1.1.168.192.in-addr.arpa");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.outcome, Outcome::Local, "PTR for owned IP → Local");
+
+        let hdr = parse_header(&resp.bytes);
+        assert_eq!(hdr.id, query_id);
+        assert!(hdr.aa(), "PTR answer must be authoritative");
+        assert_eq!(hdr.rcode(), Rcode::NoError);
+        assert_eq!(hdr.ancount, 1, "one PTR answer RR");
+    }
+
+    /// A PTR query for an IP we do **not** own must fall through to the inner
+    /// service (Forwarded) — not answered NODATA here, so conditional forwarding
+    /// (E13.4) and the upstream pool can handle it.
+    #[tokio::test]
+    async fn ptr_for_unknown_ip_falls_through() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+        // No local records → no reverse entries.
+
+        let raw = ptr_query(0x0DEF, "5.1.168.192.in-addr.arpa");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.outcome,
+            Outcome::Forwarded,
+            "PTR for an unknown IP must fall through, not be answered here"
+        );
     }
 
     /// A local NODATA response must have AA=1, RCODE=NOERROR, ANCOUNT=0.
