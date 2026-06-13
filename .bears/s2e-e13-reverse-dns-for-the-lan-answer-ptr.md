@@ -2,12 +2,12 @@
 id: s2e
 title: E13 · Reverse DNS for the LAN (answer PTR)
 type: epic
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:23:24.574108892Z
-updated: 2026-05-30T20:23:24.574108892Z
+created: "2026-05-30T20:23:24.574108892Z"
+updated: "2026-06-13T14:53:12.918367180Z"
 tags:
-- dns
+  - dns
 ---
 
 Make Sagittarius answer reverse-DNS (PTR) queries for the local network, so `nslookup 192.168.1.5` resolves network-wide. Two sources, in precedence order: **manual local records first, then conditional-forward to the router/DHCP** for everything else.

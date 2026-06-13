@@ -49,6 +49,10 @@ traffic disappear.
   latency-weighted, or parallel-race) and per-upstream health tracking.
 - 🏠 **Local DNS records** — define names for your own network, including
   wildcards (e.g. `*.home.lan`).
+- 🔁 **Reverse DNS for the LAN** — answers PTR queries for your local records
+  (so `nslookup <LAN IP>` resolves), and **conditional-forwards** the private
+  reverse zones (`in-addr.arpa` / `ip6.arpa`) to your router/DHCP resolver with
+  a one-click setup.
 
 See the [roadmap](SPEC.md#12-roadmap) for what's planned beyond the first
 milestone.

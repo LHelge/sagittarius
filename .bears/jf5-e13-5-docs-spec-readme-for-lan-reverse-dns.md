@@ -1,16 +1,16 @@
 ---
 id: jf5
-title: 'E13.5 · Docs: SPEC + README for LAN reverse DNS'
-status: open
+title: "E13.5 · Docs: SPEC + README for LAN reverse DNS"
+status: done
 priority: P2
-created: 2026-05-30T20:24:08.269008930Z
-updated: 2026-05-30T20:24:08.269008930Z
+created: "2026-05-30T20:24:08.269008930Z"
+updated: "2026-06-13T14:53:12.918157292Z"
 tags:
-- docs
+  - docs
 depends_on:
-- e5x
-- gkd
-- 2pd
+  - e5x
+  - gkd
+  - "2pd"
 parent: s2e
 ---
 
