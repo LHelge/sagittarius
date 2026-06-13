@@ -140,6 +140,17 @@ where
                 LocalMatch::Miss => {} // fall through
             }
 
+            // ── Pause gate (E12) ──────────────────────────────────────────────
+            //
+            // When blocking is paused, skip every blocking stage (blacklist,
+            // allowlist, blocklist) and fall through to the inner service.
+            // Local records above are unaffected — they are authoritative and
+            // must keep answering. Auto-resumes by comparison: the first query
+            // after the deadline takes the normal path again.
+            if state.blocking_paused() {
+                return inner.call(req).await;
+            }
+
             // ── Stage 2: Admin blacklist ──────────────────────────────────────
             //
             // The allowlist cannot override the admin blacklist.
@@ -507,6 +518,116 @@ mod tests {
         assert_eq!(hdr.id, query_id, "response id must match query id");
         assert_eq!(hdr.rcode(), Rcode::NxDomain, "NxDomain mode → NXDOMAIN");
         assert_eq!(hdr.ancount, 0, "NXDOMAIN → no answer RRs");
+    }
+
+    // ── Pause gate (E12) ──────────────────────────────────────────────────────
+
+    /// While paused, a blacklisted name must fall through to the inner service
+    /// (Forwarded) rather than being blocked.
+    #[tokio::test]
+    async fn paused_blacklisted_name_falls_through() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let target = name("evil.example.com");
+        state
+            .blacklist()
+            .store([target.clone()].into_iter().collect());
+        state.pause_for_secs(300);
+
+        let raw = a_query(0x0101, "evil.example.com");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.outcome,
+            Outcome::Forwarded,
+            "paused blocking must let a blacklisted name through"
+        );
+    }
+
+    /// While paused, a blocklisted name must also fall through to Forwarded.
+    #[tokio::test]
+    async fn paused_blocklisted_name_falls_through() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let target = name("tracker.bad.example");
+        state
+            .blocklist()
+            .store([(target.clone(), 1)].into_iter().collect());
+        state.pause_for_secs(300);
+
+        let raw = a_query(0x0102, "tracker.bad.example");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.outcome,
+            Outcome::Forwarded,
+            "paused blocking must let a blocklisted name through"
+        );
+    }
+
+    /// While paused, a local record must still answer authoritatively — the
+    /// pause gate sits below Stage 1.
+    #[tokio::test]
+    async fn paused_local_record_still_answers() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let mut b = LocalRecords::builder();
+        b.add(
+            "router.home.lan",
+            LRecordData::A("192.168.1.1".parse().unwrap()),
+            300,
+        )
+        .unwrap();
+        state.local().store(b.build());
+        state.pause_for_secs(300);
+
+        let raw = a_query(0x0103, "router.home.lan");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.outcome,
+            Outcome::Local,
+            "local records must answer even while blocking is paused"
+        );
+    }
+
+    /// After a pause is resumed, blocking takes effect again immediately.
+    #[tokio::test]
+    async fn resumed_blocking_blocks_again() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let target = name("ads.example.com");
+        state
+            .blacklist()
+            .store([target.clone()].into_iter().collect());
+
+        state.pause_for_secs(300);
+        state.resume();
+
+        let raw = a_query(0x0104, "ads.example.com");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.outcome,
+            Outcome::BlockedByAdmin,
+            "resuming must restore blocking immediately"
+        );
     }
 
     /// `DecisionLayer` must produce the same stack as `DecisionStack::new`.

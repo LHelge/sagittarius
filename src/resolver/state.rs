@@ -28,7 +28,14 @@
 //! **Precedence/ordering is NOT defined here.** That is the E6 pipeline layer's
 //! concern.  This module just bundles the pieces and exposes lookups + swaps.
 
-use std::{net::Ipv4Addr, net::Ipv6Addr, sync::Arc};
+use std::{
+    net::Ipv4Addr,
+    net::Ipv6Addr,
+    sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    },
+};
 
 use arc_swap::ArcSwap;
 
@@ -46,6 +53,7 @@ use crate::{
         local_records::{LocalRecordRepository, RecordType},
         settings::{BlockingMode, Settings, SettingsRepository},
     },
+    time::Clock,
 };
 
 // ── RuntimeSettings ───────────────────────────────────────────────────────────
@@ -155,6 +163,14 @@ pub struct ResolverState {
     cache: DnsCache,
     /// Hot-swappable operational settings snapshot.
     settings: ArcSwap<RuntimeSettings>,
+    /// Unix-second deadline until which all blocking is paused (E12).
+    ///
+    /// `0` means active (not paused). When `Clock::now_secs()` is below a
+    /// non-zero deadline, the decision stack skips the blacklist/allowlist/
+    /// blocklist stages. Auto-resumes by comparison — no timer is needed for
+    /// correctness, and the value is in-memory only, so a restart resumes
+    /// blocking (fail-safe). See SPEC §5 and §3.1.
+    paused_until: AtomicI64,
 }
 
 impl ResolverState {
@@ -238,6 +254,50 @@ impl ResolverState {
         self.settings.store(Arc::new(new_settings));
     }
 
+    // ── Pause control (E12) ───────────────────────────────────────────────────
+
+    /// Pause all blocking for the next `secs` seconds.
+    ///
+    /// Stores `Clock::now_secs() + secs` as the deadline. While paused, the
+    /// decision stack skips the blacklist/allowlist/blocklist stages; local
+    /// records still answer authoritatively. A non-positive `secs` is treated
+    /// as an immediate [`resume`](Self::resume).
+    ///
+    /// E8 calls this from the admin UI. Relaxed ordering — only eventual
+    /// visibility on the hot path is required (consistent with `Stats`).
+    pub fn pause_for_secs(&self, secs: i64) {
+        let deadline = if secs > 0 {
+            Clock::now_secs() + secs
+        } else {
+            0
+        };
+        self.paused_until.store(deadline, Ordering::Relaxed);
+    }
+
+    /// Resume blocking immediately, clearing any pause deadline.
+    pub fn resume(&self) {
+        self.paused_until.store(0, Ordering::Relaxed);
+    }
+
+    /// Whether blocking is currently paused.
+    ///
+    /// True when a deadline is set and still in the future. Read once per query
+    /// on the hot path.
+    #[must_use]
+    pub fn blocking_paused(&self) -> bool {
+        self.paused_until().is_some()
+    }
+
+    /// The active pause deadline as a Unix second, or `None` when blocking is
+    /// active (no deadline, or the deadline has passed).
+    ///
+    /// Used by the admin UI to render the countdown banner (E12.2).
+    #[must_use]
+    pub fn paused_until(&self) -> Option<i64> {
+        let deadline = self.paused_until.load(Ordering::Relaxed);
+        (deadline != 0 && Clock::now_secs() < deadline).then_some(deadline)
+    }
+
     // ── Startup hydration ─────────────────────────────────────────────────────
 
     /// Hydrate a [`ResolverState`] from the database and return it wrapped in
@@ -288,6 +348,7 @@ impl ResolverState {
             local,
             cache,
             settings: ArcSwap::from_pointee(runtime_settings),
+            paused_until: AtomicI64::new(0),
         }))
     }
 }
@@ -615,6 +676,66 @@ mod tests {
             seen_nxdomain.load(Ordering::Relaxed),
             "reader must have observed NxDomain after swap"
         );
+    }
+
+    // ── Pause control (E12) ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pause_sets_future_deadline_and_resume_clears_it() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        // Fresh state is active.
+        assert!(!state.blocking_paused());
+        assert_eq!(state.paused_until(), None);
+
+        // Pausing sets a future deadline.
+        state.pause_for_secs(300);
+        assert!(state.blocking_paused());
+        let deadline = state.paused_until().expect("paused deadline");
+        assert!(
+            deadline >= Clock::now_secs(),
+            "deadline must be in the future"
+        );
+
+        // Resuming clears it.
+        state.resume();
+        assert!(!state.blocking_paused());
+        assert_eq!(state.paused_until(), None);
+    }
+
+    #[tokio::test]
+    async fn expired_deadline_reads_as_active() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        // Force a deadline in the past via the public API (negative seconds
+        // resolves to 0/active), so drive the atomic through a tiny pause then
+        // simulate expiry by storing a past deadline directly.
+        state
+            .paused_until
+            .store(Clock::now_secs() - 1, Ordering::Relaxed);
+
+        assert!(
+            !state.blocking_paused(),
+            "past deadline must read as active"
+        );
+        assert_eq!(state.paused_until(), None);
+    }
+
+    #[tokio::test]
+    async fn pause_with_nonpositive_secs_is_immediate_resume() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        state.pause_for_secs(300);
+        assert!(state.blocking_paused());
+
+        // Non-positive duration clears the pause rather than setting a past
+        // deadline.
+        state.pause_for_secs(0);
+        assert!(!state.blocking_paused());
+        assert_eq!(state.paused_until(), None);
     }
 
     // ── Hydration with no rows ─────────────────────────────────────────────────
