@@ -39,7 +39,6 @@ const ICONS: &[(&str, &icondata_core::IconData)] = &[
     // Navigation sections.
     ("dashboard", icondata_lu::LuLayoutDashboard),
     ("log", icondata_lu::LuScrollText),
-    ("lists", icondata_lu::LuListFilter),
     ("blacklist", icondata_lu::LuShieldBan),
     ("allowlist", icondata_lu::LuShieldCheck),
     ("local", icondata_lu::LuServer),
