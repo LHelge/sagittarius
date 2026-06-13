@@ -1,12 +1,12 @@
 ---
 id: vp7
 title: E12.1 · Pause flag on ResolverState + hot-path gate
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:05:16.099967828Z
-updated: 2026-05-30T20:05:16.099967828Z
+created: "2026-05-30T20:05:16.099967828Z"
+updated: "2026-06-13T07:14:03.649626712Z"
 tags:
-- dns
+  - dns
 parent: kv7
 ---
 
