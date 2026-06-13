@@ -34,7 +34,8 @@
 
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, Ipv6Addr},
+    collections::hash_map::Entry,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::Arc,
 };
 
@@ -167,6 +168,17 @@ pub struct LocalRecords {
     /// hot-path probe can look up `&str` slices of the query name with no
     /// allocation (a `Name` key would force re-parsing each suffix per query).
     wildcard: HashMap<Box<str>, NameEntry>,
+    /// Reverse index: `IpAddr → (canonical name, TTL)`, derived from the
+    /// **exact** A/AAAA records so reverse (PTR) queries for IPs we own can be
+    /// answered authoritatively (SPEC §5).  Wildcard records are excluded — they
+    /// map a synthetic pattern, not a concrete host, so they have no meaningful
+    /// PTR target.  Built once by [`LocalRecordsBuilder::build`] and swapped
+    /// atomically with the rest of the snapshot.
+    ///
+    /// When several names share an address, the **canonical** one is chosen
+    /// deterministically (independent of `HashMap` iteration order): the
+    /// shortest normalized name wins, with lexical order breaking ties.
+    reverse: HashMap<IpAddr, (Name, u32)>,
 }
 
 impl LocalRecords {
@@ -235,6 +247,19 @@ impl LocalRecords {
         }
 
         LocalMatch::Miss
+    }
+
+    // ── Reverse (PTR) lookup ──────────────────────────────────────────────────
+
+    /// Look up the canonical name and TTL for `ip` in the reverse index.
+    ///
+    /// Returns `Some((name, ttl))` when `ip` belongs to a local A/AAAA record,
+    /// or `None` when we hold no record for it — in which case the pipeline must
+    /// **not** answer (the reverse query falls through to conditional forwarding
+    /// or the upstream pool, E13.4).  The `ttl` mirrors the forward record's TTL.
+    #[must_use]
+    pub fn reverse_lookup(&self, ip: IpAddr) -> Option<(&Name, u32)> {
+        self.reverse.get(&ip).map(|(name, ttl)| (name, *ttl))
     }
 }
 
@@ -308,11 +333,61 @@ impl LocalRecordsBuilder {
     }
 
     /// Consume the builder and produce an immutable [`LocalRecords`] snapshot.
+    ///
+    /// The reverse (PTR) index is derived here from the exact A/AAAA records so
+    /// that it is always rebuilt and swapped together with the forward maps.
     pub fn build(self) -> LocalRecords {
+        let reverse = Self::build_reverse(&self.exact);
         LocalRecords {
             exact: self.exact,
             wildcard: self.wildcard,
+            reverse,
         }
+    }
+
+    /// Derive the `IpAddr → (canonical name, TTL)` reverse index from the exact
+    /// records.  When several names share an address the canonical one is chosen
+    /// by [`Self::is_more_canonical`] so the result is independent of `HashMap`
+    /// iteration order.
+    fn build_reverse(exact: &HashMap<Name, NameEntry>) -> HashMap<IpAddr, (Name, u32)> {
+        let mut reverse: HashMap<IpAddr, (Name, u32)> = HashMap::new();
+        for (name, entry) in exact {
+            if let Some((addr, ttl)) = entry.a {
+                Self::insert_reverse(&mut reverse, IpAddr::V4(addr), name, ttl);
+            }
+            if let Some((addr, ttl)) = entry.aaaa {
+                Self::insert_reverse(&mut reverse, IpAddr::V6(addr), name, ttl);
+            }
+        }
+        reverse
+    }
+
+    /// Insert `(name, ttl)` for `ip`, keeping whichever name is canonical when
+    /// an entry already exists.
+    fn insert_reverse(
+        reverse: &mut HashMap<IpAddr, (Name, u32)>,
+        ip: IpAddr,
+        name: &Name,
+        ttl: u32,
+    ) {
+        match reverse.entry(ip) {
+            Entry::Vacant(slot) => {
+                slot.insert((name.clone(), ttl));
+            }
+            Entry::Occupied(mut slot) => {
+                if Self::is_more_canonical(name, &slot.get().0) {
+                    slot.insert((name.clone(), ttl));
+                }
+            }
+        }
+    }
+
+    /// Canonical-name tie-break: the shorter normalized name wins; equal-length
+    /// names are ordered lexically.  Total and deterministic, so the chosen PTR
+    /// target never depends on record insertion order.
+    fn is_more_canonical(candidate: &Name, current: &Name) -> bool {
+        let (c, cur) = (candidate.as_str(), current.as_str());
+        (c.len(), c) < (cur.len(), cur)
     }
 
     /// Fill the appropriate slot in `entry` for the given `data`.
@@ -375,6 +450,19 @@ impl LocalMatcher {
         self.inner.load().lookup(qname, qtype)
     }
 
+    /// Resolve a reverse (PTR) query: return the canonical name and TTL for an
+    /// IP we own, or `None` if it is not a local address.
+    ///
+    /// Clones the matched [`Name`] out of the snapshot so the caller does not
+    /// hold the arc-swap guard — reverse hits are rare and immediately precede a
+    /// response allocation, so the clone is negligible.
+    pub fn reverse_lookup(&self, ip: IpAddr) -> Option<(Name, u32)> {
+        self.inner
+            .load()
+            .reverse_lookup(ip)
+            .map(|(name, ttl)| (name.clone(), ttl))
+    }
+
     // ── Rebuild-and-swap writer ───────────────────────────────────────────────
 
     /// Atomically install `records` as the new current snapshot.
@@ -401,6 +489,7 @@ impl std::fmt::Debug for LocalMatcher {
         f.debug_struct("LocalMatcher")
             .field("exact_len", &snap.exact.len())
             .field("wildcard_len", &snap.wildcard.len())
+            .field("reverse_len", &snap.reverse.len())
             .finish()
     }
 }
@@ -807,5 +896,90 @@ mod tests {
             ),
             "wildcard lookup must be case-insensitive"
         );
+    }
+
+    // ── Reverse (PTR) index ───────────────────────────────────────────────────
+
+    #[test]
+    fn reverse_index_maps_a_record() {
+        let r = records(&[("router.home.lan", RecordData::A(ipv4("192.168.1.1")), 300)]);
+        let (n, ttl) = r
+            .reverse_lookup(IpAddr::V4(ipv4("192.168.1.1")))
+            .expect("reverse hit");
+        assert_eq!(n.to_string(), "router.home.lan.");
+        assert_eq!(ttl, 300);
+    }
+
+    #[test]
+    fn reverse_index_maps_aaaa_record() {
+        let r = records(&[("host.lan", RecordData::Aaaa(ipv6("2001:db8::5")), 120)]);
+        let (n, ttl) = r
+            .reverse_lookup(IpAddr::V6(ipv6("2001:db8::5")))
+            .expect("reverse hit");
+        assert_eq!(n.to_string(), "host.lan.");
+        assert_eq!(ttl, 120);
+    }
+
+    #[test]
+    fn reverse_index_unknown_ip_is_none() {
+        let r = records(&[("host.lan", RecordData::A(ipv4("10.0.0.1")), 60)]);
+        assert!(r.reverse_lookup(IpAddr::V4(ipv4("10.0.0.2"))).is_none());
+    }
+
+    #[test]
+    fn reverse_index_excludes_wildcards() {
+        // A wildcard maps a pattern, not a concrete host — it must not appear in
+        // the reverse index.
+        let r = records(&[("*.home.lan", RecordData::A(ipv4("10.0.0.99")), 300)]);
+        assert!(r.reverse_lookup(IpAddr::V4(ipv4("10.0.0.99"))).is_none());
+    }
+
+    #[test]
+    fn reverse_index_canonical_is_deterministic() {
+        // Two names share one address; the shortest (tie → lexical) wins,
+        // regardless of insertion order.
+        let forward = records(&[
+            ("aaa.lan", RecordData::A(ipv4("10.0.0.5")), 60),
+            ("z.lan", RecordData::A(ipv4("10.0.0.5")), 90),
+        ]);
+        let reversed = records(&[
+            ("z.lan", RecordData::A(ipv4("10.0.0.5")), 90),
+            ("aaa.lan", RecordData::A(ipv4("10.0.0.5")), 60),
+        ]);
+        // "z.lan." (6 chars) is shorter than "aaa.lan." (8 chars) → canonical.
+        for r in [&forward, &reversed] {
+            let (n, ttl) = r
+                .reverse_lookup(IpAddr::V4(ipv4("10.0.0.5")))
+                .expect("reverse hit");
+            assert_eq!(n.to_string(), "z.lan.", "shortest name must be canonical");
+            assert_eq!(ttl, 90, "TTL must follow the canonical record");
+        }
+    }
+
+    #[test]
+    fn reverse_index_rebuilds_after_store() {
+        let r1 = records(&[("old.lan", RecordData::A(ipv4("10.0.0.1")), 60)]);
+        let matcher = LocalMatcher::new(r1);
+        assert!(
+            matcher
+                .reverse_lookup(IpAddr::V4(ipv4("10.0.0.1")))
+                .is_some()
+        );
+
+        // Swap in a new snapshot with a different address.
+        let r2 = records(&[("new.lan", RecordData::A(ipv4("10.0.0.2")), 120)]);
+        matcher.store(r2);
+
+        assert!(
+            matcher
+                .reverse_lookup(IpAddr::V4(ipv4("10.0.0.1")))
+                .is_none(),
+            "old reverse entry must be gone after store"
+        );
+        let (n, ttl) = matcher
+            .reverse_lookup(IpAddr::V4(ipv4("10.0.0.2")))
+            .expect("new reverse hit");
+        assert_eq!(n.to_string(), "new.lan.");
+        assert_eq!(ttl, 120);
     }
 }
