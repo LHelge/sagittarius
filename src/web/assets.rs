@@ -23,6 +23,8 @@
 //! Assets are served with a long, immutable `Cache-Control` since their
 //! content is fixed for the lifetime of a given build.
 
+use std::sync::LazyLock;
+
 use axum::{
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
@@ -52,6 +54,26 @@ const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 /// the lifetime of the build, so we allow long-lived immutable caching.
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
+/// Short content fingerprint of the embedded frontend assets, appended to asset
+/// URLs as a `?v=` cache-busting token.
+///
+/// Because assets are served `immutable` at stable paths (`/assets/app.css`,
+/// …), a browser that cached one build keeps it across an upgrade — so a new
+/// stylesheet rule would never reach it.  Hashing the asset bytes makes the
+/// token change exactly when any asset's content does, which changes the URL
+/// and forces a fresh fetch on upgrade while preserving immutable caching
+/// within a build.
+static FINGERPRINT: LazyLock<String> = LazyLock::new(|| {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for asset in [DATASTAR_JS, PICO_CSS, APP_CSS, ICON_PNG] {
+        asset.hash(&mut hasher);
+    }
+    super::icons::Icons::sprite_bytes().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+});
+
 // ── Assets handler namespace ────────────────────────────────────────────────
 
 /// Namespace for the static-asset route handlers.
@@ -61,6 +83,11 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 pub struct Assets;
 
 impl Assets {
+    /// Cache-busting token for asset URLs (see [`FINGERPRINT`]).
+    pub fn fingerprint() -> &'static str {
+        &FINGERPRINT
+    }
+
     /// `GET /assets/datastar.js` — the Datastar JS runtime.
     pub async fn datastar_js() -> Response {
         Self::serve(DATASTAR_JS, "text/javascript; charset=utf-8")

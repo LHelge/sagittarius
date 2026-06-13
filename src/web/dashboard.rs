@@ -283,6 +283,7 @@ mod tests {
             authenticated: true,
             csrf_token: "tok".to_owned(),
             pause_remaining: None,
+            asset_version: "test",
         }
     }
 

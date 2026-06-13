@@ -103,6 +103,10 @@ pub struct Chrome {
     /// (E12). When `Some`, `base.html` renders the countdown banner on every
     /// page; the value seeds the client-side Datastar countdown.
     pub pause_remaining: Option<i64>,
+    /// Cache-busting token appended to embedded-asset URLs (`?v=…`) so an
+    /// upgraded binary's CSS/JS reaches browsers holding an immutable-cached
+    /// copy of the previous build (see [`assets::Assets::fingerprint`]).
+    pub asset_version: &'static str,
 }
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -178,6 +182,7 @@ impl AppState {
             authenticated: true,
             csrf_token: self.csrf_token(&user.session_id).into_string(),
             pause_remaining: self.pause_remaining(),
+            asset_version: Assets::fingerprint(),
         }
     }
 
@@ -200,6 +205,7 @@ impl AppState {
             authenticated: false,
             csrf_token: String::new(),
             pause_remaining: None,
+            asset_version: Assets::fingerprint(),
         }
     }
 
@@ -1402,6 +1408,14 @@ mod tests {
 
         // The hamburger toggle drives a Datastar `navOpen` signal, and the
         // link row / actions collapse via the shared `sgt-collapse--open` class.
+        // Asset URLs carry a cache-busting ?v= token so an upgraded binary's
+        // CSS/JS reaches browsers holding an immutable-cached previous build.
+        assert!(page.contains("/assets/app.css?v="));
+        assert!(page.contains("/assets/datastar.js?v="));
+        // Icons declare an intrinsic 1em size, so a missing/stale stylesheet can
+        // never blow them up to the SVG default 300x150.
+        assert!(page.contains("<svg class=\"sgt-icon\" width=\"1em\" height=\"1em\""));
+
         assert!(page.contains("data-signals=\"{navOpen: false}\""));
         assert!(page.contains("class=\"sgt-hamburger\""));
         assert!(page.contains("data-on:click=\"$navOpen = !$navOpen\""));

@@ -8,6 +8,10 @@
    Decorative by default: aria-hidden + focusable="false" keep it out of the
    accessibility tree and tab order. Pair with adjacent text or an aria-label
    on the parent for meaning. #}
+{# `width`/`height="1em"` are set as attributes (not only via .sgt-icon CSS) so
+   the icon can never balloon to the SVG default 300×150 if the stylesheet is
+   missing or stale (e.g. an immutable-cached app.css from before this rule
+   existed). #}
 {% macro icon(name) -%}
-<svg class="sgt-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#{{ name }}"></use></svg>
+<svg class="sgt-icon" width="1em" height="1em" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#{{ name }}"></use></svg>
 {%- endmacro %}
