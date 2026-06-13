@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE forward_zones SET target = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "e59b55fed52b3e79e1cb2f2433b96ccadd3f43f62a4c435c7ab28d82e197afdc"
+}

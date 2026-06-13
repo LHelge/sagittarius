@@ -24,6 +24,7 @@ pub mod blocklists;
 pub mod crypto;
 pub mod csrf;
 pub mod dashboard;
+pub mod forward_zones;
 pub mod lists;
 pub mod live_log;
 pub mod origin;
@@ -227,6 +228,10 @@ impl AppState {
             .route("/upstreams/add", post(Self::upstream_add))
             .route("/upstreams/remove", post(Self::upstream_remove))
             .route("/upstreams/toggle", post(Self::upstream_toggle))
+            .route("/forwarding", get(Self::forwarding_page))
+            .route("/forwarding/target", post(Self::forward_zone_set_target))
+            .route("/forwarding/toggle", post(Self::forward_zone_toggle))
+            .route("/forwarding/apply-all", post(Self::forward_zone_apply_all))
             .route(
                 "/settings",
                 get(Self::settings_page).post(Self::settings_save),

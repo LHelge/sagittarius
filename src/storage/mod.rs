@@ -18,6 +18,7 @@
 //! |---|---|
 //! | [`admin_users`] | Web-admin credentials: [`admin_users::AdminUserRepository`] + [`admin_users::SqliteAdminUserRepo`] |
 //! | [`blocklists`] | Blocklist source + offline cache: [`blocklists::BlocklistRepository`] + [`blocklists::SqliteBlocklistRepo`] |
+//! | [`forward_zones`] | Conditional-forward zone rows: [`forward_zones::ForwardZoneRepository`] + [`forward_zones::SqliteForwardZoneRepo`] |
 //! | [`lists`] | Blacklist + allowlist repos: [`lists::BlacklistRepository`] + [`lists::AllowlistRepository`] |
 //! | [`local_records`] | Local DNS record rows: [`local_records::LocalRecordRepository`] + [`local_records::SqliteLocalRecordRepo`] |
 //! | [`query_log`] | Durable per-query history: [`query_log::QueryLogRepository`] + [`query_log::SqliteQueryLogRepo`] |
@@ -26,6 +27,7 @@
 
 pub mod admin_users;
 pub mod blocklists;
+pub mod forward_zones;
 pub mod lists;
 pub mod local_records;
 pub mod query_log;
@@ -147,6 +149,11 @@ impl Db {
     /// Repository for upstream resolver rows.
     pub fn upstreams(&self) -> upstreams::SqliteUpstreamRepo {
         upstreams::SqliteUpstreamRepo::new(self.pool.clone())
+    }
+
+    /// Repository for conditional-forward zone rows.
+    pub fn forward_zones(&self) -> forward_zones::SqliteForwardZoneRepo {
+        forward_zones::SqliteForwardZoneRepo::new(self.pool.clone())
     }
 
     /// Repository for blocklist source rows + the offline content cache.
@@ -723,6 +730,85 @@ mod tests {
         .await
         .expect("pragma_table_info for query_log.qname after down");
         assert_eq!(qname_count, 1, "other query_log columns must remain");
+    }
+
+    // ── forward_zones migration (E13.3) ───────────────────────────────────────
+
+    /// The forward_zones table, its columns, and its index must exist after
+    /// migration, and the seed must install the 20 disabled, untargeted zones.
+    #[tokio::test]
+    async fn forward_zones_table_columns_index_and_seed() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+
+        let table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'forward_zones'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for forward_zones");
+        assert_eq!(table_count, 1, "forward_zones table must exist");
+
+        for column in ["id", "zone_suffix", "target", "enabled", "sort_order"] {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('forward_zones') WHERE name = ?",
+            )
+            .bind(column)
+            .fetch_one(db.pool())
+            .await
+            .unwrap_or_else(|e| panic!("pragma_table_info for forward_zones.{column}: {e}"));
+            assert_eq!(count, 1, "column '{column}' must exist in forward_zones");
+        }
+
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'index' AND tbl_name = 'forward_zones' \
+               AND name = 'idx_forward_zones_enabled_sort'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for forward_zones index");
+        assert_eq!(index_count, 1, "idx_forward_zones_enabled_sort must exist");
+
+        // Seed: 20 zones, all disabled with a NULL target.
+        let seeded: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM forward_zones WHERE enabled = 0 AND target IS NULL",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("count seeded forward zones");
+        assert_eq!(
+            seeded, 20,
+            "all 20 reverse zones must be seeded disabled and untargeted"
+        );
+    }
+
+    /// The down migration must cleanly drop the index and table.
+    #[tokio::test]
+    async fn forward_zones_down_migration_is_clean_inverse() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+
+        let down_sql = include_str!("../../migrations/20260529130936_forward_zones.down.sql");
+        sqlx::raw_sql(down_sql)
+            .execute(db.pool())
+            .await
+            .expect("apply forward_zones down migration");
+
+        let table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'forward_zones'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for forward_zones after down");
+        assert_eq!(table_count, 0, "forward_zones table must be dropped");
+
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'index' AND name = 'idx_forward_zones_enabled_sort'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for forward_zones index after down");
+        assert_eq!(index_count, 0, "forward_zones index must be dropped");
     }
 
     #[tokio::test]
