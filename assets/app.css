@@ -71,9 +71,27 @@
 }
 
 .sgt-nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   padding: 0.25rem 0.6rem;
   border-radius: var(--pico-border-radius);
   text-decoration: none;
+}
+
+/* The nav-link icons sit slightly above text weight; nudge their size up a
+ * touch and let the active accent recolour them via currentColor. */
+.sgt-nav a .sgt-icon {
+  font-size: 1.1em;
+}
+
+/* Any button / summary that carries an icon lays it out inline with a small
+ * gap before the label (pause, logout, and the row actions added later). */
+button:has(.sgt-icon),
+summary:has(.sgt-icon) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .sgt-nav a[aria-current="page"] {

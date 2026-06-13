@@ -1408,6 +1408,25 @@ mod tests {
         // The hamburger renders icons from the embedded sprite via <use>.
         assert!(page.contains("/assets/icons.svg#menu"));
         assert!(page.contains("/assets/icons.svg#close"));
+        // Each nav section and the authenticated controls carry their icon.
+        for id in [
+            "dashboard",
+            "log",
+            "blacklist",
+            "allowlist",
+            "local",
+            "blocklists",
+            "upstreams",
+            "forwarding",
+            "settings",
+            "pause",
+            "logout",
+        ] {
+            assert!(
+                page.contains(&format!("/assets/icons.svg#{id}")),
+                "nav missing icon {id}"
+            );
+        }
 
         // The sprite itself is served as SVG and carries the referenced symbols.
         let sprite = ts

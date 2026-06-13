@@ -34,21 +34,21 @@
           </li>
         </ul>
         <ul class="sgt-nav" data-class="{'sgt-collapse--open': $navOpen}">
-          <li><a href="/"{% if chrome.active == "dashboard" %} aria-current="page"{% endif %}>Dashboard</a></li>
-          <li><a href="/log"{% if chrome.active == "log" %} aria-current="page"{% endif %}>Query log</a></li>
-          <li><a href="/blacklist"{% if chrome.active == "blacklist" %} aria-current="page"{% endif %}>Blacklist</a></li>
-          <li><a href="/allowlist"{% if chrome.active == "allowlist" %} aria-current="page"{% endif %}>Allowlist</a></li>
-          <li><a href="/local"{% if chrome.active == "local" %} aria-current="page"{% endif %}>Local DNS</a></li>
-          <li><a href="/blocklists"{% if chrome.active == "blocklists" %} aria-current="page"{% endif %}>Blocklists</a></li>
-          <li><a href="/upstreams"{% if chrome.active == "upstreams" %} aria-current="page"{% endif %}>Upstreams</a></li>
-          <li><a href="/forwarding"{% if chrome.active == "forwarding" %} aria-current="page"{% endif %}>Forwarding</a></li>
-          <li><a href="/settings"{% if chrome.active == "settings" %} aria-current="page"{% endif %}>Settings</a></li>
+          <li><a href="/"{% if chrome.active == "dashboard" %} aria-current="page"{% endif %}>{% call ui::icon("dashboard") %}{% endcall %}Dashboard</a></li>
+          <li><a href="/log"{% if chrome.active == "log" %} aria-current="page"{% endif %}>{% call ui::icon("log") %}{% endcall %}Query log</a></li>
+          <li><a href="/blacklist"{% if chrome.active == "blacklist" %} aria-current="page"{% endif %}>{% call ui::icon("blacklist") %}{% endcall %}Blacklist</a></li>
+          <li><a href="/allowlist"{% if chrome.active == "allowlist" %} aria-current="page"{% endif %}>{% call ui::icon("allowlist") %}{% endcall %}Allowlist</a></li>
+          <li><a href="/local"{% if chrome.active == "local" %} aria-current="page"{% endif %}>{% call ui::icon("local") %}{% endcall %}Local DNS</a></li>
+          <li><a href="/blocklists"{% if chrome.active == "blocklists" %} aria-current="page"{% endif %}>{% call ui::icon("blocklists") %}{% endcall %}Blocklists</a></li>
+          <li><a href="/upstreams"{% if chrome.active == "upstreams" %} aria-current="page"{% endif %}>{% call ui::icon("upstreams") %}{% endcall %}Upstreams</a></li>
+          <li><a href="/forwarding"{% if chrome.active == "forwarding" %} aria-current="page"{% endif %}>{% call ui::icon("forwarding") %}{% endcall %}Forwarding</a></li>
+          <li><a href="/settings"{% if chrome.active == "settings" %} aria-current="page"{% endif %}>{% call ui::icon("settings") %}{% endcall %}Settings</a></li>
         </ul>
         <ul class="sgt-nav-actions" data-class="{'sgt-collapse--open': $navOpen}">
           {% if chrome.authenticated %}
           <li>
             <details class="dropdown sgt-pause-menu">
-              <summary role="button" class="secondary outline sgt-btn-sm">Pause</summary>
+              <summary role="button" class="secondary outline sgt-btn-sm">{% call ui::icon("pause") %}{% endcall %}Pause</summary>
               <ul dir="rtl">
                 {% for mins in [5, 30, 60] %}
                 <li>
@@ -73,7 +73,7 @@
           <li>
             <form method="post" action="/logout" class="sgt-inline-form">
               <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
-              <button type="submit" class="secondary outline sgt-btn-sm">Logout</button>
+              <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("logout") %}{% endcall %}Logout</button>
             </form>
           </li>
           {% endif %}
