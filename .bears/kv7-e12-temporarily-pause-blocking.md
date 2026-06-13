@@ -2,13 +2,13 @@
 id: kv7
 title: E12 · Temporarily pause blocking
 type: epic
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:05:06.751142929Z
-updated: 2026-05-30T20:05:06.751142929Z
+created: "2026-05-30T20:05:06.751142929Z"
+updated: "2026-06-13T07:22:53.857507286Z"
 tags:
-- dns
-- web
+  - dns
+  - web
 ---
 
 Let the admin pause all DNS blocking for a chosen duration (5 min / 30 min / 1 h / custom), with a "Resume now" control — Pi-hole's "disable blocking," time-boxed.

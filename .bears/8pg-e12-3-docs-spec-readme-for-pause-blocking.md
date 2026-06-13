@@ -1,15 +1,15 @@
 ---
-id: 8pg
-title: 'E12.3 · Docs: SPEC + README for pause-blocking'
-status: open
+id: "8pg"
+title: "E12.3 · Docs: SPEC + README for pause-blocking"
+status: done
 priority: P2
-created: 2026-05-30T20:05:33.630233075Z
-updated: 2026-05-30T20:05:33.630233075Z
+created: "2026-05-30T20:05:33.630233075Z"
+updated: "2026-06-13T07:22:53.857311525Z"
 tags:
-- docs
+  - docs
 depends_on:
-- vp7
-- qqg
+  - vp7
+  - qqg
 parent: kv7
 ---
 
