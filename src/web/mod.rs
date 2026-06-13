@@ -1385,6 +1385,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn navbar_renders_responsive_hamburger_and_icon_sprite() {
+        let ts = TestServer::login().await;
+
+        let page = ts
+            .client
+            .get(ts.url("/"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        // The hamburger toggle drives a Datastar `navOpen` signal, and the
+        // link row / actions collapse via the shared `sgt-collapse--open` class.
+        assert!(page.contains("data-signals=\"{navOpen: false}\""));
+        assert!(page.contains("class=\"sgt-hamburger\""));
+        assert!(page.contains("data-on:click=\"$navOpen = !$navOpen\""));
+        assert!(page.contains("data-class=\"{'sgt-collapse--open': $navOpen}\""));
+        // The hamburger renders icons from the embedded sprite via <use>.
+        assert!(page.contains("/assets/icons.svg#menu"));
+        assert!(page.contains("/assets/icons.svg#close"));
+
+        // The sprite itself is served as SVG and carries the referenced symbols.
+        let sprite = ts
+            .client
+            .get(ts.url("/assets/icons.svg"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(sprite.status(), 200);
+        assert!(
+            sprite
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("image/svg+xml")
+        );
+        let body = sprite.text().await.unwrap();
+        assert!(body.contains("<symbol id=\"menu\""));
+        assert!(body.contains("<symbol id=\"dashboard\""));
+
+        ts.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn bind_serves_and_shuts_down_cleanly() {
         let (_dir, state) = test_state().await;
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

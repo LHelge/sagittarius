@@ -1,3 +1,4 @@
+{%- import "_macros.html" as ui -%}
 <!DOCTYPE html>
 <html lang="en" data-theme="{{ chrome.theme }}">
   <head>
@@ -12,7 +13,7 @@
   </head>
   <body{% if chrome.authenticated %} data-signals:csrf="'{{ chrome.csrf_token }}'"{% endif %}>
     {% if chrome.show_nav %}
-    <header class="sgt-topbar">
+    <header class="sgt-topbar" data-signals="{navOpen: false}">
       <nav class="container-fluid">
         <ul>
           <li>
@@ -22,7 +23,17 @@
             </a>
           </li>
         </ul>
-        <ul class="sgt-nav">
+        <ul class="sgt-nav-toggle">
+          <li>
+            <button type="button" class="sgt-hamburger" aria-label="Toggle navigation"
+                    data-attr="{'aria-expanded': $navOpen}"
+                    data-on:click="$navOpen = !$navOpen">
+              <span data-show="!$navOpen">{% call ui::icon("menu") %}{% endcall %}</span>
+              <span data-show="$navOpen">{% call ui::icon("close") %}{% endcall %}</span>
+            </button>
+          </li>
+        </ul>
+        <ul class="sgt-nav" data-class="{'sgt-collapse--open': $navOpen}">
           <li><a href="/"{% if chrome.active == "dashboard" %} aria-current="page"{% endif %}>Dashboard</a></li>
           <li><a href="/log"{% if chrome.active == "log" %} aria-current="page"{% endif %}>Query log</a></li>
           <li><a href="/blacklist"{% if chrome.active == "blacklist" %} aria-current="page"{% endif %}>Blacklist</a></li>
@@ -33,7 +44,7 @@
           <li><a href="/forwarding"{% if chrome.active == "forwarding" %} aria-current="page"{% endif %}>Forwarding</a></li>
           <li><a href="/settings"{% if chrome.active == "settings" %} aria-current="page"{% endif %}>Settings</a></li>
         </ul>
-        <ul>
+        <ul class="sgt-nav-actions" data-class="{'sgt-collapse--open': $navOpen}">
           {% if chrome.authenticated %}
           <li>
             <details class="dropdown sgt-pause-menu">

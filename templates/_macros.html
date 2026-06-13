@@ -1,7 +1,8 @@
 {# Shared askama macros.
 
    Import into a template with `{% import "_macros.html" as ui %}`, then call
-   e.g. `{% call ui::icon("dashboard") %}`. #}
+   e.g. `{% call ui::icon("dashboard") %}{% endcall %}` (askama 0.16 requires
+   the closing `endcall` even when the macro takes no caller body). #}
 
 {# Render an embedded Lucide icon by its sprite id (see `src/web/icons.rs`).
    Decorative by default: aria-hidden + focusable="false" keep it out of the

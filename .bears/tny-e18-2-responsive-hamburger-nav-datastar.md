@@ -1,10 +1,10 @@
 ---
 id: tny
 title: E18.2 — Responsive hamburger nav (Datastar)
-status: open
+status: done
 priority: P2
 created: "2026-06-13T14:58:52.885774954Z"
-updated: "2026-06-13T14:58:52.885774954Z"
+updated: "2026-06-13T16:48:19.318506714Z"
 tags:
   - web
   - ui
