@@ -110,6 +110,17 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
     let Some(cookie) = cookie else {
         return next.run(req).await;
     };
+
+    // Only a *live* session binds a CSRF token. A present-but-invalid cookie
+    // (idle-expired or unknown session) is treated as pre-auth: the Origin
+    // check above already gates it, and enforcing a token bound to the dead
+    // session would 403 the very login POST that replaces it — locking a
+    // returning user out until they manually clear the cookie. The handler's
+    // auth extractor still redirects any genuinely protected route to /login.
+    if state.current_user(req.headers()).await.is_none() {
+        return next.run(req).await;
+    }
+
     let expected = state.csrf_token(&cookie.id);
 
     // The token may arrive in the `X-CSRF-Token` header (explicit API clients) …
