@@ -1,10 +1,10 @@
 ---
 id: ja7
 title: E18.6 — Mobile layout polish (breakpoints, tables, touch targets)
-status: open
+status: done
 priority: P2
 created: "2026-06-13T14:59:14.529815108Z"
-updated: "2026-06-13T14:59:14.529815108Z"
+updated: "2026-06-13T17:04:25.311425840Z"
 tags:
   - web
   - ui
