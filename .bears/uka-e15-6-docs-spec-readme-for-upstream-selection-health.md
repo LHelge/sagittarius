@@ -1,16 +1,16 @@
 ---
 id: uka
-title: 'E15.6 · Docs: SPEC + README for upstream selection & health'
-status: open
+title: "E15.6 · Docs: SPEC + README for upstream selection & health"
+status: done
 priority: P2
-created: 2026-05-30T20:48:13.988987734Z
-updated: 2026-05-30T20:48:13.988987734Z
+created: "2026-05-30T20:48:13.988987734Z"
+updated: "2026-06-13T14:04:15.308484180Z"
 tags:
-- docs
+  - docs
 depends_on:
-- 6gq
-- ge8
-- eh4
+  - "6gq"
+  - ge8
+  - eh4
 parent: xa8
 ---
 

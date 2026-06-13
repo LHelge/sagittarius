@@ -41,9 +41,12 @@ traffic disappear.
   and a live query log streamed over SSE, with one-click allow/deny straight
   from the log. The log and dashboard are backed by a **persistent query log**
   (configurable retention, default 30 days; an enable/disable toggle and a
-  clear-now action), so history and windowed figures survive a restart.
+  clear-now action), so history and windowed figures survive a restart. The
+  dashboard also shows a **System** panel (version, uptime, queries/sec, cache
+  fill, process memory) and **per-upstream health** (success rate, latency).
 - 🔒 **Encrypted upstreams** — forward to resolvers over DNS-over-HTTPS (DoH) and
-  DNS-over-TLS (DoT).
+  DNS-over-TLS (DoT), with selectable **upstream strategy** (random,
+  latency-weighted, or parallel-race) and per-upstream health tracking.
 - 🏠 **Local DNS records** — define names for your own network, including
   wildcards (e.g. `*.home.lan`).
 

@@ -2,13 +2,13 @@
 id: xa8
 title: E15 · Upstream selection & health
 type: epic
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:47:03.075897654Z
-updated: 2026-05-30T20:47:03.075897654Z
+created: "2026-05-30T20:47:03.075897654Z"
+updated: "2026-06-13T14:04:15.308708334Z"
 tags:
-- upstream
-- dns
+  - upstream
+  - dns
 ---
 
 Smarter upstream selection (beyond random) plus per-upstream response-time tracking and telemetry. Concerns the **forward track only** — orthogonal to recursion/DNSSEC (E16/E17). Final epic of the **0.2.0** scope.
