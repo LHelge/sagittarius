@@ -64,6 +64,19 @@ const UDP_DEFAULT_LIMIT: usize = 512;
 /// Recommended DNS-over-UDP payload ceiling (DNS Flag Day 2020 / RFC 8906).
 const UDP_MAX_LIMIT: usize = 1232;
 
+/// The UDP reply-size limit for a query, in bytes.
+///
+/// Without an EDNS OPT the bare-DNS 512-byte limit applies. With one, the
+/// client's advertised payload size is used — but RFC 6891 §6.2.3 requires a
+/// value below 512 to be treated as 512, so a tiny (or zero) advertisement does
+/// not force needless truncation. Always bounded above by our own egress cap
+/// [`UDP_MAX_LIMIT`].
+fn udp_reply_limit(edns: Option<&crate::codec::synth::EdnsInfo>) -> usize {
+    edns.map(|e| (e.udp_payload_size as usize).max(UDP_DEFAULT_LIMIT))
+        .unwrap_or(UDP_DEFAULT_LIMIT)
+        .min(UDP_MAX_LIMIT)
+}
+
 /// Maximum concurrent UDP datagram handlers per socket.
 ///
 /// Tower's protective middleware still enforces the global query budget, but
@@ -444,11 +457,7 @@ where
         let reply = Self::run_service(self.service.clone(), &req).await;
 
         // UDP size check: truncate if reply exceeds the client-advertised limit.
-        let limit = req
-            .edns()
-            .map(|e| e.udp_payload_size as usize)
-            .unwrap_or(UDP_DEFAULT_LIMIT)
-            .min(UDP_MAX_LIMIT);
+        let limit = udp_reply_limit(req.edns());
 
         let final_reply = if reply.len() > limit {
             debug!(
@@ -610,11 +619,28 @@ mod tests {
             framing,
             header::{Header, Rcode},
             reader::Reader,
-            synth::Response,
+            synth::{EdnsInfo, Response},
             writer::Writer,
         },
         resolver::pipeline::{BoxError, DnsRequest, Outcome, PipelineResponse},
     };
+
+    /// RFC 6891 §6.2.3: an advertised UDP payload below 512 is treated as 512;
+    /// without EDNS the bare-DNS 512 applies; the value is capped at our egress
+    /// ceiling.
+    #[test]
+    fn udp_reply_limit_applies_rfc6891_floor_and_cap() {
+        let edns = |size: u16| EdnsInfo {
+            udp_payload_size: size,
+            cookie: None,
+        };
+        assert_eq!(udp_reply_limit(None), 512, "no EDNS → bare-DNS 512");
+        assert_eq!(udp_reply_limit(Some(&edns(0))), 512, "0 → floored to 512");
+        assert_eq!(udp_reply_limit(Some(&edns(200))), 512, "<512 → 512");
+        assert_eq!(udp_reply_limit(Some(&edns(512))), 512);
+        assert_eq!(udp_reply_limit(Some(&edns(1000))), 1000, "in range as-is");
+        assert_eq!(udp_reply_limit(Some(&edns(4096))), 1232, "capped at egress");
+    }
 
     // ── Query builders ────────────────────────────────────────────────────────
 
