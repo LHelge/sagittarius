@@ -8,7 +8,8 @@
 //! - ASCII letters are lowercased (DNS names are case-insensitive, RFC 4343).
 //! - A trailing dot (root label) is always present in the canonical form.
 //! - Labels use Sagittarius' supported domain syntax: ASCII letters, digits,
-//!   and interior hyphens.
+//!   interior hyphens, and underscores (the latter for service-discovery names
+//!   like `_dmarc` and SRV `_sip._tcp`).
 //!
 //! So `"Example.COM"` and `"example.com."` both normalize to `"example.com."`.
 //! The [`Display`] representation is the fully-qualified form with trailing dot.
@@ -588,12 +589,19 @@ impl FromStr for Name {
 
 impl Name {
     fn validate_label(label: &[u8]) -> Result<(), Error> {
+        // Hostname LDH rule: a label must not start or end with a hyphen.
         if label.first() == Some(&b'-') || label.last() == Some(&b'-') {
             return Err(Error::InvalidLabelByte(b'-'));
         }
 
         for &b in label {
-            if !(b.is_ascii_alphanumeric() || b == b'-') {
+            // Letters, digits, and hyphens (LDH), plus underscore. Underscore is
+            // not hostname syntax, but service-discovery names depend on it
+            // (`_dmarc`, `_acme-challenge`, SRV `_sip._tcp`, DKIM
+            // `selector._domainkey`, TLSA `_443._tcp`); a forwarding resolver
+            // must carry these rather than answer FORMERR. It may appear in any
+            // position, including leading.
+            if !(b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
                 return Err(Error::InvalidLabelByte(b));
             }
         }
@@ -758,12 +766,18 @@ mod tests {
     }
 
     #[test]
-    fn underscore_from_str_is_error() {
-        let err = Name::from_str("_service.example").unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidLabelByte(b'_')),
-            "unexpected error: {err}"
-        );
+    fn underscore_labels_are_accepted() {
+        // Service-discovery names depend on underscore labels (leading and
+        // interior); a forwarding resolver must accept, not FORMERR, them.
+        for s in [
+            "_dmarc.example.com",
+            "_sip._tcp.example.com",
+            "selector._domainkey.example.com",
+            "_acme-challenge.example.com",
+        ] {
+            let n = Name::from_str(s).unwrap_or_else(|e| panic!("{s:?} must parse: {e}"));
+            assert_eq!(n.to_string(), format!("{s}."));
+        }
     }
 
     #[test]
@@ -839,13 +853,11 @@ mod tests {
     }
 
     #[test]
-    fn wire_underscore_label_byte_is_error() {
+    fn wire_underscore_label_is_accepted() {
+        // `_svc` on the wire must decode, not error — SRV/TLSA/service names.
         let mut r = reader_from(&[0x04, b'_', b's', b'v', b'c', 0x00]);
-        let err = Name::read_question(&mut r).unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidLabelByte(b'_')),
-            "unexpected error: {err}"
-        );
+        let decoded = Name::read_question(&mut r).expect("underscore label decodes");
+        assert_eq!(decoded.to_string(), "_svc.");
     }
 
     // ── Compression pointer in question → error ───────────────────────────────
