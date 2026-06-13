@@ -67,14 +67,77 @@ impl AppState {
             .map(UpstreamRow::from)
             .collect();
 
+        let system = SystemInfo::capture(&state);
+
         DashboardTemplate::new(
             state.chrome("dashboard", &user).await,
             snapshot,
             blocklist_size,
             window,
             upstreams,
+            system,
         )
     }
+}
+
+/// At-a-glance server info for the dashboard "System" panel (E15.7).
+///
+/// All app-native (no host metrics): version, uptime, cache fill, and the
+/// process's own resident memory. `uptime_secs` seeds a client-side ticker so
+/// the uptime and queries/sec figures update without server round-trips.
+struct SystemInfo {
+    version: &'static str,
+    uptime_secs: i64,
+    uptime: String,
+    cache_entries: String,
+    cache_capacity: String,
+    process_memory: String,
+}
+
+impl SystemInfo {
+    fn capture(state: &AppState) -> Self {
+        let uptime_secs = state.started_at.elapsed().as_secs() as i64;
+        Self {
+            version: env!("CARGO_PKG_VERSION"),
+            uptime_secs,
+            uptime: humanize_uptime(uptime_secs),
+            cache_entries: group(state.resolver.cache().entry_count()),
+            cache_capacity: group(state.resolver.settings().cache_capacity),
+            process_memory: process_rss_bytes()
+                .map(format_mib)
+                .unwrap_or_else(|| "—".to_owned()),
+        }
+    }
+}
+
+/// The process's resident set size in bytes, read from `/proc/self/status`
+/// (`VmRSS`, already in kB so no page-size constant is needed). Returns `None`
+/// off Linux or if the field is unavailable.
+fn process_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb: u64 = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some(kb * 1024)
+}
+
+/// Format a byte count as mebibytes with one decimal (e.g. `14.2 MB`).
+fn format_mib(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// Humanize an uptime in seconds as `Nd Nh Nm` (server-render fallback before
+/// the client-side ticker takes over).
+fn humanize_uptime(secs: i64) -> String {
+    let secs = secs.max(0);
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3_600;
+    let mins = (secs % 3_600) / 60;
+    format!("{days}d {hours}h {mins}m")
 }
 
 /// A per-upstream health row, pre-formatted for display (E15.3).
@@ -133,6 +196,8 @@ struct DashboardTemplate {
     window_top_clients: Vec<(String, String)>,
     // Per-upstream health (in-memory, since-startup).
     upstreams: Vec<UpstreamRow>,
+    // At-a-glance server info (E15.7).
+    system: SystemInfo,
 }
 
 impl DashboardTemplate {
@@ -142,10 +207,12 @@ impl DashboardTemplate {
         blocklist_size: usize,
         window: WindowStats,
         upstreams: Vec<UpstreamRow>,
+        system: SystemInfo,
     ) -> Self {
         Self {
             chrome,
             upstreams,
+            system,
             total: snap.total,
             blocked: snap.blocked,
             cached: snap.cached,
@@ -219,6 +286,17 @@ mod tests {
         }
     }
 
+    fn test_system() -> SystemInfo {
+        SystemInfo {
+            version: "9.9.9",
+            uptime_secs: 90_061,
+            uptime: humanize_uptime(90_061),
+            cache_entries: group(8_123),
+            cache_capacity: group(100_000),
+            process_memory: "14.2 MB".to_owned(),
+        }
+    }
+
     #[test]
     fn template_seeds_signals_and_tables() {
         let snap = StatsSnapshot {
@@ -240,9 +318,10 @@ mod tests {
             top_domains: vec![("win.example.com.".to_owned(), 77)],
             top_clients: vec![("10.9.8.7".to_owned(), 64)],
         };
-        let html = DashboardTemplate::new(test_chrome(), snap, 65432, window, vec![])
-            .render()
-            .expect("render");
+        let html =
+            DashboardTemplate::new(test_chrome(), snap, 65432, window, vec![], test_system())
+                .render()
+                .expect("render");
         // Live counters seeded as raw Datastar signal values.
         assert!(html.contains("queries: 1000"));
         assert!(html.contains("blocked: 382"));
@@ -276,7 +355,7 @@ mod tests {
             top_domains: vec![],
             top_clients: vec![],
         };
-        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, vec![])
+        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, vec![], test_system())
             .render()
             .expect("render");
         assert!(html.contains("No queries in the last 24 hours."));
@@ -319,7 +398,7 @@ mod tests {
                 last_error: Some("upstream UDP query timed out".to_owned()),
             }),
         ];
-        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, rows)
+        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, rows, test_system())
             .render()
             .expect("render");
 
@@ -332,5 +411,50 @@ mod tests {
         assert!(html.contains("9.9.9.9:53"));
         assert!(html.contains("0.0%"));
         assert!(html.contains("upstream UDP query timed out"));
+    }
+
+    /// The System panel renders version, humanized uptime, cache fill, and
+    /// process memory, and wires the client-side uptime ticker.
+    #[test]
+    fn system_panel_renders() {
+        let snap = StatsSnapshot {
+            total: 0,
+            blocked: 0,
+            cached: 0,
+            forwarded: 0,
+            blocked_ratio: 0.0,
+            top_domains: vec![],
+            top_clients: vec![],
+        };
+        let window = WindowStats {
+            counts: QueryLogCounts::default(),
+            top_domains: vec![],
+            top_clients: vec![],
+        };
+        let html = DashboardTemplate::new(test_chrome(), snap, 0, window, vec![], test_system())
+            .render()
+            .expect("render");
+
+        assert!(html.contains("System"));
+        assert!(html.contains("9.9.9"), "version shown");
+        // 90_061s = 1d 1h 1m.
+        assert!(html.contains("1d 1h 1m"), "uptime humanized");
+        assert!(html.contains("8,123 / 100,000"), "cache fill shown");
+        assert!(html.contains("14.2 MB"), "process memory shown");
+        // The uptime ticker drives the live uptime + queries/sec figures.
+        assert!(html.contains("data-on-interval"));
+    }
+
+    #[test]
+    fn humanize_uptime_formats_days_hours_minutes() {
+        assert_eq!(humanize_uptime(0), "0d 0h 0m");
+        assert_eq!(humanize_uptime(90_061), "1d 1h 1m");
+        assert_eq!(humanize_uptime(-5), "0d 0h 0m");
+    }
+
+    #[test]
+    fn format_mib_rounds_to_one_decimal() {
+        assert_eq!(format_mib(14_889_779), "14.2 MB");
+        assert_eq!(format_mib(0), "0.0 MB");
     }
 }

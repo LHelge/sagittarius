@@ -1,10 +1,10 @@
 ---
 id: c67
 title: E15.7 · Dashboard system/about panel (version, uptime, qps, cache fill, memory)
-status: open
+status: done
 priority: P2
 created: "2026-06-13T12:42:58.638063850Z"
-updated: "2026-06-13T12:42:58.638063850Z"
+updated: "2026-06-13T14:02:46.170569242Z"
 tags:
   - web
 parent: xa8

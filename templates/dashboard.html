@@ -41,6 +41,31 @@
   </article>
 </section>
 
+<h2 class="sgt-section-title">System</h2>
+<section class="sgt-cards" data-signals="{uptime: {{ system.uptime_secs }}}" data-on-interval="$uptime = $uptime + 1">
+  <article class="sgt-card">
+    <span class="sgt-figure">{{ system.version }}</span>
+    <span class="sgt-label">Version</span>
+  </article>
+  <article class="sgt-card">
+    <span class="sgt-figure"
+      data-text="Math.floor($uptime / 86400) + 'd ' + Math.floor($uptime % 86400 / 3600) + 'h ' + Math.floor($uptime % 3600 / 60) + 'm'">{{ system.uptime }}</span>
+    <span class="sgt-label">Uptime</span>
+  </article>
+  <article class="sgt-card">
+    <span class="sgt-figure" data-text="($uptime > 0 ? ($queries / $uptime).toFixed(1) : '0.0')">0.0</span>
+    <span class="sgt-label">Queries/sec</span>
+  </article>
+  <article class="sgt-card">
+    <span class="sgt-figure">{{ system.cache_entries }} / {{ system.cache_capacity }}</span>
+    <span class="sgt-label">Cache entries</span>
+  </article>
+  <article class="sgt-card">
+    <span class="sgt-figure">{{ system.process_memory }}</span>
+    <span class="sgt-label">Process memory</span>
+  </article>
+</section>
+
 <h2 class="sgt-section-title">Last 24 hours (persisted)</h2>
 <section class="sgt-cards">
   <article class="sgt-card">
