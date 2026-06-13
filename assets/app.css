@@ -197,6 +197,13 @@ summary:has(.sgt-icon) {
   color: var(--sgt-accent);
 }
 
+/* Pico rings the summary with a focus box-shadow, which looks like a border
+ * while the menu is open. Drop it for pointer focus (opening the menu) but
+ * keep it for keyboard focus (:focus-visible) so the control stays accessible. */
+.sgt-topbar details.dropdown summary:focus:not(:focus-visible) {
+  box-shadow: none;
+}
+
 /* ── Pause control + banner (E12) ────────────────────────────────────────── */
 
 /* Keep the navbar pause dropdown compact and its panel from stretching the
@@ -468,6 +475,14 @@ summary:has(.sgt-icon) {
 
   .sgt-nav a {
     padding: 0.3rem 0.5rem;
+  }
+
+  /* In the drawer the Pause control sits near the left, so Pico's rtl
+   * right-anchoring (right:0) would open the panel off the left edge of the
+   * viewport. Anchor it to the left instead so it stays on screen. */
+  .sgt-topbar details.dropdown summary + ul {
+    right: auto;
+    left: 0;
   }
 
   /* Stack multi-field add/action forms so each control is full-width and
