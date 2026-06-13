@@ -1,0 +1,12 @@
+{# Shared askama macros.
+
+   Import into a template with `{% import "_macros.html" as ui %}`, then call
+   e.g. `{% call ui::icon("dashboard") %}`. #}
+
+{# Render an embedded Lucide icon by its sprite id (see `src/web/icons.rs`).
+   Decorative by default: aria-hidden + focusable="false" keep it out of the
+   accessibility tree and tab order. Pair with adjacent text or an aria-label
+   on the parent for meaning. #}
+{% macro icon(name) -%}
+<svg class="sgt-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#{{ name }}"></use></svg>
+{%- endmacro %}
