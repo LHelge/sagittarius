@@ -91,7 +91,7 @@
          data-on-interval="$pauseLeft = $pauseLeft - 1; $pauseLeft <= 0 && window.location.reload()">
       <span>
         ⏸ Blocking paused — resumes in
-        <strong data-text="Math.floor($pauseLeft / 60) + ':' + String(Math.max($pauseLeft % 60, 0)).padStart(2, '0')">{{ remaining }}</strong>
+        <strong data-text="$pauseLeft >= 3600 ? Math.floor($pauseLeft / 3600) + ':' + String(Math.floor($pauseLeft % 3600 / 60)).padStart(2, '0') + ':' + String($pauseLeft % 60).padStart(2, '0') : Math.floor($pauseLeft / 60) + ':' + String(Math.max($pauseLeft % 60, 0)).padStart(2, '0')">{{ remaining }}</strong>
       </span>
       <form method="post" action="/blocking/resume" class="sgt-inline-form">
         <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
