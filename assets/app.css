@@ -208,8 +208,9 @@ summary:has(.sgt-icon) {
   color: var(--sgt-accent);
 }
 
-/* Section headings (h2) and panel headers (the top-domains/clients cards) lay
- * their icon out inline with the title text. */
+/* Page headings (h1), section headings (h2) and panel headers (the
+ * top-domains/clients cards) lay their icon out inline with the title text. */
+.sgt-page-title,
 .sgt-section-title,
 .sgt-panel-title {
   display: flex;
@@ -217,6 +218,7 @@ summary:has(.sgt-icon) {
   gap: 0.5rem;
 }
 
+.sgt-page-title .sgt-icon,
 .sgt-section-title .sgt-icon {
   color: var(--sgt-accent);
 }

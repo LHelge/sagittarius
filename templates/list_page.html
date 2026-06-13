@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}{{ title }} · sagittarius{% endblock %}
 {% block content %}
 <hgroup>
-  <h1>{{ title }}</h1>
+  <h1 class="sgt-page-title">{% call ui::icon(chrome.active) %}{% endcall %}{{ title }}</h1>
   <p class="sgt-muted">{{ description }}</p>
 </hgroup>
 
@@ -13,7 +14,7 @@
 <form method="post" action="{{ base_path }}/add" class="sgt-actions">
   <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
   <input type="text" name="domain" placeholder="example.com" required aria-label="Domain" />
-  <button type="submit">Add</button>
+  <button type="submit">{% call ui::icon("add") %}{% endcall %}Add</button>
 </form>
 
 {% if entries.is_empty() %}
@@ -30,7 +31,7 @@
           <form method="post" action="{{ base_path }}/remove" class="sgt-inline-form">
             <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
             <input type="hidden" name="domain" value="{{ domain }}" />
-            <button type="submit" class="secondary outline sgt-btn-sm">Remove</button>
+            <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("remove") %}{% endcall %}Remove</button>
           </form>
         </td>
       </tr>
