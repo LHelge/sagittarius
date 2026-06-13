@@ -181,7 +181,19 @@ DoT/DoH); it is not used to deserialize received messages on the hot path.
      the most-specific match winning. A local name match for a different qtype
      returns authoritative NODATA rather than leaking the private name upstream.
      Deliberately *not* optimized for large volumes — a reversed-label trie is
-     a future option if domain-suffix blocking is ever added (§12).
+     a future option if domain-suffix blocking is ever added (§12). A derived
+     **reverse index** (`IpAddr → name`) is built alongside this snapshot from
+     the exact A/AAAA records so reverse (PTR) queries for IPs we own are
+     answered authoritatively (§5); when several names share an address the
+     canonical one is chosen deterministically (shortest name, lexical
+     tie-break). Wildcards are excluded from the reverse index — they map a
+     pattern, not a concrete host.
+   - **Conditional-forward zones** — the enabled `forward_zones` (§4) compiled
+     into a most-specific-wins suffix → target map plus a small set of upstream
+     forwarders (one per distinct target, deduplicated). Held in an atomically
+     swappable snapshot like the upstream pool; rebuilt and swapped when the
+     admin edits a zone. Consulted between local records and the blocking stages
+     (§5).
    - **Cache** (`moka`) — positive and negative answers keyed by
      `(qname, qtype, qclass)`, each entry expiring per the record TTL.
    - **Runtime settings snapshot** — cache TTL bounds, negative-TTL cap,
@@ -302,6 +314,16 @@ The database holds global configuration **and** the durable per-query history
   single domain be permitted without editing a multi-thousand-entry blocklist.
 - **local_records** — local DNS entries: name (incl. wildcard), type, value,
   TTL; resolved authoritatively without contacting upstreams.
+- **forward_zones** — conditional-forward zones: a `zone_suffix` → `target`
+  (resolver `IP` or `IP:port`, nullable until set) routing table with an
+  `enabled` flag and sort order. A query whose name falls under an enabled zone
+  is forwarded to that zone's target instead of the default upstream pool (§5,
+  §7). Seeded with the RFC1918 / ULA reverse zones (`10.in-addr.arpa`,
+  `16.172.in-addr.arpa`…`31.172.in-addr.arpa`, `168.192.in-addr.arpa`,
+  `c.f.ip6.arpa`, `d.f.ip6.arpa`) **disabled with a NULL target** so the admin
+  can point LAN reverse-DNS (PTR) at the router/DHCP resolver. The mechanism is
+  general, not PTR-specific — it later serves split-horizon forward zones
+  (e.g. `corp.internal`) too.
 - **query_log** — durable per-query history, one row per resolved query: `id`
   (autoincrement; chronological order + pagination cursor), `ts` (receipt time,
   epoch **milliseconds**), `client` (IP), `qname`, `qtype`, `outcome` (a stable
@@ -355,14 +377,16 @@ it only sets a flag and lets the request continue. Only the innermost forward
 service ever parses past the question.
 
 ```
-RateLimit ─► ShallowParse ─► LocalRecords ─► Blacklist ─► Allowlist ─► Blocklists ─► Cache ─► Forward
- (tower)      (codec)        (answer)        (block)       (set flag)   (block*)      (hit)    (inner)
-                                                           continues    *unless flag set
+RateLimit ─► ShallowParse ─► LocalRecords ─► ForwardZones ─► Blacklist ─► Allowlist ─► Blocklists ─► Cache ─► Forward
+ (tower)      (codec)        (answer/PTR)    (cond. fwd)      (block)       (set flag)   (block*)      (hit)    (inner)
+                                             routes          continues    *unless flag set
 ```
 
-**Precedence:** local records win over everything; then the admin **blacklist**
-(explicit deny) wins over the **allowlist** (explicit allow); the allowlist in
-turn only suppresses the bulk **blocklists**.
+**Precedence:** local records win over everything (including local PTR synthesis
+for IPs we own); then **conditional-forward zones** route matching names ahead of
+all blocking — you don't block your own reverse zones; then the admin
+**blacklist** (explicit deny) wins over the **allowlist** (explicit allow); the
+allowlist in turn only suppresses the bulk **blocklists**.
 
 **Pause gate.** When blocking is temporarily paused (§9), the three blocking
 stages — blacklist, allowlist, blocklist — are skipped immediately after local
@@ -382,39 +406,53 @@ would-be-blocked query during a pause resolves and logs as **forwarded** /
 3. **Local records.** If the name matches a local record (exact or wildcard)
    for the requested qtype, synthesize an authoritative answer into the output
    buffer and return. If the name is local but has no record for the requested
-   qtype, return authoritative NODATA. Local records are absolute — checked
-   first, ahead of all blocking — and skip the cache and upstream entirely.
-4. **Admin blacklist.** If the name is in the admin blacklist (**exact match**),
+   qtype, return authoritative NODATA. **Reverse (PTR) queries** are handled
+   here too: a PTR question's `in-addr.arpa` / `ip6.arpa` name is parsed back to
+   an `IpAddr`, and if it belongs to a local A/AAAA record the reverse index
+   (§3.1) yields the canonical name, which is synthesized as an authoritative
+   PTR answer (RDATA = the name encoded as DNS labels). A reverse query for an
+   address we do **not** own falls through — it is **not** answered NODATA here,
+   so it can reach conditional forwarding / the upstream pool. Local records are
+   absolute — checked first, ahead of all blocking — and skip the cache and
+   upstream entirely.
+4. **Conditional-forward zones.** If the name falls under an enabled forward
+   zone (most-specific suffix wins, §3.1), route the query to that zone's target
+   resolver instead of the default upstream pool, then continue through the
+   normal **cache → forward** path (zone answers are cached like any upstream
+   answer). This sits below local records (a local PTR answer wins) and **above**
+   the blocking stages, so a host never blocks its own reverse zones. On no match
+   the query continues unchanged.
+5. **Admin blacklist.** If the name is in the admin blacklist (**exact match**),
    synthesize the configured sinkhole response from the question — `NXDOMAIN`,
    `0.0.0.0` / `::`, or a configured custom IP — and log as **blocked**. Highest
    blocking precedence; not overridable by the allowlist.
-5. **Allowlist.** If the name is in the allowlist, set an `allow-bypass` flag and
+6. **Allowlist.** If the name is in the allowlist, set an `allow-bypass` flag and
    **continue** (this is an exception, not an answer). The flag tells the
    blocklist layer to stand down so the query proceeds to cache/upstream for a
    real answer.
-6. **Blocklists.** If the name is in the aggregated blocklist set (**exact
+7. **Blocklists.** If the name is in the aggregated blocklist set (**exact
    match**) and the `allow-bypass` flag is not set, synthesize the sinkhole
    response and log as **blocked**. No full parse required.
-7. **Cache lookup.** Check the `moka` cache keyed by `(qname, qtype, qclass)`.
+8. **Cache lookup.** Check the `moka` cache keyed by `(qname, qtype, qclass)`.
    On hit, re-emit the cached raw bytes, patching the transaction ID and TTL
    fields in place (§8), and log as **cached**.
-8. **Upstream resolution (inner service).** On miss, forward to an upstream
+9. **Upstream resolution (inner service).** On miss, forward to an upstream
    chosen by the configured selection strategy (§7) over its transport
    (UDP/TCP/DoT/DoH) via the hickory client, recording the answering upstream
    and its latency. Apply a per-query timeout and fail over (or race, in
    parallel mode) on error/timeout (§7).
-9. **Cache store.** Scan the response once for the minimum positive-answer TTL,
+10. **Cache store.** Scan the response once for the minimum positive-answer TTL,
    recording each real RR TTL field's byte offset (excluding EDNS OPT
    pseudo-RRs). Positive responses use that minimum TTL; negative responses
    (`NXDOMAIN` / `NODATA`) use the SOA-derived negative TTL where available and
    are not cached if no SOA-derived TTL is available. Expiry is capped by the
    configured negative-TTL cap for negative answers and then clamped to the
    configured min/max bounds.
-10. **Reply.** Send the response to the client, patching the transaction ID to
+11. **Reply.** Send the response to the client, patching the transaction ID to
     the client's query ID for both forwarded and cached raw-byte responses. Set
     the `TC` bit and expect TCP retry if a UDP response would exceed size
     limits.
-11. **Log.** Emit the outcome as a structured `tracing` event to stdout, update
+12. **Log.** Emit the outcome as a structured `tracing` event to stdout, update
     the in-memory runtime stats, and push the event onto the live-log broadcast
     for the admin SSE stream. No database write in v0.1.
 
@@ -506,7 +544,7 @@ null-IP / custom, per the configured block mode) and authoritative local
   exactly as long as its DNS TTL (clamped to configured min/max).
 - **Raw-bytes cache.** Entries store the upstream response *as received*
   (`Bytes`) together with the byte offsets of each TTL field, recorded during
-  the min-TTL scan (§5 step 9). EDNS OPT pseudo-RRs are not TTL-bearing records
+  the min-TTL scan (§5 step 10). EDNS OPT pseudo-RRs are not TTL-bearing records
   and are excluded from offset recording. Nothing is re-serialized on a hit.
 - **Cheap, correct serving.** On a hit the cached bytes are re-emitted with two
   in-place patches: the **transaction ID** (set to the client's query ID) and
@@ -568,6 +606,11 @@ null-IP / custom, per the configured block mode) and authoritative local
   - Local DNS record management (including wildcards).
   - Upstream resolver configuration, including the **selection strategy**
     (random / latency-weighted / parallel) and the parallel fan-out (§7).
+  - **Conditional forwarding** (§4, §5): list the forward zones, set each zone's
+    router/DHCP target resolver, and toggle it on/off, plus a one-click
+    "forward all reverse zones here" action that points every private reverse
+    zone at a single resolver — the common LAN reverse-DNS setup. Edits write
+    through to SQLite and rebuild the live zone forwarders immediately.
   - Settings — including the **query-log controls**: an enable/disable toggle
     (logging on by default), a retention window in days (default 30), and a
     *Clear query log now* action that purges all stored history.
@@ -716,9 +759,11 @@ each feature is filled in as it lands; this list is the milestone scope.
   and surface per-list block counts.
 - **Temporarily pause blocking** (E12) — disable all blocking for a chosen
   duration (5 min / 30 min / 1 h / custom) with resume-now; auto-resumes.
-- **Reverse DNS for the LAN** (E13) — synthesize PTR from local records and
-  conditional-forward private `in-addr.arpa` / `ip6.arpa` zones to the
-  router/DHCP (a general forward-zone mechanism).
+- **Reverse DNS for the LAN** (E13) — *shipped*: synthesizes PTR from local
+  records (an `IpAddr → name` reverse index, §3.1) and conditional-forwards the
+  private `in-addr.arpa` / `ip6.arpa` zones to the router/DHCP via a general
+  `forward_zones` mechanism (§4, §5) that also serves split-horizon forward
+  zones later.
 - **Client hostname decoration** (E14) — show device hostnames (IP fallback) in
   the live log and top-clients via internal, cached reverse lookups.
 - **Upstream selection & health** (E15) — per-upstream response-time tracking
