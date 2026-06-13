@@ -2,13 +2,13 @@
 id: tcb
 title: E14 · Client hostname decoration (admin UI)
 type: epic
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:24:13.210287968Z
-updated: 2026-05-30T20:24:13.210287968Z
+created: "2026-05-30T20:24:13.210287968Z"
+updated: "2026-06-13T18:57:39.491117020Z"
 tags:
-- web
-- telemetry
+  - web
+  - telemetry
 ---
 
 Show device hostnames instead of bare `192.168.x.x` in the live log and "top clients," by having Sagittarius reverse-look-up client IPs internally and cache the results.

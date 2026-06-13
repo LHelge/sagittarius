@@ -1,15 +1,15 @@
 ---
 id: d9u
-title: 'E14.3 · Docs: SPEC + README for hostname decoration'
-status: open
+title: "E14.3 · Docs: SPEC + README for hostname decoration"
+status: done
 priority: P2
-created: 2026-05-30T20:24:36.839909935Z
-updated: 2026-05-30T20:24:36.839909935Z
+created: "2026-05-30T20:24:36.839909935Z"
+updated: "2026-06-13T18:57:39.490903665Z"
 tags:
-- docs
+  - docs
 depends_on:
-- akd
-- tqc
+  - akd
+  - tqc
 parent: tcb
 ---
 
