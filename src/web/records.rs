@@ -37,6 +37,10 @@ impl AppState {
         let rows = self.db.local_records().load_all().await?;
         let records = build_local_records(rows).map_err(|e| WebError::internal(e.to_string()))?;
         self.resolver.local().store(records);
+        // The reverse index (and therefore hostname decoration, E14) is derived
+        // from these records — drop cached reverse lookups so an edit takes
+        // effect on the next render instead of waiting out the cache TTL.
+        self.reverse.clear();
         Ok(())
     }
 

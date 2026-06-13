@@ -1065,6 +1065,78 @@ mod tests {
         ts.shutdown().await;
     }
 
+    /// E14: adding a local record through the admin handler invalidates the
+    /// reverse-lookup cache, so a client that was previously bare (its negative
+    /// lookup cached) decorates on the next render — no restart needed.
+    #[tokio::test]
+    async fn editing_local_records_refreshes_hostname_decoration() {
+        use crate::resolver::pipeline::Outcome;
+        use crate::storage::query_log::{QueryLogRecord, QueryLogRepository};
+        use std::net::IpAddr;
+
+        let ts = TestServer::login().await;
+        let ip: IpAddr = "192.168.1.60".parse().unwrap();
+
+        // No record yet → a lookup negatively caches "no hostname" for this IP.
+        assert!(ts.app.reverse.lookup(ip).await.is_none());
+
+        // Add the matching record through the real handler. Without the cache
+        // invalidation it wires in, the sticky negative entry would keep the
+        // client bare until the TTL elapses or the server restarts.
+        let r = ts
+            .client
+            .post(ts.url("/local/add"))
+            .header("cookie", &ts.cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!(
+                "csrf_token={}&name=nas.home.lan&type=A&value=192.168.1.60&ttl=300",
+                ts.csrf
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+
+        // The reverse cache was cleared, so a fresh lookup now resolves.
+        assert_eq!(
+            ts.app.reverse.lookup(ip).await.map(|n| n.to_string()),
+            Some("nas.home.lan.".to_owned()),
+            "local-record edit must invalidate the stale negative reverse-cache entry"
+        );
+
+        // And the client renders decorated in the live log.
+        ts.app
+            .db
+            .query_log()
+            .insert_batch(&[QueryLogRecord {
+                id: 0,
+                ts: 1,
+                client: "192.168.1.60".to_owned(),
+                qname: "x.test.".to_owned(),
+                qtype: "A".to_owned(),
+                outcome: Outcome::Forwarded,
+                rcode: Some(0),
+                upstream: None,
+                latency_ms: 1,
+                blocklist_id: None,
+            }])
+            .await
+            .unwrap();
+        let page = ts
+            .client
+            .get(ts.url("/log"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains("nas.home.lan (192.168.1.60)"));
+
+        ts.shutdown().await;
+    }
+
     /// E14.2: the dashboard top-clients table decorates IPs with hostnames,
     /// while aggregation stays keyed by IP (two names for one IP don't split
     /// the count — the hostname is display-only).
