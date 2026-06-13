@@ -206,8 +206,11 @@ fn udp_config(addr: SocketAddr) -> UpstreamConfig {
 
 /// Assert that `result.bytes`:
 /// - scan with `TtlScan` succeeds and `min_ttl == expected_ttl`
-/// - parse with `CodecQuery::try_from` succeeds and the first question name
+/// - parse as a DNS response (header + question) succeeds and the question name
 ///   matches `expected_name` (FQDN with trailing dot)
+///
+/// The bytes are a *response* (QR=1), so the header and question are parsed
+/// directly — `Query::try_from` rejects responses by design.
 fn assert_bytes_reparse(result: &ForwardResult, expected_ttl: Option<u32>, expected_name: &str) {
     let scan =
         TtlScan::scan(&result.bytes).expect("TtlScan must succeed on upstream response bytes");
@@ -217,10 +220,14 @@ fn assert_bytes_reparse(result: &ForwardResult, expected_ttl: Option<u32>, expec
         scan.min_ttl
     );
 
-    let query = sagittarius::codec::message::Query::try_from(result.bytes.clone())
-        .expect("Query::try_from must succeed on upstream response bytes");
+    let mut reader = sagittarius::codec::reader::Reader::new(result.bytes.clone());
+    let header =
+        sagittarius::codec::header::Header::read(&mut reader).expect("valid response header");
+    assert!(header.qr(), "upstream bytes must be a response");
+    let question = sagittarius::codec::name::Name::read_question(&mut reader)
+        .expect("question name must parse");
     assert_eq!(
-        query.question().name.to_string(),
+        question.to_string(),
         expected_name,
         "codec question name mismatch"
     );

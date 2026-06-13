@@ -48,6 +48,17 @@ pub enum Error {
     #[error("expected QDCOUNT=1, got {0}")]
     InvalidQuestionCount(u16),
 
+    /// The message is a response (QR=1), not a request. A resolver must not
+    /// treat a response arriving on its query port as a query.
+    #[error("message is a response (QR=1), not a query")]
+    NotARequest,
+
+    /// The message uses an opcode this resolver does not implement — anything
+    /// other than standard QUERY (e.g. IQUERY, STATUS, NOTIFY, UPDATE). The
+    /// listener answers NOTIMP rather than resolving it.
+    #[error("unsupported DNS opcode: {0}")]
+    UnsupportedOpcode(u8),
+
     /// A compression pointer was found in the question section.
     #[error("compression pointer in question section is not allowed")]
     CompressionPointerInQuestion,

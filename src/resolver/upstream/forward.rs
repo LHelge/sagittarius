@@ -194,12 +194,16 @@ mod tests {
             .expect("TtlScan must succeed on returned bytes");
         assert_eq!(scan.min_ttl, Some(300), "TTL from bytes must be 300");
 
-        // bytes must re-parse with the project Query codec (proves it is a
-        // well-formed DNS message with at least a valid header + question)
-        let query = crate::codec::message::Query::try_from(result.bytes.clone())
-            .expect("Query::try_from must succeed on returned bytes");
+        // The returned bytes are a well-formed DNS *response*: parse the header
+        // and question directly (Query::try_from now rejects QR=1 by design).
+        let mut reader = crate::codec::reader::Reader::new(result.bytes.clone());
+        let header =
+            crate::codec::header::Header::read(&mut reader).expect("valid response header");
+        assert!(header.qr(), "upstream bytes must be a response");
+        let question =
+            crate::codec::name::Name::read_question(&mut reader).expect("question name must parse");
         assert_eq!(
-            query.question().name.to_string(),
+            question.to_string(),
             "example.com.",
             "question name in parsed bytes must match queried name"
         );

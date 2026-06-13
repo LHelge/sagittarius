@@ -48,7 +48,13 @@
 
 use bytes::Bytes;
 
-use crate::codec::{Error, header::Header, name::Name, reader::Reader, writer::Writer};
+use crate::codec::{
+    Error,
+    header::{Header, Opcode},
+    name::Name,
+    reader::Reader,
+    writer::Writer,
+};
 
 // ── Maximum message length ────────────────────────────────────────────────────
 
@@ -280,6 +286,35 @@ impl ParseError {
     fn with_id(id: u16, kind: Error) -> Self {
         Self { id: Some(id), kind }
     }
+
+    /// How the listener should respond to this rejected datagram.
+    ///
+    /// Keeps the reply *policy* beside the error definition: the UDP and TCP
+    /// listeners only match on the returned [`RejectAction`].
+    #[must_use]
+    pub fn reject_action(&self) -> RejectAction {
+        match (self.id, &self.kind) {
+            // No recoverable id (message too long/short) → nothing to address.
+            (None, _) => RejectAction::Drop,
+            // A response is not a request: never reply (would reflect/loop).
+            (Some(_), Error::NotARequest) => RejectAction::Drop,
+            // An unimplemented opcode gets NOTIMP (RFC 1035 §4.1.1).
+            (Some(id), Error::UnsupportedOpcode(_)) => RejectAction::NotImp(id),
+            // Everything else is a malformed query → FORMERR.
+            (Some(id), _) => RejectAction::FormErr(id),
+        }
+    }
+}
+
+/// What a listener should send in reply to a datagram that failed to parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectAction {
+    /// Send nothing: the datagram is unaddressable or is itself a response.
+    Drop,
+    /// Send a FORMERR carrying this transaction id.
+    FormErr(u16),
+    /// Send a NOTIMP carrying this transaction id (unsupported opcode).
+    NotImp(u16),
 }
 
 impl std::fmt::Display for ParseError {
@@ -345,8 +380,11 @@ impl Query {
     /// 1. **Size guard**: reject messages longer than [`MAX_MESSAGE_LEN`]
     ///    (65535 bytes) — `id = None`.
     /// 2. **Header read**: attempt to read 12 bytes — on failure `id = None`.
-    /// 3. **QDCOUNT check**: reject unless exactly 1 — `id = Some(header.id)`.
-    /// 4. **Question read**: parse QNAME + QTYPE + QCLASS — `id = Some(header.id)`.
+    /// 3. **Message kind**: reject responses (QR=1, [`Error::NotARequest`]) and
+    ///    any opcode other than standard QUERY ([`Error::UnsupportedOpcode`]) —
+    ///    `id = Some(header.id)`.
+    /// 4. **QDCOUNT check**: reject unless exactly 1 — `id = Some(header.id)`.
+    /// 5. **Question read**: parse QNAME + QTYPE + QCLASS — `id = Some(header.id)`.
     ///
     /// The RR sections (answer/authority/additional) are not read or validated.
     ///
@@ -369,7 +407,24 @@ impl Query {
         // MessageTooShort is returned if < 12 bytes remain.  id stays None.
         let header = Header::read(&mut reader).map_err(ParseError::without_id)?;
 
-        // ── 3. QDCOUNT check ───────────────────────────────────────────────────
+        // ── 3. Message kind ────────────────────────────────────────────────────
+        // A resolver serves *requests* only. A response (QR=1) arriving on the
+        // query port is not a query — drop it (the listener sends nothing, so we
+        // never reflect a reply to a response). An opcode other than standard
+        // QUERY (IQUERY/STATUS/NOTIFY/UPDATE/…) is unimplemented — the listener
+        // answers NOTIMP. Both are caught here so a non-query never reaches the
+        // resolution pipeline.
+        if header.qr() {
+            return Err(ParseError::with_id(header.id, Error::NotARequest));
+        }
+        if header.opcode() != Opcode::Query {
+            return Err(ParseError::with_id(
+                header.id,
+                Error::UnsupportedOpcode(u8::from(header.opcode())),
+            ));
+        }
+
+        // ── 4. QDCOUNT check ───────────────────────────────────────────────────
         if header.qdcount != 1 {
             return Err(ParseError::with_id(
                 header.id,
@@ -377,7 +432,7 @@ impl Query {
             ));
         }
 
-        // ── 4. Question ────────────────────────────────────────────────────────
+        // ── 5. Question ────────────────────────────────────────────────────────
         let question =
             Question::read(&mut reader).map_err(|e| ParseError::with_id(header.id, e))?;
 
@@ -693,6 +748,66 @@ mod tests {
             err.kind
         );
         assert_eq!(err.id, Some(0x2222));
+    }
+
+    // ── Message kind: QR / opcode ─────────────────────────────────────────────
+
+    /// Build a one-question datagram with an explicit QR bit and opcode.
+    fn build_kind(id: u16, qr: bool, opcode: Opcode, name: &str) -> Bytes {
+        let mut w = Writer::with_capacity(64);
+        Header::new(id)
+            .with_qr(qr)
+            .with_opcode(opcode)
+            .with_qdcount(1)
+            .write(&mut w);
+        let n: Name = name.parse().unwrap();
+        n.write(&mut w);
+        w.write_u16(1); // A
+        w.write_u16(1); // IN
+        w.finish()
+    }
+
+    #[test]
+    fn response_packet_rejected_as_not_a_request() {
+        // QR=1: a response arriving on the query port is not a query.
+        let raw = build_kind(0x3333, true, Opcode::Query, "example.com");
+        let err = Query::try_from(raw).expect_err("QR=1 must be rejected");
+        assert!(
+            matches!(err.kind, Error::NotARequest),
+            "unexpected error kind: {:?}",
+            err.kind
+        );
+        // A response must be dropped, never replied to.
+        assert_eq!(err.reject_action(), RejectAction::Drop);
+    }
+
+    #[test]
+    fn unsupported_opcode_rejected_with_notimp() {
+        // Opcode 5 = UPDATE (RFC 2136); we do not implement it.
+        let raw = build_kind(0x4444, false, Opcode::Other(5), "example.com");
+        let err = Query::try_from(raw).expect_err("non-QUERY opcode must be rejected");
+        assert!(
+            matches!(err.kind, Error::UnsupportedOpcode(5)),
+            "unexpected error kind: {:?}",
+            err.kind
+        );
+        assert_eq!(err.reject_action(), RejectAction::NotImp(0x4444));
+    }
+
+    #[test]
+    fn standard_query_opcode_still_parses() {
+        // QR=0, opcode=QUERY parses normally (regression guard).
+        let raw = build_kind(0x5555, false, Opcode::Query, "example.com");
+        let q = Query::try_from(raw).expect("standard query must parse");
+        assert_eq!(q.header().id, 0x5555);
+    }
+
+    #[test]
+    fn malformed_query_still_maps_to_formerr() {
+        // A plain malformed query (bad QDCOUNT) keeps the FORMERR action.
+        let raw = build_query_with_bad_qdcount(0x6666, "example.com", 0);
+        let err = Query::try_from(raw).expect_err("QDCOUNT=0 must fail");
+        assert_eq!(err.reject_action(), RejectAction::FormErr(0x6666));
     }
 
     // ── Compression pointer in question ───────────────────────────────────────

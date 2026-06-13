@@ -422,6 +422,22 @@ impl Response {
         w.finish()
     }
 
+    /// Synthesize a minimal NOTIMP response from only a transaction ID.
+    ///
+    /// Sent when the query uses an opcode this resolver does not implement
+    /// (anything other than standard QUERY). No question section is echoed
+    /// (QDCOUNT=0); the opcode is left as QUERY in the reply, which clients
+    /// still read as "not implemented" from the RCODE.
+    #[must_use]
+    pub fn notimp(id: u16) -> Bytes {
+        let mut w = Writer::with_capacity(12);
+        Header::new(id)
+            .with_qr(true)
+            .with_rcode(Rcode::NotImpl)
+            .write(&mut w);
+        w.finish()
+    }
+
     /// Synthesize a minimal truncated (TC=1) response.
     ///
     /// Echoes the question, sets QR=1, TC=1, RA=1, RCODE=NOERROR, zero RRs.
@@ -1416,6 +1432,18 @@ mod tests {
         assert!(hdr.tc(), "TC must be set");
         assert_eq!(hdr.arcount, 1, "ARCOUNT must be 1 with EDNS");
         assert!(read_opt_rr(&resp).is_some(), "OPT must be present");
+    }
+
+    // ── NOTIMP ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn notimp_echoes_id_sets_qr_and_rcode() {
+        let resp = Response::notimp(0x4242);
+        let hdr = parse_response_header(&resp);
+        assert_eq!(hdr.id, 0x4242, "id must be echoed");
+        assert!(hdr.qr(), "QR must be set on a NOTIMP reply");
+        assert_eq!(hdr.rcode(), Rcode::NotImpl, "RCODE must be NOTIMP");
+        assert_eq!(hdr.qdcount, 0, "minimal NOTIMP echoes no question");
     }
 
     // ── BlockMode::null_ip constructor ────────────────────────────────────────
