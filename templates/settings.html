@@ -89,17 +89,6 @@
   </fieldset>
 
   <fieldset>
-    <legend><strong>Interface</strong></legend>
-    <label>Theme
-      <select name="ui_theme">
-        <option value="auto"{% if ui_theme == "auto" %} selected{% endif %}>Auto</option>
-        <option value="light"{% if ui_theme == "light" %} selected{% endif %}>Light</option>
-        <option value="dark"{% if ui_theme == "dark" %} selected{% endif %}>Dark</option>
-      </select>
-    </label>
-  </fieldset>
-
-  <fieldset>
     <legend><strong>Query log</strong></legend>
     <label>
       <input type="checkbox" name="query_log_enabled" value="1"{% if query_log_enabled %} checked{% endif %} />

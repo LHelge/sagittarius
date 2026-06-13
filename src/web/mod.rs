@@ -238,6 +238,7 @@ impl AppState {
                 get(Self::settings_page).post(Self::settings_save),
             )
             .route("/settings/clear-log", post(Self::settings_clear_log))
+            .route("/theme/toggle", post(Self::theme_toggle))
             // Temporarily pause / resume all blocking (E12).
             .route("/blocking/pause", post(Self::blocking_pause))
             .route("/blocking/resume", post(Self::blocking_resume))
@@ -1523,6 +1524,67 @@ mod tests {
             .await
             .unwrap();
         assert!(log.contains("data-on:click=\"@get('/log/older?before=' + $oldest)\""));
+
+        ts.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn topbar_theme_toggle_flips_light_and_dark() {
+        let ts = TestServer::login().await;
+
+        // Fresh install defaults to `auto`; the topbar button offers "go dark".
+        let page = ts
+            .client
+            .get(ts.url("/"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains("data-theme=\"auto\""));
+        assert!(page.contains("action=\"/theme/toggle\""));
+        assert!(page.contains("/assets/icons.svg#moon"));
+
+        let toggle = |to_check: &'static str| {
+            let ts = &ts;
+            async move {
+                let r = ts
+                    .client
+                    .post(ts.url("/theme/toggle"))
+                    .header("cookie", &ts.cookie)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(format!("csrf_token={}", ts.csrf))
+                    .send()
+                    .await
+                    .unwrap();
+                assert!(r.status().is_redirection(), "toggle should PRG-redirect");
+                let page = ts
+                    .client
+                    .get(ts.url("/"))
+                    .header("cookie", &ts.cookie)
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap();
+                assert!(
+                    page.contains(&format!("data-theme=\"{to_check}\"")),
+                    "expected theme {to_check}"
+                );
+                page
+            }
+        };
+
+        // auto → dark: the page renders dark and the button now offers "go light".
+        let dark = toggle("dark").await;
+        assert!(dark.contains("/assets/icons.svg#sun"));
+
+        // dark → light.
+        let light = toggle("light").await;
+        assert!(light.contains("/assets/icons.svg#moon"));
 
         ts.shutdown().await;
     }
