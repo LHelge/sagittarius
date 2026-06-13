@@ -66,14 +66,15 @@ use crate::{
 ///
 /// # Cache bounds vs. immediate-effect settings
 ///
-/// The cache bounds (`cache_min_ttl`, `cache_max_ttl`, `cache_capacity`) are
-/// stored here for reference, but **changing them requires rebuilding the
-/// [`DnsCache`]** — `moka`'s capacity is fixed at build time (SPEC §3.2).
-/// That rebuild is E8's concern and is out of scope here.
+/// `cache_capacity` is fixed when the [`DnsCache`] is built (`moka`'s capacity
+/// is build-time, SPEC §3.2), so **changing it requires a restart**. The TTL
+/// bounds `cache_min_ttl` / `cache_max_ttl` are live: E8 pushes them into the
+/// cache via [`DnsCache::set_ttl_bounds`](crate::resolver::cache::DnsCache::set_ttl_bounds)
+/// on a settings save, clamping subsequent inserts without a rebuild.
 ///
-/// In contrast, `negative_ttl_cap`, `block_mode`, and
-/// `blocklist_refresh_interval` take effect immediately on the next settings
-/// swap without rebuilding anything.
+/// Likewise `negative_ttl_cap`, `block_mode`, and `blocklist_refresh_interval`
+/// take effect immediately on the next settings swap without rebuilding
+/// anything.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeSettings {
     /// Minimum TTL to serve from the cache, in seconds.

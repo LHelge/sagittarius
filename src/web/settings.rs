@@ -5,8 +5,10 @@
 //! updates the live [`RuntimeSettings`] snapshot so changes apply where the
 //! subsystem supports it:
 //!
-//! - **min/max TTL, negative-TTL cap, blocking mode/custom IP** apply
-//!   immediately (read from the snapshot at synthesis / cache-store time).
+//! - **min/max TTL** apply immediately: the new bounds are pushed into the
+//!   live cache (`DnsCache::set_ttl_bounds`) and clamp the next insert.
+//! - **negative-TTL cap, blocking mode/custom IP** apply immediately (read from
+//!   the snapshot at synthesis / cache-store time).
 //! - **blocklist refresh interval** is re-read by the scheduler at the next
 //!   cycle boundary (E7.4).
 //! - **cache capacity** is fixed when the moka cache is built, so a change is
@@ -155,6 +157,12 @@ impl AppState {
         // Apply to the live snapshot (capacity needs a restart; see module doc).
         self.resolver
             .store_settings(RuntimeSettings::from(&settings));
+        // Push the min/max-TTL clamp bounds into the live cache so they take
+        // effect on the next insert without a restart (capacity, fixed at moka
+        // build time, still needs one).
+        self.resolver
+            .cache()
+            .set_ttl_bounds(settings.cache_min_ttl, settings.cache_max_ttl);
         // The selection strategy / fan-out is read when (re)building the pool,
         // so rebuild it now to apply the change immediately (E15.5).
         self.rebuild_upstream_pool().await?;
