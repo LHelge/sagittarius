@@ -82,6 +82,30 @@
   font-weight: 600;
 }
 
+/* Hamburger toggle. Hidden on desktop; revealed by the mobile breakpoint at
+ * the foot of this file. Datastar flips the `navOpen` signal on click and we
+ * toggle a class (not inline display) so the desktop layout stays pure CSS. */
+.sgt-nav-toggle {
+  display: none;
+  flex: 0 0 auto;
+}
+
+.sgt-hamburger {
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  width: auto;
+  font-size: 1.4rem;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  color: var(--pico-color);
+  cursor: pointer;
+}
+
+.sgt-hamburger:hover {
+  color: var(--sgt-accent);
+}
+
 /* ── Pause control + banner (E12) ────────────────────────────────────────── */
 
 /* Keep the navbar pause dropdown compact and its panel from stretching the
@@ -267,3 +291,39 @@
 
 /* Let dense management tables scroll horizontally on small screens. */
 .sgt-table-wrap { overflow-x: auto; }
+
+/* ── Mobile navigation drawer ─────────────────────────────────────────────
+ * Below this width the link row and authenticated controls collapse behind
+ * the hamburger and stack as a full-width drawer, revealed only while the
+ * `navOpen` signal (→ .sgt-collapse--open) is set. */
+@media (max-width: 768px) {
+  .sgt-topbar nav {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+  }
+
+  .sgt-nav-toggle {
+    display: flex;
+    order: 1;
+    margin-left: auto;
+  }
+
+  .sgt-nav,
+  .sgt-nav-actions {
+    order: 2;
+    flex: 1 1 100%;
+    flex-direction: column;
+    align-items: stretch;
+    display: none;
+  }
+
+  .sgt-nav.sgt-collapse--open,
+  .sgt-nav-actions.sgt-collapse--open {
+    display: flex;
+  }
+
+  /* Roomier tap targets for links once they're stacked in the drawer. */
+  .sgt-nav a {
+    padding: 0.5rem 0.6rem;
+  }
+}
