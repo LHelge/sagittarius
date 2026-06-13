@@ -260,6 +260,12 @@ path) and occasional writers (admin edits, blocklist refresh):
   atomic load and auto-resumes by comparison — no timer. It is **runtime-only,
   never persisted**, so a restart resumes blocking (fail-safe), and pausing
   touches no list snapshot (nothing to rebuild or refresh on resume).
+- **Per-upstream health.** A small per-upstream tracker (EWMA latency,
+  success/failure counts, last error) updated on every forward attempt (§7). It
+  is **runtime-only** (resets on restart, like `Stats`) and lives on the
+  hot-swappable upstream pool handle so it survives a pool rebuild on an
+  upstream-config or strategy change. The answering upstream now populates each
+  `QueryEvent` (previously always absent), so the persisted query log records it.
 
 The DNS engine and web admin share these structures by `Arc` within the single
 process. Every admin mutation **writes through to SQLite first, then swaps the
@@ -392,10 +398,11 @@ would-be-blocked query during a pause resolves and logs as **forwarded** /
 7. **Cache lookup.** Check the `moka` cache keyed by `(qname, qtype, qclass)`.
    On hit, re-emit the cached raw bytes, patching the transaction ID and TTL
    fields in place (§8), and log as **cached**.
-8. **Upstream resolution (inner service).** On miss, forward to a randomly
-   chosen upstream over its configured transport (UDP/TCP/DoT/DoH) via the
-   hickory client. Apply a per-query timeout and fail over to another upstream
-   on error/timeout (§7).
+8. **Upstream resolution (inner service).** On miss, forward to an upstream
+   chosen by the configured selection strategy (§7) over its transport
+   (UDP/TCP/DoT/DoH) via the hickory client, recording the answering upstream
+   and its latency. Apply a per-query timeout and fail over (or race, in
+   parallel mode) on error/timeout (§7).
 9. **Cache store.** Scan the response once for the minimum positive-answer TTL,
    recording each real RR TTL field's byte offset (excluding EDNS OPT
    pseudo-RRs). Positive responses use that minimum TTL; negative responses
@@ -466,12 +473,23 @@ null-IP / custom, per the configured block mode) and authoritative local
 
 ## 7. Upstream resolution
 
-- Multiple upstreams may be configured. For each query an upstream is chosen
-  **at random** to spread load evenly across them.
+- Multiple upstreams may be configured. The **selection strategy** (set in the
+  admin UI, §9) decides how an upstream is picked per query:
+  - **random** (default) — uniform shuffle, spreading load evenly;
+  - **latency-weighted** — weighted-random bias toward faster, healthier
+    upstreams (weight ∝ success ÷ EWMA latency), while still exploring;
+  - **parallel** — race the first *N* upstreams concurrently and take the first
+    success, cancelling the rest, so a slow upstream never gates the answer.
 - Transports: **UDP**, **TCP**, **DNS-over-TLS (DoT)**, **DNS-over-HTTPS (DoH)**.
-- Per-query timeout and failover to another (randomly chosen) upstream on
-  error/timeout. The default budget tries at most two upstreams total so the
-  outer resolver timeout can remain bounded and predictable.
+- The sequential strategies (random / latency-weighted) apply a per-query
+  timeout and **fail over** to the next upstream on error/timeout; the default
+  budget tries at most two upstreams total so the outer resolver timeout stays
+  bounded and predictable.
+- **Per-upstream health** is tracked in memory: every forward attempt records
+  which upstream answered, its latency (an EWMA), and success/failure counts —
+  feeding the latency-weighted selector and the admin dashboard (§9). The
+  answering upstream is also recorded on each query event (and so in the
+  persisted query log, §4).
 - `hickory` is used as the upstream client to avoid reimplementing DoT/DoH
   transport details; the receive-side codec remains custom (§2.1).
 - Default seeded upstreams are Cloudflare `1.1.1.1` / `1.0.0.1` (§4), changeable
@@ -517,11 +535,15 @@ null-IP / custom, per the configured block mode) and authoritative local
   compiled into the binary** via `include_str!` / `include_bytes!`. No external
   CDN fetches at runtime and no Node build step.
 - **Capabilities:**
-  - Dashboard: two sections of figures (no charts). The **live (since-startup)**
+  - Dashboard: sections of figures (no charts). The **live (since-startup)**
     cards — total queries, blocked count/ratio, top blocked domains, top clients
     — come from the in-memory runtime counters and update over SSE. A **last-24h
     (persisted)** section is computed from `query_log` aggregates and so survives
-    restart. *(Historical/time-series charts remain deferred to post-MVP.)*
+    restart. A **System** panel shows version, uptime, queries/sec, cache fill
+    (entries / capacity), and the process's own resident memory; uptime and qps
+    tick client-side. A **per-upstream health** table shows each upstream's
+    address, query count, success rate, EWMA latency, and last error (§7).
+    *(Historical/time-series charts remain deferred to post-MVP.)*
   - Live query log: the page seeds the newest page of history from the
     `query_log` table and then streams the real-time tail over SSE, with
     **scroll-back** (`Load older` paginates further back by row id) and
@@ -544,7 +566,8 @@ null-IP / custom, per the configured block mode) and authoritative local
     blocking stands down for the duration (§5); local records keep answering. The
     deadline is runtime-only, so a restart resumes blocking (§3.2).
   - Local DNS record management (including wildcards).
-  - Upstream resolver configuration.
+  - Upstream resolver configuration, including the **selection strategy**
+    (random / latency-weighted / parallel) and the parallel fan-out (§7).
   - Settings — including the **query-log controls**: an enable/disable toggle
     (logging on by default), a retention window in days (default 30), and a
     *Clear query log now* action that purges all stored history.
