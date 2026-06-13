@@ -253,6 +253,40 @@ impl Name {
         None
     }
 
+    /// Build the canonical reverse-DNS (PTR) query name for `ip`.
+    ///
+    /// The inverse of [`reverse_addr`](Self::reverse_addr):
+    ///
+    /// - **IPv4** `a.b.c.d` → `d.c.b.a.in-addr.arpa` (octets least-significant
+    ///   first).
+    /// - **IPv6** → the 32 reversed nibble labels followed by `ip6.arpa`.
+    ///
+    /// The result round-trips: `Name::reverse_query(ip).reverse_addr() == Some(ip)`.
+    /// Used by the internal reverse-lookup service (E14.1) to turn a client IP
+    /// into the PTR question it issues through the engine.
+    #[must_use]
+    pub fn reverse_query(ip: IpAddr) -> Self {
+        match ip {
+            IpAddr::V4(v4) => {
+                let [a, b, c, d] = v4.octets();
+                format!("{d}.{c}.{b}.{a}.in-addr.arpa")
+                    .parse()
+                    .expect("in-addr.arpa name is always valid")
+            }
+            IpAddr::V6(v6) => {
+                // 32 nibbles, least-significant first, then the ip6.arpa zone.
+                let mut s = String::with_capacity(72);
+                for octet in v6.octets().iter().rev() {
+                    let lo = octet & 0x0F;
+                    let hi = octet >> 4;
+                    s.push_str(&format!("{lo:x}.{hi:x}."));
+                }
+                s.push_str("ip6.arpa");
+                s.parse().expect("ip6.arpa name is always valid")
+            }
+        }
+    }
+
     /// Parse the octet labels of an `in-addr.arpa` name (the part *before*
     /// `.in-addr.arpa`) into an [`Ipv4Addr`].  Expects exactly four decimal
     /// octets in least-significant-first order.
@@ -1085,6 +1119,31 @@ mod tests {
             Ipv4Addr::new(10, 0, 0, 1),
         ] {
             assert_eq!(v4_arpa(addr).reverse_addr(), Some(IpAddr::V4(addr)));
+        }
+    }
+
+    #[test]
+    fn reverse_query_builds_canonical_v4_name() {
+        let addr: Ipv4Addr = "192.168.1.5".parse().unwrap();
+        let name = Name::reverse_query(IpAddr::V4(addr));
+        assert_eq!(name.to_string(), "5.1.168.192.in-addr.arpa.");
+    }
+
+    #[test]
+    fn reverse_query_round_trips_v4_and_v6() {
+        for ip in [
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V6("2001:db8::1".parse().unwrap()),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            IpAddr::V6("fe80::dead:beef".parse().unwrap()),
+        ] {
+            assert_eq!(
+                Name::reverse_query(ip).reverse_addr(),
+                Some(ip),
+                "reverse_query must round-trip through reverse_addr for {ip}"
+            );
         }
     }
 
