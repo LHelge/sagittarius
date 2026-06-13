@@ -2,10 +2,10 @@
 id: ag8
 title: E18 — Web admin UI refresh (icons + mobile)
 type: epic
-status: open
+status: done
 priority: P2
 created: "2026-06-13T14:58:34.280065163Z"
-updated: "2026-06-13T14:58:34.280065163Z"
+updated: "2026-06-13T17:07:17.232127947Z"
 tags:
   - web
   - ui

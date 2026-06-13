@@ -1,10 +1,10 @@
 ---
 id: b5e
 title: E18.7 — Visual polish pass + docs
-status: open
+status: done
 priority: P3
 created: "2026-06-13T14:59:19.218616570Z"
-updated: "2026-06-13T14:59:19.218616570Z"
+updated: "2026-06-13T17:07:17.231914672Z"
 tags:
   - web
   - ui
