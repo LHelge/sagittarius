@@ -26,7 +26,8 @@ traffic disappear.
   the hot path lean.
 - **Light** — runs comfortably on small home servers, routers, and SBCs.
 - **Operable** — a clean, authenticated web UI for configuration, live query
-  inspection, and statistics.
+  inspection, and statistics; icon-enhanced and responsive, with a collapsing
+  navigation drawer on mobile.
 
 ## Planned features (v0.1)
 
@@ -71,7 +72,7 @@ milestone.
 | Hot-path state | `HashSet` blacklist/allowlist + a `HashMap` blocklist (domain → primary source) and `HashMap` local records, hot-swapped via [`arc-swap`](https://docs.rs/arc-swap); [`moka`](https://docs.rs/moka) cache with per-entry TTL |
 | Web server | [`axum`](https://docs.rs/axum) |
 | Templating / UI | [`askama`](https://docs.rs/askama) + [Datastar](https://data-star.dev) (SSE) + [Pico CSS](https://picocss.com) |
-| Frontend assets | Vendored and embedded via `include_str!` / `include_bytes!` — no CDN, no Node build |
+| Frontend assets | Vendored and embedded via `include_str!` / `include_bytes!` — no CDN, no Node build; Lucide icons (`icondata_lu`) served as one `<symbol>` sprite |
 
 The full design is documented in [`SPEC.md`](SPEC.md).
 

@@ -65,7 +65,7 @@ interface all included.
 | HTML templating | [`askama`](https://docs.rs/askama) + [`askama_web`](https://docs.rs/askama_web) | Compile-time checked templates; `askama_web` for the axum response integration |
 | Frontend interactivity | [Datastar](https://data-star.dev) (over SSE) | Fragments + reactive signals + SSE in one ~14 KB lib; no Alpine, no Node build step |
 | Styling | [Pico CSS](https://picocss.com) + thin custom layer | Classless/semantic-first; one CSS file, dark mode, no build step |
-| Asset delivery | `include_str!` / `include_bytes!` | All JS, CSS, images, and favicon vendored and compiled into the binary |
+| Asset delivery | `include_str!` / `include_bytes!` | All JS, CSS, images, favicon, and Lucide icon sprite (`icondata_lu`) vendored and compiled into the binary |
 
 The web UI and DNS engine share the same tokio runtime and process.
 
@@ -571,7 +571,12 @@ null-IP / custom, per the configured block mode) and authoritative local
 - **Asset delivery.** All frontend assets — the Datastar JS, Pico CSS, the custom
   stylesheet, images, and favicon — are **vendored into the repository and
   compiled into the binary** via `include_str!` / `include_bytes!`. No external
-  CDN fetches at runtime and no Node build step.
+  CDN fetches at runtime and no Node build step. **Icons** are a curated handful
+  of [Lucide](https://lucide.dev) glyphs pulled from the `icondata_lu` crate and
+  rendered once into a single `<symbol>` sprite served at `/assets/icons.svg`
+  (`src/web/icons.rs`); templates reference them via the `icon` askama macro, and
+  because Lucide strokes with `currentColor` they inherit text colour and theme
+  automatically. The admin UI is responsive: a hamburger drawer below ~768 px.
 - **Capabilities:**
   - Dashboard: sections of figures (no charts). The **live (since-startup)**
     cards — total queries, blocked count/ratio, top blocked domains, top clients
