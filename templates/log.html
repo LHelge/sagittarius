@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Query log · sagittarius{% endblock %}
 {% block content %}
 <hgroup>
-  <h1>Query log</h1>
+  <h1 class="sgt-page-title">{% call ui::icon("log") %}{% endcall %}Query log</h1>
   <p class="sgt-muted">Resolved queries, newest first. History is persisted; the newest rows stream live.</p>
 </hgroup>
 
@@ -41,8 +42,8 @@
 </div>
 
 <div class="sgt-actions">
-  <button class="secondary" data-show="$oldest > 0" data-on-click="@get('/log/older?before=' + $oldest)">
-    Load older
+  <button class="secondary" data-show="$oldest > 0" data-on:click="@get('/log/older?before=' + $oldest)">
+    {% call ui::icon("older") %}{% endcall %}Load older
   </button>
 </div>
 {% endblock %}

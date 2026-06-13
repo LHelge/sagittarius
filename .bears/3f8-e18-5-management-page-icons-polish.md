@@ -1,10 +1,10 @@
 ---
 id: "3f8"
 title: E18.5 — Management-page icons + polish
-status: open
+status: done
 priority: P2
 created: "2026-06-13T14:59:09.243450798Z"
-updated: "2026-06-13T14:59:09.243450798Z"
+updated: "2026-06-13T17:01:22.702984584Z"
 tags:
   - web
   - ui

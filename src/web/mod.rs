@@ -1483,6 +1483,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn management_pages_carry_heading_and_action_icons() {
+        let ts = TestServer::login().await;
+
+        // Page heading icon + the "add" action icon on each management page.
+        for (path, heading) in [
+            ("/upstreams", "upstreams"),
+            ("/local", "local"),
+            ("/blocklists", "blocklists"),
+            ("/settings", "settings"),
+            ("/blacklist", "blacklist"),
+        ] {
+            let page = ts
+                .client
+                .get(ts.url(path))
+                .header("cookie", &ts.cookie)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert!(
+                page.contains(&format!("/assets/icons.svg#{heading}")),
+                "{path} missing heading icon {heading}"
+            );
+        }
+
+        // The live-log "load older" button uses the colon event binding (the
+        // hyphen form registers no handler in this Datastar build).
+        let log = ts
+            .client
+            .get(ts.url("/log"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(log.contains("data-on:click=\"@get('/log/older?before=' + $oldest)\""));
+
+        ts.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn bind_serves_and_shuts_down_cleanly() {
         let (_dir, state) = test_state().await;
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

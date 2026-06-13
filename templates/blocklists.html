@@ -1,8 +1,9 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Blocklists · sagittarius{% endblock %}
 {% block content %}
 <hgroup>
-  <h1>Blocklist sources</h1>
+  <h1 class="sgt-page-title">{% call ui::icon("blocklists") %}{% endcall %}Blocklist sources</h1>
   <p class="sgt-muted">Subscribed lists are fetched, parsed, and merged into the in-memory blocklist set.</p>
 </hgroup>
 
@@ -21,11 +22,11 @@
       <option value="hosts">hosts</option>
       <option value="domain-list">domain-list</option>
     </select>
-    <button type="submit">Add</button>
+    <button type="submit">{% call ui::icon("add") %}{% endcall %}Add</button>
   </form>
   <form method="post" action="/blocklists/refresh" class="sgt-inline-form">
     <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
-    <button type="submit" class="secondary">Refresh now</button>
+    <button type="submit" class="secondary">{% call ui::icon("refresh") %}{% endcall %}Refresh now</button>
   </form>
 </div>
 
@@ -71,12 +72,12 @@
               <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
               <input type="hidden" name="id" value="{{ s.id }}" />
               <input type="hidden" name="enabled" value="{% if s.enabled %}false{% else %}true{% endif %}" />
-              <button type="submit" class="secondary outline sgt-btn-sm">{% if s.enabled %}Disable{% else %}Enable{% endif %}</button>
+              <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("toggle") %}{% endcall %}{% if s.enabled %}Disable{% else %}Enable{% endif %}</button>
             </form>
             <form method="post" action="/blocklists/remove" class="sgt-inline-form">
               <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
               <input type="hidden" name="id" value="{{ s.id }}" />
-              <button type="submit" class="secondary outline sgt-btn-sm">Remove</button>
+              <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("remove") %}{% endcall %}Remove</button>
             </form>
           </div>
           {% endif %}

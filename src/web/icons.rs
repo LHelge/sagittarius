@@ -55,6 +55,9 @@ const ICONS: &[(&str, &icondata_core::IconData)] = &[
     ("add", icondata_lu::LuPlus),
     ("remove", icondata_lu::LuTrash2),
     ("refresh", icondata_lu::LuRefreshCw),
+    ("save", icondata_lu::LuSave),
+    ("toggle", icondata_lu::LuPower),
+    ("older", icondata_lu::LuChevronDown),
     // Dashboard section headings.
     ("live", icondata_lu::LuActivity),
     ("system", icondata_lu::LuServer),
