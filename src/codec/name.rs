@@ -51,6 +51,7 @@
 use std::{
     fmt,
     hash::{Hash, Hasher},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     str::FromStr,
 };
 
@@ -218,6 +219,83 @@ impl Name {
         }
         // Root terminator.
         writer.write_u8(0);
+    }
+
+    // ── Reverse-DNS (PTR) parsing ─────────────────────────────────────────────
+
+    /// Interpret this name as a reverse-DNS (PTR) query name and recover the
+    /// [`IpAddr`] it encodes, or `None` if it is not a well-formed reverse name.
+    ///
+    /// Two reverse zones are recognized (RFC 1035 §3.5, RFC 3596 §2.5):
+    ///
+    /// - **IPv4** — `<d>.<c>.<b>.<a>.in-addr.arpa` → `Ipv4Addr::new(a, b, c, d)`.
+    ///   The four octets precede the zone in least-significant-first order, so
+    ///   they are reversed here.
+    /// - **IPv6** — 32 single-hex-digit nibble labels followed by `ip6.arpa` →
+    ///   an [`Ipv6Addr`].  Nibbles are likewise least-significant-first.
+    ///
+    /// Returns `None` for anything that is not exactly one of these forms: the
+    /// wrong label count, an octet > 255, a non-hexadecimal nibble, a multi-byte
+    /// nibble label, or an ordinary forward name.  This is the recognition step
+    /// that gates local PTR synthesis (E13.2) and reverse-zone forwarding.
+    #[must_use]
+    pub fn reverse_addr(&self) -> Option<IpAddr> {
+        // `inner` is normalized: lowercase with a trailing root dot. Strip the
+        // root so the zone suffixes match without a dangling dot.
+        let body = self.inner.strip_suffix('.')?;
+
+        if let Some(octets) = body.strip_suffix(".in-addr.arpa") {
+            return Self::parse_in_addr_arpa(octets).map(IpAddr::V4);
+        }
+        if let Some(nibbles) = body.strip_suffix(".ip6.arpa") {
+            return Self::parse_ip6_arpa(nibbles).map(IpAddr::V6);
+        }
+        None
+    }
+
+    /// Parse the octet labels of an `in-addr.arpa` name (the part *before*
+    /// `.in-addr.arpa`) into an [`Ipv4Addr`].  Expects exactly four decimal
+    /// octets in least-significant-first order.
+    fn parse_in_addr_arpa(octets: &str) -> Option<Ipv4Addr> {
+        let mut addr = [0u8; 4];
+        let mut count = 0usize;
+        for label in octets.split('.') {
+            if count >= 4 {
+                return None; // too many labels
+            }
+            // `u8::from_str` rejects empties, non-digits, and values > 255.
+            addr[3 - count] = label.parse().ok()?;
+            count += 1;
+        }
+        (count == 4).then(|| Ipv4Addr::from(addr))
+    }
+
+    /// Parse the nibble labels of an `ip6.arpa` name (the part *before*
+    /// `.ip6.arpa`) into an [`Ipv6Addr`].  Expects exactly 32 single-hex-digit
+    /// labels in least-significant-first order.
+    fn parse_ip6_arpa(nibbles: &str) -> Option<Ipv6Addr> {
+        let mut digits = [0u8; 32];
+        let mut count = 0usize;
+        for label in nibbles.split('.') {
+            if count >= 32 {
+                return None; // too many labels
+            }
+            // Each label must be exactly one hexadecimal digit.
+            let [byte] = label.as_bytes() else {
+                return None;
+            };
+            digits[31 - count] = (*byte as char).to_digit(16)? as u8;
+            count += 1;
+        }
+        if count != 32 {
+            return None;
+        }
+        // Pack the 32 nibbles (high-to-low) into 16 octets.
+        let mut addr = [0u8; 16];
+        for (i, octet) in addr.iter_mut().enumerate() {
+            *octet = (digits[2 * i] << 4) | digits[2 * i + 1];
+        }
+        Some(Ipv6Addr::from(addr))
     }
 
     // ── RR name-skip ─────────────────────────────────────────────────────────
@@ -963,5 +1041,123 @@ mod tests {
         let data = vec![0xFFu8; 512];
         let mut r = Reader::new(Bytes::from(data));
         let _ = Name::skip_rr(&mut r);
+    }
+
+    // ── Reverse-DNS (PTR) parsing ─────────────────────────────────────────────
+
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    /// Build the canonical `in-addr.arpa` name for an IPv4 address.
+    fn v4_arpa(addr: Ipv4Addr) -> Name {
+        let [a, b, c, d] = addr.octets();
+        format!("{d}.{c}.{b}.{a}.in-addr.arpa")
+            .parse()
+            .expect("valid in-addr.arpa name")
+    }
+
+    /// Build the canonical `ip6.arpa` name for an IPv6 address.
+    fn v6_arpa(addr: Ipv6Addr) -> Name {
+        // 32 reversed nibbles, dot-separated, then ip6.arpa.
+        let mut s = String::with_capacity(72);
+        for octet in addr.octets().iter().rev() {
+            let lo = octet & 0x0F;
+            let hi = octet >> 4;
+            // Least-significant nibble of the least-significant octet comes first.
+            s.push_str(&format!("{lo:x}.{hi:x}."));
+        }
+        s.push_str("ip6.arpa");
+        s.parse().expect("valid ip6.arpa name")
+    }
+
+    #[test]
+    fn reverse_v4_round_trips() {
+        let addr: Ipv4Addr = "192.168.1.5".parse().unwrap();
+        let name = v4_arpa(addr);
+        assert_eq!(name.to_string(), "5.1.168.192.in-addr.arpa.");
+        assert_eq!(name.reverse_addr(), Some(IpAddr::V4(addr)));
+    }
+
+    #[test]
+    fn reverse_v4_boundaries() {
+        for addr in [
+            Ipv4Addr::new(0, 0, 0, 0),
+            Ipv4Addr::new(255, 255, 255, 255),
+            Ipv4Addr::new(10, 0, 0, 1),
+        ] {
+            assert_eq!(v4_arpa(addr).reverse_addr(), Some(IpAddr::V4(addr)));
+        }
+    }
+
+    #[test]
+    fn reverse_v6_round_trips() {
+        let addr: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let name = v6_arpa(addr);
+        assert_eq!(name.reverse_addr(), Some(IpAddr::V6(addr)));
+    }
+
+    #[test]
+    fn reverse_v6_full_nibble_name() {
+        // A hand-written full ip6.arpa name: 32 zero nibbles → the unspecified
+        // address `::`.  Independent of the `v6_arpa` helper's own reversal.
+        let zeros = "0.".repeat(32);
+        let n: Name = format!("{zeros}ip6.arpa").parse().unwrap();
+        assert_eq!(n.reverse_addr(), Some(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+    }
+
+    #[test]
+    fn reverse_rejects_octet_over_255() {
+        // 256 is not a valid octet; the name parses as a Name but not as reverse.
+        let n: Name = "256.1.168.192.in-addr.arpa".parse().unwrap();
+        assert_eq!(n.reverse_addr(), None);
+    }
+
+    #[test]
+    fn reverse_rejects_wrong_v4_label_count() {
+        let short: Name = "1.168.192.in-addr.arpa".parse().unwrap();
+        let long: Name = "9.5.1.168.192.in-addr.arpa".parse().unwrap();
+        assert_eq!(short.reverse_addr(), None);
+        assert_eq!(long.reverse_addr(), None);
+    }
+
+    #[test]
+    fn reverse_rejects_wrong_v6_nibble_count() {
+        // 31 nibbles instead of 32.
+        let n: Name = "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.ip6.arpa"
+            .parse()
+            .unwrap();
+        assert_eq!(n.reverse_addr(), None);
+    }
+
+    #[test]
+    fn reverse_rejects_non_hex_nibble() {
+        // 'g' is not a hex digit; replace the first nibble of an otherwise valid name.
+        let addr: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let valid = v6_arpa(addr).to_string();
+        let bad = valid.replacen('1', "g", 1);
+        let n: Name = bad.parse().unwrap();
+        assert_eq!(n.reverse_addr(), None);
+    }
+
+    #[test]
+    fn reverse_rejects_multi_digit_nibble() {
+        // A two-character first nibble label "12" — must be a single hex digit.
+        let n: Name = "12.b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2.ip6.arpa"
+            .parse()
+            .unwrap();
+        assert_eq!(n.reverse_addr(), None);
+    }
+
+    #[test]
+    fn reverse_forward_name_is_none() {
+        let n: Name = "www.example.com".parse().unwrap();
+        assert_eq!(n.reverse_addr(), None);
+    }
+
+    #[test]
+    fn reverse_bare_arpa_zones_are_none() {
+        // The zone apexes themselves carry no address.
+        assert_eq!("in-addr.arpa".parse::<Name>().unwrap().reverse_addr(), None);
+        assert_eq!("ip6.arpa".parse::<Name>().unwrap().reverse_addr(), None);
+        assert_eq!("arpa".parse::<Name>().unwrap().reverse_addr(), None);
     }
 }

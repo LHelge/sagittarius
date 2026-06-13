@@ -1,13 +1,13 @@
 ---
 id: b8k
 title: E13.1 · PTR recognition + in-addr.arpa/ip6.arpa parsing
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:23:33.967846232Z
-updated: 2026-05-30T20:23:33.967846232Z
+created: "2026-05-30T20:23:33.967846232Z"
+updated: "2026-06-13T14:27:12.281629332Z"
 tags:
-- dns
-- codec
+  - dns
+  - codec
 parent: s2e
 ---
 

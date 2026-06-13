@@ -75,6 +75,12 @@ pub enum Qtype {
     A,
     /// AAAA (IPv6 address) — type value 28 (RFC 3596).
     Aaaa,
+    /// PTR (reverse-DNS pointer) — type value 12 (RFC 1035 §3.3.12).
+    ///
+    /// A named variant because Sagittarius answers reverse queries
+    /// authoritatively from local records (SPEC §5) rather than forwarding
+    /// them blindly like other types.
+    Ptr,
     /// Any other QTYPE value, preserved for lossless round-tripping.
     Other(u16),
 }
@@ -84,6 +90,7 @@ impl From<u16> for Qtype {
         match v {
             1 => Self::A,
             28 => Self::Aaaa,
+            12 => Self::Ptr,
             other => Self::Other(other),
         }
     }
@@ -94,6 +101,7 @@ impl From<Qtype> for u16 {
         match qt {
             Qtype::A => 1,
             Qtype::Aaaa => 28,
+            Qtype::Ptr => 12,
             Qtype::Other(v) => v,
         }
     }
@@ -112,7 +120,6 @@ impl Qtype {
             2 => "NS",
             5 => "CNAME",
             6 => "SOA",
-            12 => "PTR",
             15 => "MX",
             16 => "TXT",
             33 => "SRV",
@@ -141,6 +148,7 @@ impl std::fmt::Display for Qtype {
         match self {
             Self::A => f.write_str("A"),
             Self::Aaaa => f.write_str("AAAA"),
+            Self::Ptr => f.write_str("PTR"),
             Self::Other(v) => match Self::well_known_name(*v) {
                 Some(name) => f.write_str(name),
                 None => write!(f, "TYPE{v}"),
@@ -523,6 +531,15 @@ mod tests {
     fn qtype_aaaa_round_trips() {
         assert_eq!(Qtype::from(28u16), Qtype::Aaaa);
         assert_eq!(u16::from(Qtype::Aaaa), 28u16);
+    }
+
+    #[test]
+    fn qtype_ptr_round_trips_and_displays() {
+        assert_eq!(Qtype::from(12u16), Qtype::Ptr);
+        assert_eq!(u16::from(Qtype::Ptr), 12u16);
+        assert_eq!(Qtype::Ptr.to_string(), "PTR");
+        // 12 is now a named variant, never the Other fallback.
+        assert_ne!(Qtype::from(12u16), Qtype::Other(12));
     }
 
     #[test]

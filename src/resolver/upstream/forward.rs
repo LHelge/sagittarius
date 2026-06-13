@@ -79,6 +79,7 @@ impl UpstreamClient {
         let record_type = match question.qtype {
             Qtype::A => RecordType::A,
             Qtype::Aaaa => RecordType::AAAA,
+            Qtype::Ptr => RecordType::PTR,
             Qtype::Other(v) => RecordType::from(v),
         };
 
