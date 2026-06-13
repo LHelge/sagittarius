@@ -19,6 +19,7 @@
 
 pub mod assets;
 pub mod auth;
+pub mod blocking;
 pub mod blocklists;
 pub mod crypto;
 pub mod csrf;
@@ -96,6 +97,10 @@ pub struct Chrome {
     pub authenticated: bool,
     /// Anti-CSRF token embedded in forms (populated from E8.3; empty until then).
     pub csrf_token: String,
+    /// Seconds of blocking-pause remaining, or `None` when blocking is active
+    /// (E12). When `Some`, `base.html` renders the countdown banner on every
+    /// page; the value seeds the client-side Datastar countdown.
+    pub pause_remaining: Option<i64>,
 }
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -168,7 +173,18 @@ impl AppState {
             show_nav: true,
             authenticated: true,
             csrf_token: self.csrf_token(&user.session_id).into_string(),
+            pause_remaining: self.pause_remaining(),
         }
+    }
+
+    /// Seconds of blocking-pause remaining, or `None` when blocking is active.
+    ///
+    /// Derived from the resolver's pause deadline (E12.1); drives the countdown
+    /// banner in the page chrome.
+    fn pause_remaining(&self) -> Option<i64> {
+        self.resolver
+            .paused_until()
+            .map(|deadline| (deadline - crate::time::Clock::now_secs()).max(0))
     }
 
     /// Build a bare [`Chrome`] (no navigation) for the login page and wizard.
@@ -179,6 +195,7 @@ impl AppState {
             show_nav: false,
             authenticated: false,
             csrf_token: String::new(),
+            pause_remaining: None,
         }
     }
 
@@ -213,6 +230,9 @@ impl AppState {
                 get(Self::settings_page).post(Self::settings_save),
             )
             .route("/settings/clear-log", post(Self::settings_clear_log))
+            // Temporarily pause / resume all blocking (E12).
+            .route("/blocking/pause", post(Self::blocking_pause))
+            .route("/blocking/resume", post(Self::blocking_resume))
             // Blocklist source management + manual refresh (E8.10).
             .route("/blocklists", get(Self::blocklists_page))
             .route("/blocklists/add", post(Self::blocklist_add))
@@ -1271,6 +1291,84 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 200);
         assert!(r.text().await.unwrap().contains("Refresh started"));
+
+        ts.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pause_and_resume_blocking_over_http() {
+        let ts = TestServer::login().await;
+
+        assert!(!ts.app.resolver.blocking_paused());
+
+        // Without the CSRF token the pause mutation is rejected.
+        let r = ts
+            .client
+            .post(ts.url("/blocking/pause"))
+            .header("cookie", &ts.cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("minutes=5")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 403, "pause without CSRF must be rejected");
+        assert!(!ts.app.resolver.blocking_paused());
+
+        // With the token it pauses and redirects to the dashboard.
+        let r = ts
+            .client
+            .post(ts.url("/blocking/pause"))
+            .header("cookie", &ts.cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("csrf_token={}&minutes=5", ts.csrf))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        assert_eq!(r.headers().get("location").unwrap(), "/");
+        assert!(ts.app.resolver.blocking_paused());
+
+        // Every page now renders the countdown banner and the pause control.
+        let page = ts
+            .client
+            .get(ts.url("/"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(page.contains("Blocking paused"));
+        assert!(page.contains("data-on-interval"));
+        assert!(page.contains("Pause for 5 min"));
+        assert!(page.contains("/blocking/resume"));
+
+        // Resume clears the pause.
+        let r = ts
+            .client
+            .post(ts.url("/blocking/resume"))
+            .header("cookie", &ts.cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("csrf_token={}", ts.csrf))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 303);
+        assert!(!ts.app.resolver.blocking_paused());
+
+        // With blocking active again, the banner is gone.
+        let page = ts
+            .client
+            .get(ts.url("/"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(!page.contains("Blocking paused"));
 
         ts.shutdown().await;
     }

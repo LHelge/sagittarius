@@ -1,14 +1,14 @@
 ---
 id: qqg
 title: E12.2 · Web control + paused banner with countdown
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:05:26.902914505Z
-updated: 2026-05-30T20:05:26.902914505Z
+created: "2026-05-30T20:05:26.902914505Z"
+updated: "2026-06-13T07:21:29.770089554Z"
 tags:
-- web
+  - web
 depends_on:
-- vp7
+  - vp7
 parent: kv7
 ---
 

@@ -35,6 +35,30 @@
         <ul>
           {% if chrome.authenticated %}
           <li>
+            <details class="dropdown sgt-pause-menu">
+              <summary role="button" class="secondary outline sgt-btn-sm">Pause</summary>
+              <ul dir="rtl">
+                {% for mins in [5, 30, 60] %}
+                <li>
+                  <form method="post" action="/blocking/pause" class="sgt-inline-form">
+                    <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+                    <input type="hidden" name="minutes" value="{{ mins }}" />
+                    <button type="submit" class="sgt-pause-opt">Pause for {{ mins }} min</button>
+                  </form>
+                </li>
+                {% endfor %}
+                <li>
+                  <form method="post" action="/blocking/pause" class="sgt-pause-custom" role="group">
+                    <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+                    <input type="number" name="minutes" min="1" max="1440" value="15"
+                           aria-label="Custom pause minutes" />
+                    <button type="submit" class="sgt-btn-sm">Pause</button>
+                  </form>
+                </li>
+              </ul>
+            </details>
+          </li>
+          <li>
             <form method="post" action="/logout" class="sgt-inline-form">
               <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
               <button type="submit" class="secondary outline sgt-btn-sm">Logout</button>
@@ -44,6 +68,20 @@
         </ul>
       </nav>
     </header>
+    {% endif %}
+    {% if let Some(remaining) = chrome.pause_remaining %}
+    <div class="sgt-paused" role="status"
+         data-signals="{pauseLeft: {{ remaining }}}"
+         data-on-interval="$pauseLeft = $pauseLeft - 1; $pauseLeft <= 0 && window.location.reload()">
+      <span>
+        ⏸ Blocking paused — resumes in
+        <strong data-text="Math.floor($pauseLeft / 60) + ':' + String(Math.max($pauseLeft % 60, 0)).padStart(2, '0')">{{ remaining }}</strong>
+      </span>
+      <form method="post" action="/blocking/resume" class="sgt-inline-form">
+        <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+        <button type="submit" class="contrast sgt-btn-sm">Resume now</button>
+      </form>
+    </div>
     {% endif %}
     <main class="container">{% block content %}{% endblock %}</main>
     {% if chrome.authenticated %}
