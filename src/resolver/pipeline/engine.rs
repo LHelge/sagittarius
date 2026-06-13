@@ -177,6 +177,30 @@ pub fn build_engine(
         .boxed_clone()
 }
 
+// ── build_internal_service ────────────────────────────────────────────────────
+
+/// Compose the **internal** DNS service used for off-hot-path lookups (E14.1).
+///
+/// This is the decision stack → cache → forward leaf **without** the telemetry
+/// or protective layers: internally-issued queries (e.g. the reverse-lookup
+/// service resolving client IPs to hostnames) must not appear in the live log,
+/// count toward runtime stats, or be rate-limited/load-shed.  Local PTR synth
+/// (E13.2) and conditional forwarding (E13.4) still apply, so private IPs
+/// resolve against the LAN and public IPs via the upstream pool, and answers
+/// are cached exactly like the hot path.
+///
+/// Shares the same [`ResolverState`] and [`SharedUpstreamPool`] as
+/// [`build_engine`], so live edits to local records, forward zones, and
+/// upstreams are observed here too.
+pub fn build_internal_service(
+    state: Arc<ResolverState>,
+    pool: Arc<SharedUpstreamPool>,
+) -> tower::util::BoxCloneService<DnsRequest, PipelineResponse, BoxError> {
+    let forward = ForwardService::new(pool, state.clone());
+    let cached = CacheService::new(state.clone(), forward);
+    DecisionStack::new(state, cached).boxed_clone()
+}
+
 // ── build_upstream_pool ─────────────────────────────────────────────────────
 
 /// Connect an [`UpstreamPool`] configured for the chosen selection `strategy`

@@ -1,16 +1,16 @@
 ---
 id: akd
 title: E14.1 · Internal reverse-lookup service + bounded cache
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:24:21.842901695Z
-updated: 2026-05-30T20:24:21.842901695Z
+created: "2026-05-30T20:24:21.842901695Z"
+updated: "2026-06-13T18:48:07.433019717Z"
 tags:
-- telemetry
-- dns
+  - telemetry
+  - dns
 depends_on:
-- e5x
-- 2pd
+  - e5x
+  - "2pd"
 parent: tcb
 ---
 

@@ -34,6 +34,7 @@ pub mod forward_zone;
 pub mod local;
 pub mod matchset;
 pub mod pipeline;
+pub mod reverse;
 pub mod state;
 pub mod upstream;
 
