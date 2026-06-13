@@ -24,7 +24,10 @@
 //!   the one real-sleep expiry test in this module uses `std::thread::sleep`.
 
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -144,8 +147,15 @@ impl CachedResponse {
 #[derive(Clone, Debug)]
 pub struct DnsCache {
     inner: Cache<Question, CachedResponse>,
-    min_ttl: u32,
-    max_ttl: u32,
+    /// Live TTL clamp bounds, packed as `(min_ttl << 32) | max_ttl`.
+    ///
+    /// Read on every insert and updatable at runtime via
+    /// [`set_ttl_bounds`](Self::set_ttl_bounds), so a min/max-TTL settings change
+    /// takes effect without rebuilding the cache. `Arc` so clones of the
+    /// (cheaply-cloneable) cache share one set of bounds, like moka's own state;
+    /// packed into a single atomic so a concurrent reader never sees a torn
+    /// `min`/`max` pair (which `u32::clamp` would panic on).
+    ttl_bounds: Arc<AtomicU64>,
 }
 
 impl DnsCache {
@@ -156,6 +166,9 @@ impl DnsCache {
     ///   (seconds).
     /// - `max_ttl` — entries with a longer TTL are clamped down to this value
     ///   (seconds).
+    ///
+    /// The TTL bounds are live: a later [`set_ttl_bounds`](Self::set_ttl_bounds)
+    /// changes the clamp applied to subsequent inserts.
     ///
     /// # Panics
     ///
@@ -171,9 +184,20 @@ impl DnsCache {
 
         Self {
             inner,
-            min_ttl,
-            max_ttl,
+            ttl_bounds: Arc::new(AtomicU64::new(pack_bounds(min_ttl, max_ttl))),
         }
+    }
+
+    /// Update the live TTL clamp bounds (E8 settings change).
+    ///
+    /// Takes effect on subsequent inserts; entries already cached keep the
+    /// expiry they were stored with. Lets a min/max-TTL edit apply immediately
+    /// rather than waiting for a restart (the moka capacity, by contrast, is
+    /// fixed at build time and still needs one).
+    pub fn set_ttl_bounds(&self, min_ttl: u32, max_ttl: u32) {
+        debug_assert!(min_ttl <= max_ttl, "min_ttl must not exceed max_ttl");
+        self.ttl_bounds
+            .store(pack_bounds(min_ttl, max_ttl), Ordering::Relaxed);
     }
 
     /// Insert a response into the cache.
@@ -256,12 +280,25 @@ impl DnsCache {
         self.inner.invalidate_all();
     }
 
-    /// Clamp a caller-supplied TTL (seconds) into this cache's `[min, max]`
-    /// bounds.  `new` guarantees `min_ttl <= max_ttl`.
+    /// Clamp a caller-supplied TTL (seconds) into the cache's current `[min,
+    /// max]` bounds, read live from [`ttl_bounds`](Self::ttl_bounds).
     #[inline]
     fn clamp_ttl(&self, secs: u32) -> u32 {
-        secs.clamp(self.min_ttl, self.max_ttl)
+        let (min_ttl, max_ttl) = unpack_bounds(self.ttl_bounds.load(Ordering::Relaxed));
+        secs.clamp(min_ttl, max_ttl)
     }
+}
+
+/// Pack `(min_ttl, max_ttl)` into a single `u64` for atomic storage.
+#[inline]
+fn pack_bounds(min_ttl: u32, max_ttl: u32) -> u64 {
+    (u64::from(min_ttl) << 32) | u64::from(max_ttl)
+}
+
+/// Inverse of [`pack_bounds`].
+#[inline]
+fn unpack_bounds(packed: u64) -> (u32, u32) {
+    ((packed >> 32) as u32, packed as u32)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -359,6 +396,21 @@ mod tests {
         let cache = DnsCache::new(100, 5, 3600);
         assert_eq!(cache.clamp_ttl(7200), 3600);
         assert_eq!(cache.clamp_ttl(u32::MAX), 3600);
+    }
+
+    #[test]
+    fn set_ttl_bounds_is_live() {
+        // Bounds start at [5, 3600]; a value of 4 clamps up to 5, 7200 down to 3600.
+        let cache = DnsCache::new(100, 5, 3600);
+        assert_eq!(cache.clamp_ttl(4), 5);
+        assert_eq!(cache.clamp_ttl(7200), 3600);
+
+        // Widen the max and raise the min live — the new bounds clamp at once,
+        // both narrowing (min up) and widening (max up) directions.
+        cache.set_ttl_bounds(60, 86400);
+        assert_eq!(cache.clamp_ttl(4), 60, "raised min applies live");
+        assert_eq!(cache.clamp_ttl(7200), 7200, "widened max applies live");
+        assert_eq!(cache.clamp_ttl(100_000), 86400);
     }
 
     #[test]
