@@ -34,6 +34,9 @@ traffic disappear.
   plus manual allow/deny lists. Exact-domain matching in v0.1. **Per-list
   effectiveness** shows how many blocks each source contributed (last 24h) and
   its share of the total, so you can see which lists are pulling their weight.
+- ⏸️ **Pause blocking** temporarily — snooze all blocking for 5 min / 30 min /
+  1 h (or a custom duration) with a *Resume now* control and a live countdown.
+  Local DNS records keep answering, and a restart always resumes blocking.
 - 📊 **Live query log and dashboard** — block ratio, top domains, top clients,
   and a live query log streamed over SSE, with one-click allow/deny straight
   from the log. The log and dashboard are backed by a **persistent query log**

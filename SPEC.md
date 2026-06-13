@@ -255,6 +255,11 @@ path) and occasional writers (admin edits, blocklist refresh):
   Cache capacity is the exception: `moka` capacity is fixed when the cache is
   built, so changing it rebuilds the cache or requires restart depending on the
   implementation path chosen by the UI.
+- **Blocking pause.** A single atomic Unix-second deadline (`0` = active) records
+  when a temporary pause (§5, §9) expires. The hot path reads it with one relaxed
+  atomic load and auto-resumes by comparison — no timer. It is **runtime-only,
+  never persisted**, so a restart resumes blocking (fail-safe), and pausing
+  touches no list snapshot (nothing to rebuild or refresh on resume).
 
 The DNS engine and web admin share these structures by `Arc` within the single
 process. Every admin mutation **writes through to SQLite first, then swaps the
@@ -352,6 +357,14 @@ RateLimit ─► ShallowParse ─► LocalRecords ─► Blacklist ─► Allowl
 **Precedence:** local records win over everything; then the admin **blacklist**
 (explicit deny) wins over the **allowlist** (explicit allow); the allowlist in
 turn only suppresses the bulk **blocklists**.
+
+**Pause gate.** When blocking is temporarily paused (§9), the three blocking
+stages — blacklist, allowlist, blocklist — are skipped immediately after local
+records, and the query proceeds to cache/upstream for a real answer. Local
+records are unaffected (they sit above the gate and stay authoritative). The
+pause is a runtime-only deadline (§3.1) that auto-resumes by comparison, so a
+would-be-blocked query during a pause resolves and logs as **forwarded** /
+**cached**.
 
 1. **Rate limit / load shed / timeout.** `tower` layers protect the engine
    before any work is done (per-client limits, concurrency cap, deadlines).
@@ -525,6 +538,11 @@ null-IP / custom, per the configured block mode) and authoritative local
     which lists are pulling their weight. Blocks credited to a source that has
     since been removed are summarized as a "removed list" row (§6).
   - Manual blacklist / whitelist editing.
+  - **Pause blocking** for a chosen duration (5 m / 30 m / 1 h, or a custom value)
+    with a *Resume now* control — a navbar menu plus a countdown banner shown on
+    every page while paused (the remaining time counts down client-side). All
+    blocking stands down for the duration (§5); local records keep answering. The
+    deadline is runtime-only, so a restart resumes blocking (§3.2).
   - Local DNS record management (including wildcards).
   - Upstream resolver configuration.
   - Settings — including the **query-log controls**: an enable/disable toggle
