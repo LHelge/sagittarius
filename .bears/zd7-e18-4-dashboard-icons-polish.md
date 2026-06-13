@@ -1,10 +1,10 @@
 ---
 id: zd7
 title: E18.4 — Dashboard icons + polish
-status: open
+status: done
 priority: P2
 created: "2026-06-13T14:59:04.472160628Z"
-updated: "2026-06-13T14:59:04.472160628Z"
+updated: "2026-06-13T16:55:27.932011408Z"
 tags:
   - web
   - ui

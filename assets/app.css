@@ -200,6 +200,27 @@ summary:has(.sgt-icon) {
   text-align: center;
 }
 
+/* Leading metric icon, centred above the figure in the accent colour. */
+.sgt-card > .sgt-icon {
+  display: block;
+  margin: 0 auto 0.5rem;
+  font-size: 1.4rem;
+  color: var(--sgt-accent);
+}
+
+/* Section headings (h2) and panel headers (the top-domains/clients cards) lay
+ * their icon out inline with the title text. */
+.sgt-section-title,
+.sgt-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sgt-section-title .sgt-icon {
+  color: var(--sgt-accent);
+}
+
 .sgt-card .sgt-figure {
   display: block;
   font-size: 2rem;

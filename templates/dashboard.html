@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as ui %}
 {% block title %}Dashboard · sagittarius{% endblock %}
 {% block content %}
 <hgroup>
@@ -6,21 +7,24 @@
   <p class="sgt-muted">Live since-startup figures stream in as queries are processed; the persisted window survives restarts.</p>
 </hgroup>
 
-<h2 class="sgt-section-title">Live (since startup)</h2>
+<h2 class="sgt-section-title">{% call ui::icon("live") %}{% endcall %}Live (since startup)</h2>
 <section
   class="sgt-cards"
   data-signals="{queries: {{ total }}, blocked: {{ blocked }}, cached: {{ cached }}, forwarded: {{ forwarded }}}"
   data-init="@get('/events')"
 >
   <article class="sgt-card">
+    {% call ui::icon("queries") %}{% endcall %}
     <span class="sgt-figure" data-text="$queries.toLocaleString()">{{ total }}</span>
     <span class="sgt-label">Queries</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("blocked") %}{% endcall %}
     <span class="sgt-figure" data-text="$blocked.toLocaleString()">{{ blocked }}</span>
     <span class="sgt-label">Blocked</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("ratio") %}{% endcall %}
     <span
       class="sgt-figure"
       data-text="($queries ? ($blocked * 100 / $queries).toFixed(1) : '0.0') + '%'"
@@ -28,59 +32,71 @@
     <span class="sgt-label">Blocked ratio</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("cached") %}{% endcall %}
     <span class="sgt-figure" data-text="$cached.toLocaleString()">{{ cached }}</span>
     <span class="sgt-label">Cached</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("forwarded") %}{% endcall %}
     <span class="sgt-figure" data-text="$forwarded.toLocaleString()">{{ forwarded }}</span>
     <span class="sgt-label">Forwarded</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("domains") %}{% endcall %}
     <span class="sgt-figure">{{ blocklist_size }}</span>
     <span class="sgt-label">Blocklist domains</span>
   </article>
 </section>
 
-<h2 class="sgt-section-title">System</h2>
+<h2 class="sgt-section-title">{% call ui::icon("system") %}{% endcall %}System</h2>
 <section class="sgt-cards" data-signals="{uptime: {{ system.uptime_secs }}}" data-on-interval="$uptime = $uptime + 1">
   <article class="sgt-card">
+    {% call ui::icon("version") %}{% endcall %}
     <span class="sgt-figure">{{ system.version }}</span>
     <span class="sgt-label">Version</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("uptime") %}{% endcall %}
     <span class="sgt-figure"
       data-text="Math.floor($uptime / 86400) + 'd ' + Math.floor($uptime % 86400 / 3600) + 'h ' + Math.floor($uptime % 3600 / 60) + 'm'">{{ system.uptime }}</span>
     <span class="sgt-label">Uptime</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("qps") %}{% endcall %}
     <span class="sgt-figure" data-text="($uptime > 0 ? ($queries / $uptime).toFixed(1) : '0.0')">0.0</span>
     <span class="sgt-label">Queries/sec</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("cached") %}{% endcall %}
     <span class="sgt-figure">{{ system.cache_entries }} / {{ system.cache_capacity }}</span>
     <span class="sgt-label">Cache entries</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("memory") %}{% endcall %}
     <span class="sgt-figure">{{ system.process_memory }}</span>
     <span class="sgt-label">Process memory</span>
   </article>
 </section>
 
-<h2 class="sgt-section-title">Last 24 hours (persisted)</h2>
+<h2 class="sgt-section-title">{% call ui::icon("history") %}{% endcall %}Last 24 hours (persisted)</h2>
 <section class="sgt-cards">
   <article class="sgt-card">
+    {% call ui::icon("queries") %}{% endcall %}
     <span class="sgt-figure">{{ window_total }}</span>
     <span class="sgt-label">Queries</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("blocked") %}{% endcall %}
     <span class="sgt-figure">{{ window_blocked }}</span>
     <span class="sgt-label">Blocked</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("cached") %}{% endcall %}
     <span class="sgt-figure">{{ window_cached }}</span>
     <span class="sgt-label">Cached</span>
   </article>
   <article class="sgt-card">
+    {% call ui::icon("forwarded") %}{% endcall %}
     <span class="sgt-figure">{{ window_forwarded }}</span>
     <span class="sgt-label">Forwarded</span>
   </article>
@@ -88,7 +104,7 @@
 
 <div class="sgt-columns">
   <article>
-    <header><strong>Top domains · 24h</strong></header>
+    <header class="sgt-panel-title">{% call ui::icon("domains") %}{% endcall %}<strong>Top domains · 24h</strong></header>
     {% if window_top_domains.is_empty() %}
     <p class="sgt-muted">No queries in the last 24 hours.</p>
     {% else %}
@@ -104,7 +120,7 @@
   </article>
 
   <article>
-    <header><strong>Top clients · 24h</strong></header>
+    <header class="sgt-panel-title">{% call ui::icon("clients") %}{% endcall %}<strong>Top clients · 24h</strong></header>
     {% if window_top_clients.is_empty() %}
     <p class="sgt-muted">No queries in the last 24 hours.</p>
     {% else %}
@@ -120,7 +136,7 @@
   </article>
 </div>
 
-<h2 class="sgt-section-title">Upstream health (since startup)</h2>
+<h2 class="sgt-section-title">{% call ui::icon("health") %}{% endcall %}Upstream health (since startup)</h2>
 {% if upstreams.is_empty() %}
 <p class="sgt-muted">No upstream queries yet.</p>
 {% else %}
@@ -150,10 +166,10 @@
 </div>
 {% endif %}
 
-<h2 class="sgt-section-title">Top talkers (since startup)</h2>
+<h2 class="sgt-section-title">{% call ui::icon("talkers") %}{% endcall %}Top talkers (since startup)</h2>
 <div class="sgt-columns">
   <article>
-    <header><strong>Top domains</strong></header>
+    <header class="sgt-panel-title">{% call ui::icon("domains") %}{% endcall %}<strong>Top domains</strong></header>
     {% if top_domains.is_empty() %}
     <p class="sgt-muted">No queries yet.</p>
     {% else %}
@@ -169,7 +185,7 @@
   </article>
 
   <article>
-    <header><strong>Top clients</strong></header>
+    <header class="sgt-panel-title">{% call ui::icon("clients") %}{% endcall %}<strong>Top clients</strong></header>
     {% if top_clients.is_empty() %}
     <p class="sgt-muted">No queries yet.</p>
     {% else %}

@@ -1453,6 +1453,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dashboard_decorates_sections_and_cards_with_icons() {
+        let ts = TestServer::login().await;
+
+        let page = ts
+            .client
+            .get(ts.url("/"))
+            .header("cookie", &ts.cookie)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        // Section headings and a representative spread of stat-card metrics
+        // render their icons from the embedded sprite.
+        for id in [
+            "live", "system", "history", "health", "talkers", // section headings
+            "queries", "blocked", "ratio", "uptime", "qps", "memory", // cards
+        ] {
+            assert!(
+                page.contains(&format!("/assets/icons.svg#{id}")),
+                "dashboard missing icon {id}"
+            );
+        }
+
+        ts.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn bind_serves_and_shuts_down_cleanly() {
         let (_dir, state) = test_state().await;
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
