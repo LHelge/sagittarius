@@ -164,7 +164,10 @@ jobs:
 
   publish-crate:
     name: Publish to crates.io
-    needs: verify
+    # crates.io is the one irreversible step: a published version can only be
+    # yanked, never removed or reused. Gate it on every other publish target so
+    # the permanent action fires last, only once the reversible ones succeed.
+    needs: [build, github-release, docker]
     runs-on: ubuntu-latest
     permissions:
       contents: read
