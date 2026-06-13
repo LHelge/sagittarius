@@ -69,6 +69,25 @@
   </fieldset>
 
   <fieldset>
+    <legend><strong>Upstreams</strong></legend>
+    <label>Selection strategy
+      <select name="upstream_selection_strategy" data-bind="upstream_selection_strategy">
+        <option value="random"{% if upstream_selection_strategy == "random" %} selected{% endif %}>Random</option>
+        <option value="latency-weighted"{% if upstream_selection_strategy == "latency-weighted" %} selected{% endif %}>Latency-weighted</option>
+        <option value="parallel"{% if upstream_selection_strategy == "parallel" %} selected{% endif %}>Parallel (race fastest)</option>
+      </select>
+      <small class="sgt-muted">How the resolver picks an upstream per query.</small>
+    </label>
+    <!-- Fan-out only applies to the parallel strategy, so reveal it only then. -->
+    <div data-show="$upstream_selection_strategy === 'parallel'"{% if upstream_selection_strategy != "parallel" %} style="display: none"{% endif %}>
+      <label>Parallel fan-out
+        <input type="number" name="upstream_parallel_fanout" value="{{ upstream_parallel_fanout }}" min="1" required />
+        <small class="sgt-muted">How many upstreams to query at once; the first answer wins.</small>
+      </label>
+    </div>
+  </fieldset>
+
+  <fieldset>
     <legend><strong>Interface</strong></legend>
     <label>Theme
       <select name="ui_theme">

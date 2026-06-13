@@ -1149,7 +1149,8 @@ mod tests {
             "csrf_token={}&cache_min_ttl=10&cache_max_ttl=3600&cache_negative_ttl_cap=300\
              &cache_capacity=50000&blocking_mode=nxdomain&custom_block_ipv4=&custom_block_ipv6=\
              &blocklist_refresh_interval=7200&ui_theme=dark\
-             &query_log_enabled=1&query_log_retention_days=30",
+             &query_log_enabled=1&query_log_retention_days=30\
+             &upstream_selection_strategy=random&upstream_parallel_fanout=2",
             ts.csrf
         );
         let r = ts

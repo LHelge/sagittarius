@@ -27,10 +27,7 @@ use crate::{
     resolver::{
         pipeline::{engine::build_engine, listener::DnsListeners, middleware::ProtectiveConfig},
         state::ResolverState,
-        upstream::{
-            DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, SharedUpstreamPool,
-            UpstreamConfig, UpstreamPool,
-        },
+        upstream::{SharedUpstreamPool, UpstreamConfig},
     },
     storage::{Db, upstreams::UpstreamRepository},
     telemetry::{
@@ -187,16 +184,19 @@ impl App {
             })
             .collect();
 
+        // Build the pool for the operator-selected strategy (E15.5), read from
+        // the live settings snapshot.
+        let settings = state.settings();
         let pool = Arc::new(SharedUpstreamPool::new(
-            UpstreamPool::connect(
+            crate::resolver::pipeline::engine::build_upstream_pool(
                 &configs,
                 &self.tracker,
-                Arc::new(RandomSelector),
-                DEFAULT_FAILOVER_BUDGET,
-                DEFAULT_QUERY_TIMEOUT,
+                settings.upstream_selection_strategy,
+                settings.upstream_parallel_fanout,
             )
             .await,
         ));
+        drop(settings);
 
         // Persist query events off the hot path: the sink `try_send`s onto a
         // bounded channel that a dedicated writer task drains into SQLite.

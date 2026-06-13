@@ -37,12 +37,20 @@ use crate::{
             middleware::{ClassifyRejection, ProtectiveConfig, build_protective_service},
         },
         state::ResolverState,
-        upstream::{SharedUpstreamPool, UpstreamConfig, UpstreamTransport},
+        upstream::{
+            DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, LatencyWeightedSelector,
+            RandomSelector, SharedUpstreamPool, UpstreamConfig, UpstreamPool, UpstreamSelector,
+            UpstreamTransport,
+        },
     },
-    storage::upstreams::{Transport, Upstream},
+    storage::{
+        settings::SelectionStrategy,
+        upstreams::{Transport, Upstream},
+    },
     telemetry::{QueryEvent, TelemetrySink},
     time::Clock,
 };
+use tokio_util::task::TaskTracker;
 
 // ── TelemetryLayer ────────────────────────────────────────────────────────────
 
@@ -167,6 +175,45 @@ pub fn build_engine(
     TelemetryLayer::new(telemetry)
         .layer(protected)
         .boxed_clone()
+}
+
+// ── build_upstream_pool ─────────────────────────────────────────────────────
+
+/// Connect an [`UpstreamPool`] configured for the chosen selection `strategy`
+/// (E15.5).
+///
+/// Maps the persisted [`SelectionStrategy`] to the concrete selector and
+/// forward mode:
+/// - [`SelectionStrategy::Random`] → [`RandomSelector`], sequential failover.
+/// - [`SelectionStrategy::LatencyWeighted`] → [`LatencyWeightedSelector`],
+///   sequential failover.
+/// - [`SelectionStrategy::Parallel`] → race the first `parallel_fanout`
+///   upstreams (in random order) concurrently.
+///
+/// Used at startup and whenever the upstream set or strategy changes, so the
+/// mapping lives in exactly one place.
+pub async fn build_upstream_pool(
+    configs: &[UpstreamConfig],
+    tracker: &TaskTracker,
+    strategy: SelectionStrategy,
+    parallel_fanout: u32,
+) -> UpstreamPool {
+    let selector: Arc<dyn UpstreamSelector> = match strategy {
+        SelectionStrategy::LatencyWeighted => Arc::new(LatencyWeightedSelector),
+        SelectionStrategy::Random | SelectionStrategy::Parallel => Arc::new(RandomSelector),
+    };
+    let pool = UpstreamPool::connect(
+        configs,
+        tracker,
+        selector,
+        DEFAULT_FAILOVER_BUDGET,
+        DEFAULT_QUERY_TIMEOUT,
+    )
+    .await;
+    match strategy {
+        SelectionStrategy::Parallel => pool.with_parallel_fanout(parallel_fanout as usize),
+        SelectionStrategy::Random | SelectionStrategy::LatencyWeighted => pool,
+    }
 }
 
 // ── upstream_config_from_row ──────────────────────────────────────────────────

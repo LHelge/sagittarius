@@ -70,6 +70,54 @@ impl FromStr for BlockingMode {
     }
 }
 
+// ── SelectionStrategy ────────────────────────────────────────────────────────
+
+/// How the upstream pool picks a resolver per query (E15).
+///
+/// Maps to/from the `upstream_selection_strategy` TEXT column values
+/// `'random'`, `'latency-weighted'`, and `'parallel'`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, strum::IntoStaticStr)]
+pub enum SelectionStrategy {
+    /// Uniform shuffle across upstreams (the v0.1 default).
+    #[default]
+    #[strum(serialize = "random")]
+    Random,
+    /// Weighted-random bias toward faster, healthier upstreams.
+    #[strum(serialize = "latency-weighted")]
+    LatencyWeighted,
+    /// Race the first N upstreams concurrently; take the first success.
+    #[strum(serialize = "parallel")]
+    Parallel,
+}
+
+impl SelectionStrategy {
+    /// The canonical TEXT representation stored in the database.
+    pub fn as_str(&self) -> &'static str {
+        self.into()
+    }
+}
+
+impl fmt::Display for SelectionStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SelectionStrategy {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "random" => Ok(Self::Random),
+            "latency-weighted" => Ok(Self::LatencyWeighted),
+            "parallel" => Ok(Self::Parallel),
+            other => Err(Error::Decode(format!(
+                "unknown upstream_selection_strategy value: {other:?}"
+            ))),
+        }
+    }
+}
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 /// Typed representation of the singleton `settings` row (id = 1).
@@ -99,6 +147,11 @@ pub struct Settings {
     /// How many days of query-log history to retain before the hourly purge
     /// removes older rows (E10).
     pub query_log_retention_days: u32,
+    /// How the upstream pool selects a resolver per query (E15).
+    pub upstream_selection_strategy: SelectionStrategy,
+    /// Fan-out N for [`SelectionStrategy::Parallel`]; ignored by other
+    /// strategies. At least 1.
+    pub upstream_parallel_fanout: u32,
 }
 
 // ── Private row struct ────────────────────────────────────────────────────────
@@ -117,6 +170,8 @@ struct SettingsRow {
     ui_theme: String,
     query_log_enabled: i64,
     query_log_retention_days: i64,
+    upstream_selection_strategy: String,
+    upstream_parallel_fanout: i64,
 }
 
 /// Narrow a non-negative `i64` DB value to `u32`, returning a decode error
@@ -177,6 +232,11 @@ impl TryFrom<SettingsRow> for Settings {
                 row.query_log_retention_days,
                 "query_log_retention_days",
             )?,
+            upstream_selection_strategy: row.upstream_selection_strategy.parse()?,
+            upstream_parallel_fanout: narrow_u32(
+                row.upstream_parallel_fanout,
+                "upstream_parallel_fanout",
+            )?,
         })
     }
 }
@@ -226,7 +286,9 @@ impl SettingsRepository for SqliteSettingsRepo {
                 blocklist_refresh_interval,
                 ui_theme,
                 query_log_enabled,
-                query_log_retention_days
+                query_log_retention_days,
+                upstream_selection_strategy,
+                upstream_parallel_fanout
             FROM settings
             WHERE id = 1"#
         )
@@ -247,6 +309,8 @@ impl SettingsRepository for SqliteSettingsRepo {
         let blocklist_refresh_interval = settings.blocklist_refresh_interval as i64;
         let query_log_enabled = settings.query_log_enabled as i64;
         let query_log_retention_days = settings.query_log_retention_days as i64;
+        let upstream_selection_strategy = settings.upstream_selection_strategy.as_str();
+        let upstream_parallel_fanout = settings.upstream_parallel_fanout as i64;
 
         sqlx::query!(
             r#"UPDATE settings SET
@@ -260,7 +324,9 @@ impl SettingsRepository for SqliteSettingsRepo {
                 blocklist_refresh_interval  = ?,
                 ui_theme                    = ?,
                 query_log_enabled           = ?,
-                query_log_retention_days    = ?
+                query_log_retention_days    = ?,
+                upstream_selection_strategy = ?,
+                upstream_parallel_fanout    = ?
             WHERE id = 1"#,
             cache_min_ttl,
             cache_max_ttl,
@@ -273,6 +339,8 @@ impl SettingsRepository for SqliteSettingsRepo {
             settings.ui_theme,
             query_log_enabled,
             query_log_retention_days,
+            upstream_selection_strategy,
+            upstream_parallel_fanout,
         )
         .execute(&self.pool)
         .await?;
@@ -351,6 +419,44 @@ mod tests {
         assert_eq!(settings.ui_theme, "auto");
         assert!(settings.query_log_enabled, "query log enabled by default");
         assert_eq!(settings.query_log_retention_days, 30u32);
+        assert_eq!(
+            settings.upstream_selection_strategy,
+            SelectionStrategy::Random,
+            "default strategy is random"
+        );
+        assert_eq!(settings.upstream_parallel_fanout, 2u32);
+    }
+
+    // ── SelectionStrategy unit tests ──────────────────────────────────────────
+
+    #[test]
+    fn selection_strategy_round_trips_via_str() {
+        for strategy in [
+            SelectionStrategy::Random,
+            SelectionStrategy::LatencyWeighted,
+            SelectionStrategy::Parallel,
+        ] {
+            let token = strategy.as_str();
+            assert_eq!(token.parse::<SelectionStrategy>().unwrap(), strategy);
+        }
+        assert!("bogus".parse::<SelectionStrategy>().is_err());
+    }
+
+    #[tokio::test]
+    async fn update_round_trips_selection_strategy() {
+        let (_dir, repo) = open_repo().await;
+        let mut settings = repo.get().await.expect("get");
+
+        settings.upstream_selection_strategy = SelectionStrategy::Parallel;
+        settings.upstream_parallel_fanout = 4;
+        repo.update(&settings).await.expect("update");
+
+        let fetched = repo.get().await.expect("re-get");
+        assert_eq!(
+            fetched.upstream_selection_strategy,
+            SelectionStrategy::Parallel
+        );
+        assert_eq!(fetched.upstream_parallel_fanout, 4u32);
     }
 
     // ── update() round-trips ──────────────────────────────────────────────────

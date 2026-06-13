@@ -30,7 +30,7 @@ use crate::{
     resolver::state::RuntimeSettings,
     storage::{
         query_log::QueryLogRepository,
-        settings::{BlockingMode, Settings, SettingsRepository},
+        settings::{BlockingMode, SelectionStrategy, Settings, SettingsRepository},
     },
     web::{
         AppState, Chrome,
@@ -66,6 +66,8 @@ impl AppState {
             ui_theme: s.ui_theme,
             query_log_enabled: s.query_log_enabled,
             query_log_retention_days: s.query_log_retention_days,
+            upstream_selection_strategy: s.upstream_selection_strategy.as_str(),
+            upstream_parallel_fanout: s.upstream_parallel_fanout,
             error,
             notice,
         })
@@ -121,6 +123,9 @@ impl AppState {
         // Apply to the live snapshot (capacity needs a restart; see module doc).
         self.resolver
             .store_settings(RuntimeSettings::from(&settings));
+        // The selection strategy / fan-out is read when (re)building the pool,
+        // so rebuild it now to apply the change immediately (E15.5).
+        self.rebuild_upstream_pool().await?;
         Ok(())
     }
 }
@@ -143,6 +148,8 @@ pub struct SettingsForm {
     #[serde(default)]
     query_log_enabled: Option<String>,
     query_log_retention_days: u32,
+    upstream_selection_strategy: String,
+    upstream_parallel_fanout: u32,
 }
 
 impl SettingsForm {
@@ -187,6 +194,16 @@ impl SettingsForm {
             ));
         }
 
+        let upstream_selection_strategy: SelectionStrategy = self
+            .upstream_selection_strategy
+            .parse()
+            .map_err(|_| WebError::bad_request("Invalid upstream selection strategy."))?;
+        if self.upstream_parallel_fanout < 1 {
+            return Err(WebError::bad_request(
+                "Parallel fan-out must be at least 1.",
+            ));
+        }
+
         Ok(Settings {
             cache_min_ttl: self.cache_min_ttl,
             cache_max_ttl: self.cache_max_ttl,
@@ -199,6 +216,8 @@ impl SettingsForm {
             ui_theme: self.ui_theme,
             query_log_enabled: self.query_log_enabled.is_some(),
             query_log_retention_days: self.query_log_retention_days,
+            upstream_selection_strategy,
+            upstream_parallel_fanout: self.upstream_parallel_fanout,
         })
     }
 }
@@ -230,6 +249,8 @@ struct SettingsPageTemplate {
     ui_theme: String,
     query_log_enabled: bool,
     query_log_retention_days: u32,
+    upstream_selection_strategy: &'static str,
+    upstream_parallel_fanout: u32,
     error: Option<String>,
     notice: Option<String>,
 }
@@ -260,6 +281,8 @@ mod tests {
             ui_theme: "dark".to_owned(),
             query_log_enabled: Some("on".to_owned()),
             query_log_retention_days: 30,
+            upstream_selection_strategy: "random".to_owned(),
+            upstream_parallel_fanout: 2,
         }
     }
 
@@ -277,6 +300,40 @@ mod tests {
         // Live snapshot updated (blocking mode applies immediately).
         assert_eq!(st.resolver.settings().block_mode, BlockMode::NxDomain);
         assert_eq!(st.resolver.settings().cache_max_ttl, 3600);
+    }
+
+    #[tokio::test]
+    async fn parallel_strategy_rebuilds_pool_in_parallel_mode() {
+        let (_d, st) = state().await;
+
+        // A fresh test pool is sequential.
+        assert_eq!(st.upstream_pool.load().parallel_fanout(), None);
+
+        let mut f = base_form();
+        f.upstream_selection_strategy = "parallel".to_owned();
+        f.upstream_parallel_fanout = 3;
+        st.apply_settings(f).await.expect("apply");
+
+        // Persisted + live snapshot reflect the strategy …
+        let s = st.db.settings().get().await.unwrap();
+        assert_eq!(s.upstream_selection_strategy, SelectionStrategy::Parallel);
+        assert_eq!(
+            st.resolver.settings().upstream_selection_strategy,
+            SelectionStrategy::Parallel
+        );
+        // … and the pool was rebuilt in parallel mode with the configured fan-out.
+        assert_eq!(st.upstream_pool.load().parallel_fanout(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn invalid_fanout_is_rejected() {
+        let (_d, st) = state().await;
+        let mut f = base_form();
+        f.upstream_parallel_fanout = 0;
+        assert!(matches!(
+            st.apply_settings(f).await,
+            Err(WebError::BadRequest(_))
+        ));
     }
 
     #[tokio::test]
