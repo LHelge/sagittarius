@@ -1,13 +1,13 @@
 ---
 id: gkd
 title: E13.3 · forward_zones storage + config UI
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:23:41.505116502Z
-updated: 2026-05-30T20:23:41.505116502Z
+created: "2026-05-30T20:23:41.505116502Z"
+updated: "2026-06-13T14:39:21.180960644Z"
 tags:
-- storage
-- web
+  - storage
+  - web
 parent: s2e
 ---
 

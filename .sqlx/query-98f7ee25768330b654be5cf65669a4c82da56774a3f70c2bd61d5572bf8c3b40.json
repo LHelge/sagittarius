@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                id          AS \"id!\",\n                zone_suffix,\n                target,\n                enabled     AS \"enabled!: bool\",\n                sort_order  AS \"sort_order!\"\n            FROM forward_zones\n            ORDER BY sort_order",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "zone_suffix",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "target",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled!: bool",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "sort_order!",
+        "ordinal": 4,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "98f7ee25768330b654be5cf65669a4c82da56774a3f70c2bd61d5572bf8c3b40"
+}

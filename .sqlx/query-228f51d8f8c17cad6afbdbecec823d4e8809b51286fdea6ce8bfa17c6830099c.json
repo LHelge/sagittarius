@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO forward_zones (zone_suffix, target, enabled, sort_order)\n            VALUES (?, ?, ?, ?)\n            RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "228f51d8f8c17cad6afbdbecec823d4e8809b51286fdea6ce8bfa17c6830099c"
+}
