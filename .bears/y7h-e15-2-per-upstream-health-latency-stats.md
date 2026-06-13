@@ -1,15 +1,15 @@
 ---
 id: y7h
 title: E15.2 · Per-upstream health & latency stats
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:47:40.653857587Z
-updated: 2026-05-30T20:47:40.653857587Z
+created: "2026-05-30T20:47:40.653857587Z"
+updated: "2026-06-13T13:00:08.556771758Z"
 tags:
-- upstream
-- telemetry
+  - upstream
+  - telemetry
 depends_on:
-- x3v
+  - x3v
 parent: xa8
 ---
 

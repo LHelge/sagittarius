@@ -25,7 +25,10 @@ use tracing::warn;
 
 use crate::codec::message::Question;
 
-use super::{DEFAULT_QUERY_TIMEOUT, Error, ForwardResult, Result, UpstreamClient, UpstreamConfig};
+use super::{
+    DEFAULT_QUERY_TIMEOUT, Error, ForwardResult, Result, UpstreamClient, UpstreamConfig,
+    health::UpstreamHealth,
+};
 
 // ── Default constants ─────────────────────────────────────────────────────────
 
@@ -157,12 +160,21 @@ impl UpstreamPool {
     }
 
     /// Forward `question` to the best available upstream, failing over on
-    /// error or timeout.
+    /// error or timeout, recording per-attempt health into `health` (E15.2).
     ///
     /// Returns the first successful [`ForwardResult`].  If all attempted
     /// upstreams fail (or the pool is empty), returns
     /// [`Error::AllUpstreamsFailed`] with the number of attempts made.
-    pub async fn forward(&self, question: &Question) -> Result<ForwardResult> {
+    ///
+    /// Every attempt updates `health`: a success records the answering
+    /// upstream's latency, a failure bumps its failure count and last-error.
+    /// Per-upstream attribution is only possible here, inside the failover
+    /// loop — callers see only the final aggregated result.
+    pub async fn forward(
+        &self,
+        question: &Question,
+        health: &UpstreamHealth,
+    ) -> Result<ForwardResult> {
         if self.clients.is_empty() {
             return Err(Error::AllUpstreamsFailed { attempts: 0 });
         }
@@ -178,8 +190,14 @@ impl UpstreamPool {
             attempts += 1;
 
             match client.forward(question, self.per_attempt_timeout).await {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    // Reuse the exchange latency measured by the client (E15.1)
+                    // rather than re-timing here.
+                    health.record_success(client.addr(), result.latency);
+                    return Ok(result);
+                }
                 Err(e) => {
+                    health.record_failure(client.addr(), e.to_string());
                     warn!(
                         upstream_index = idx,
                         transport = %client.transport(),
@@ -220,6 +238,9 @@ impl UpstreamPool {
 /// settings change; in-flight queries complete on the old snapshot.
 pub struct SharedUpstreamPool {
     inner: arc_swap::ArcSwap<UpstreamPool>,
+    /// Per-upstream health, kept *outside* the swapped snapshot so history
+    /// survives a pool rebuild on an upstream-config edit (E15.2).
+    health: Arc<UpstreamHealth>,
 }
 
 impl fmt::Debug for SharedUpstreamPool {
@@ -231,11 +252,19 @@ impl fmt::Debug for SharedUpstreamPool {
 }
 
 impl SharedUpstreamPool {
-    /// Wrap an [`UpstreamPool`] in a [`SharedUpstreamPool`].
+    /// Wrap an [`UpstreamPool`] in a [`SharedUpstreamPool`] with a fresh
+    /// health tracker.
     pub fn new(pool: UpstreamPool) -> Self {
         Self {
             inner: arc_swap::ArcSwap::from_pointee(pool),
+            health: Arc::new(UpstreamHealth::new()),
         }
+    }
+
+    /// The shared per-upstream health tracker (E15.2), read by the admin
+    /// dashboard (E15.3) and the latency-weighted selector (E15.4).
+    pub fn health(&self) -> &Arc<UpstreamHealth> {
+        &self.health
     }
 
     /// Load the current pool snapshot without incrementing the reference count.
@@ -261,7 +290,7 @@ impl SharedUpstreamPool {
     /// concurrently.
     pub async fn forward(&self, question: &Question) -> Result<ForwardResult> {
         let pool = self.inner.load_full();
-        pool.forward(question).await
+        pool.forward(question, &self.health).await
     }
 }
 
@@ -275,7 +304,7 @@ mod tests {
     use tokio_util::task::TaskTracker;
 
     use super::*;
-    use crate::resolver::upstream::{UpstreamConfig, UpstreamTransport};
+    use crate::resolver::upstream::{UpstreamConfig, UpstreamHealth, UpstreamTransport};
     use crate::test_support::{
         mock_udp_upstream, nxdomain_handler, positive_a_handler, silent_handler, stock_question,
     };
@@ -370,9 +399,12 @@ mod tests {
         assert!(pool.is_empty());
         assert_eq!(pool.len(), 0);
 
-        let result = timeout(Duration::from_secs(5), pool.forward(&stock_question()))
-            .await
-            .expect("safety timeout");
+        let result = timeout(
+            Duration::from_secs(5),
+            pool.forward(&stock_question(), &UpstreamHealth::new()),
+        )
+        .await
+        .expect("safety timeout");
 
         assert!(
             matches!(result, Err(Error::AllUpstreamsFailed { attempts: 0 })),
@@ -403,10 +435,13 @@ mod tests {
 
         assert_eq!(pool.max_attempts(), 2);
 
-        let result = timeout(Duration::from_secs(5), pool.forward(&stock_question()))
-            .await
-            .expect("safety timeout")
-            .expect("forward must succeed after failover");
+        let result = timeout(
+            Duration::from_secs(5),
+            pool.forward(&stock_question(), &UpstreamHealth::new()),
+        )
+        .await
+        .expect("safety timeout")
+        .expect("forward must succeed after failover");
 
         assert!(
             !result.is_negative,
@@ -419,6 +454,59 @@ mod tests {
             "must record the upstream that answered after failover"
         );
         assert!(result.latency > Duration::ZERO, "latency must be measured");
+    }
+
+    /// `forward` must attribute per-upstream health: the silent upstream gets a
+    /// failure (no latency), the answering one a success (with latency).
+    #[tokio::test]
+    async fn forward_records_per_upstream_health() {
+        let silent_addr = mock_udp_upstream(silent_handler).await;
+        let answer_addr = mock_udp_upstream(positive_a_handler).await;
+
+        let configs = vec![udp_config(silent_addr), udp_config(answer_addr)];
+        let tracker = TaskTracker::new();
+        let pool = UpstreamPool::connect(
+            &configs,
+            &tracker,
+            Arc::new(SequentialSelector),
+            1,
+            Duration::from_millis(150),
+        )
+        .await;
+
+        let health = UpstreamHealth::new();
+        timeout(
+            Duration::from_secs(5),
+            pool.forward(&stock_question(), &health),
+        )
+        .await
+        .expect("safety timeout")
+        .expect("forward succeeds after failover");
+
+        let snap = health.snapshot();
+
+        let silent = snap
+            .iter()
+            .find(|r| r.addr == silent_addr)
+            .expect("silent upstream tracked");
+        assert_eq!(silent.failures, 1, "silent upstream recorded a failure");
+        assert_eq!(silent.successes, 0);
+        assert_eq!(silent.ewma_latency_ms, None, "a failure has no latency");
+        assert!(
+            silent.last_error.is_some(),
+            "failure retains an error string"
+        );
+
+        let answer = snap
+            .iter()
+            .find(|r| r.addr == answer_addr)
+            .expect("answering upstream tracked");
+        assert_eq!(answer.successes, 1, "answering upstream recorded a success");
+        assert_eq!(answer.failures, 0);
+        assert!(
+            answer.ewma_latency_ms.is_some(),
+            "success records a latency"
+        );
     }
 
     // ── Pool: all-fail ────────────────────────────────────────────────────────
@@ -440,9 +528,12 @@ mod tests {
         )
         .await;
 
-        let result = timeout(Duration::from_secs(5), pool.forward(&stock_question()))
-            .await
-            .expect("safety timeout");
+        let result = timeout(
+            Duration::from_secs(5),
+            pool.forward(&stock_question(), &UpstreamHealth::new()),
+        )
+        .await
+        .expect("safety timeout");
 
         assert!(
             matches!(result, Err(Error::AllUpstreamsFailed { attempts: 2 })),
@@ -470,9 +561,12 @@ mod tests {
         )
         .await;
 
-        let result = timeout(Duration::from_secs(5), pool.forward(&stock_question()))
-            .await
-            .expect("safety timeout");
+        let result = timeout(
+            Duration::from_secs(5),
+            pool.forward(&stock_question(), &UpstreamHealth::new()),
+        )
+        .await
+        .expect("safety timeout");
 
         assert!(
             matches!(result, Err(Error::AllUpstreamsFailed { attempts: 2 })),
