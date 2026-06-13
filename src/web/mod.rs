@@ -135,6 +135,8 @@ pub struct AppState {
     /// The app task tracker, used to register the background drivers of a
     /// rebuilt upstream pool (E8.9).
     pub tracker: TaskTracker,
+    /// Process start instant, for the dashboard uptime figure (E15.7).
+    pub started_at: std::time::Instant,
 }
 
 /// Generate a fresh random key for signing session-bound CSRF tokens.
@@ -352,6 +354,7 @@ impl AppState {
             setup_done: Arc::new(AtomicBool::new(false)),
             upstream_pool,
             tracker,
+            started_at: std::time::Instant::now(),
         }
     }
 }

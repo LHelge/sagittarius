@@ -234,6 +234,14 @@ impl DnsCache {
         self.inner.run_pending_tasks().await;
     }
 
+    /// Approximate number of entries currently cached (E15.7 dashboard).
+    ///
+    /// `moka` maintains this lazily, so the count can lag recent inserts/evictions
+    /// until pending maintenance runs — fine for an at-a-glance figure.
+    pub fn entry_count(&self) -> u64 {
+        self.inner.entry_count()
+    }
+
     /// Clamp a caller-supplied TTL (seconds) into this cache's `[min, max]`
     /// bounds.  `new` guarantees `min_ttl <= max_ttl`.
     #[inline]

@@ -223,6 +223,7 @@ impl App {
             setup_done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             upstream_pool: Arc::clone(&pool),
             tracker: self.tracker.clone(),
+            started_at: std::time::Instant::now(),
         };
 
         let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());
