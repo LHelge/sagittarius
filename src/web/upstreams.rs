@@ -12,8 +12,6 @@
 //! [`upstream_config_from_row`]) and are rejected at add time so an entry can
 //! never be silently ineffective.
 
-use std::sync::Arc;
-
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
@@ -24,10 +22,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    resolver::upstream::{
-        DEFAULT_FAILOVER_BUDGET, DEFAULT_QUERY_TIMEOUT, RandomSelector, UpstreamConfig,
-        UpstreamPool,
-    },
+    resolver::upstream::UpstreamConfig,
     storage::upstreams::{NewUpstream, Transport, Upstream, UpstreamRepository},
     web::{
         AppState, Chrome,
@@ -37,19 +32,20 @@ use crate::{
 };
 
 impl AppState {
-    /// Rebuild the live upstream pool from the enabled rows and swap it in.
-    async fn rebuild_upstream_pool(&self) -> WebResult<()> {
+    /// Rebuild the live upstream pool from the enabled rows and swap it in,
+    /// honouring the current selection strategy (E15.5).
+    pub(crate) async fn rebuild_upstream_pool(&self) -> WebResult<()> {
         let rows = self.db.upstreams().list_enabled().await?;
         let configs: Vec<_> = rows
             .iter()
             .filter_map(|r| UpstreamConfig::try_from(r).ok())
             .collect();
-        let new_pool = UpstreamPool::connect(
+        let settings = self.resolver.settings();
+        let new_pool = crate::resolver::pipeline::engine::build_upstream_pool(
             &configs,
             &self.tracker,
-            Arc::new(RandomSelector),
-            DEFAULT_FAILOVER_BUDGET,
-            DEFAULT_QUERY_TIMEOUT,
+            settings.upstream_selection_strategy,
+            settings.upstream_parallel_fanout,
         )
         .await;
         self.upstream_pool.store(new_pool);

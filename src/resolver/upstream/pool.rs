@@ -441,6 +441,12 @@ impl UpstreamPool {
     pub fn max_attempts(&self) -> usize {
         self.max_attempts
     }
+
+    /// The parallel fan-out, or `None` when the pool is in sequential mode
+    /// (E15.4/E15.5).
+    pub fn parallel_fanout(&self) -> Option<usize> {
+        self.parallel_fanout
+    }
 }
 
 // ── SharedUpstreamPool ────────────────────────────────────────────────────────

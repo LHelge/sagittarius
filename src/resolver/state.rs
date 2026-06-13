@@ -51,7 +51,7 @@ use crate::{
         Db,
         lists::{AllowlistRepository, BlacklistRepository},
         local_records::{LocalRecordRepository, RecordType},
-        settings::{BlockingMode, Settings, SettingsRepository},
+        settings::{BlockingMode, SelectionStrategy, Settings, SettingsRepository},
     },
     time::Clock,
 };
@@ -103,6 +103,10 @@ pub struct RuntimeSettings {
     ///
     /// Read by the hourly purge task from the live snapshot.
     pub query_log_retention_days: u32,
+    /// Upstream selection strategy (E15). Read when (re)building the pool.
+    pub upstream_selection_strategy: SelectionStrategy,
+    /// Fan-out N for the parallel strategy (E15); ignored otherwise.
+    pub upstream_parallel_fanout: u32,
 }
 
 impl From<&Settings> for RuntimeSettings {
@@ -133,6 +137,8 @@ impl From<&Settings> for RuntimeSettings {
             blocklist_refresh_interval: s.blocklist_refresh_interval,
             query_log_enabled: s.query_log_enabled,
             query_log_retention_days: s.query_log_retention_days,
+            upstream_selection_strategy: s.upstream_selection_strategy,
+            upstream_parallel_fanout: s.upstream_parallel_fanout,
         }
     }
 }
@@ -450,6 +456,8 @@ mod tests {
             ui_theme: "auto".to_owned(),
             query_log_enabled: true,
             query_log_retention_days: 30,
+            upstream_selection_strategy: SelectionStrategy::Random,
+            upstream_parallel_fanout: 2,
         }
     }
 

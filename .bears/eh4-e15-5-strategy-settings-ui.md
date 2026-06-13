@@ -1,15 +1,15 @@
 ---
 id: eh4
 title: E15.5 · Strategy settings + UI
-status: open
+status: done
 priority: P2
-created: 2026-05-30T20:48:07.426395245Z
-updated: 2026-05-30T20:48:07.426395245Z
+created: "2026-05-30T20:48:07.426395245Z"
+updated: "2026-06-13T13:43:12.327926904Z"
 tags:
-- web
-- storage
+  - web
+  - storage
 depends_on:
-- ge8
+  - ge8
 parent: xa8
 ---
 
