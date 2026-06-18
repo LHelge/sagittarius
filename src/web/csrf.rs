@@ -17,9 +17,11 @@
 //!    (Datastar `@post` sends all signals as JSON), or a `csrf_token` urlencoded
 //!    form field. Because it is keyed by the session id it rotates on login.
 //!
-//! Pre-authentication forms (login, the first-run wizard) have no session yet,
-//! so they require a matching `Origin` or `Referer`; the session-bound token
-//! check is skipped only because there is no session id to bind it to.
+//! Pre-authentication forms (login, the first-run wizard) are rendered before a
+//! session exists, so they carry no session-bound token and instead require a
+//! matching `Origin` or `Referer`. The token check is skipped for them even
+//! when a stale or still-valid session cookie rides along (e.g. re-submitting
+//! the login form), since their forms have no token to satisfy it.
 
 use axum::{
     body::{Body, Bytes},
@@ -85,6 +87,14 @@ fn is_safe(method: &Method) -> bool {
     )
 }
 
+/// Whether `path` is a public, pre-authentication form route (login / first-run
+/// wizard). These render before any session exists, so their forms carry no
+/// session-bound token and rely on the Origin/Referer check; they are exempt
+/// from the token check even when a session cookie happens to be present.
+fn is_public_form(path: &str) -> bool {
+    matches!(path, "/login" | "/setup")
+}
+
 /// The CSRF middleware applied to the whole router.
 ///
 /// Safe methods pass straight through.  Mutations are origin-checked, and —
@@ -96,27 +106,36 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
 
     let cookie = SessionCookie::from_headers(req.headers());
 
-    // (2) Origin / Referer must match the browser-facing admin origin.  For
-    // pre-auth forms, require one of those headers because there is no
-    // session-bound token yet.
-    if !origin_ok(&state, req.headers(), cookie.is_none()) {
+    // Public pre-auth forms (login, first-run wizard) are rendered before any
+    // session exists, so they carry no session-bound token; the Origin/Referer
+    // check below is their CSRF defence. They must stay exempt from the token
+    // check even when a session cookie *is* present — e.g. a returning user
+    // re-submitting the login form while an earlier session still lingers —
+    // otherwise that legitimate POST is rejected, because the login form has no
+    // token to satisfy a check bound to the lingering session.
+    let public_form = is_public_form(req.uri().path());
+
+    // (2) Origin / Referer must match the browser-facing admin origin.  Requests
+    // with no session-bound token to fall back on — pre-auth forms, or no
+    // session cookie at all — must carry one of those headers.
+    if !origin_ok(&state, req.headers(), public_form || cookie.is_none()) {
         warn!("CSRF: rejected mutation with mismatched Origin/Referer");
         return forbidden();
     }
 
+    if public_form {
+        return next.run(req).await;
+    }
+
     // (3) Token check, only when an authenticated session cookie is present.
-    // Pre-auth forms (login/wizard) have no session; the handler's auth
-    // extractor still gates them.
     let Some(cookie) = cookie else {
         return next.run(req).await;
     };
 
     // Only a *live* session binds a CSRF token. A present-but-invalid cookie
     // (idle-expired or unknown session) is treated as pre-auth: the Origin
-    // check above already gates it, and enforcing a token bound to the dead
-    // session would 403 the very login POST that replaces it — locking a
-    // returning user out until they manually clear the cookie. The handler's
-    // auth extractor still redirects any genuinely protected route to /login.
+    // check above already gates it. The handler's auth extractor still
+    // redirects any genuinely protected route to /login.
     if state.current_user(req.headers()).await.is_none() {
         return next.run(req).await;
     }
@@ -226,6 +245,15 @@ mod tests {
         assert!(is_safe(&Method::HEAD));
         assert!(!is_safe(&Method::POST));
         assert!(!is_safe(&Method::DELETE));
+    }
+
+    #[test]
+    fn public_forms_detected() {
+        assert!(is_public_form("/login"));
+        assert!(is_public_form("/setup"));
+        assert!(!is_public_form("/logout"));
+        assert!(!is_public_form("/blocking/pause"));
+        assert!(!is_public_form("/"));
     }
 
     #[test]
