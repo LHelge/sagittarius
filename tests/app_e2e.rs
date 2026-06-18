@@ -564,3 +564,36 @@ async fn one_click_whitelist_takes_effect_next_query() {
 
     h.shutdown().await;
 }
+
+/// Re-submitting the login form while a still-valid session cookie is present
+/// must succeed, not 403. `/login` is a pre-auth route whose form carries no
+/// session-bound CSRF token, so the token check must stay exempt even when a
+/// lingering session cookie rides along (regression: it used to be rejected
+/// with "CSRF check failed").
+#[tokio::test]
+async fn relogin_with_valid_session_cookie_is_not_csrf_rejected() {
+    let h = Harness::start().await;
+
+    let r = h
+        .client
+        .post(format!("{}/login", h.base))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("origin", &h.base)
+        .header("cookie", &h.cookie)
+        .body("username=admin&password=correcthorse")
+        .send()
+        .await
+        .expect("re-login");
+
+    assert_eq!(
+        r.status(),
+        303,
+        "re-login with a valid session cookie redirects to /, not 403"
+    );
+    assert!(
+        r.headers().contains_key("set-cookie"),
+        "re-login starts a fresh session"
+    );
+
+    h.shutdown().await;
+}
