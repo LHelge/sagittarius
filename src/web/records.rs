@@ -33,7 +33,7 @@ use crate::{
 
 impl AppState {
     /// Rebuild the in-memory local-record snapshot from the database.
-    async fn reload_local_records(&self) -> WebResult<()> {
+    pub(crate) async fn reload_local_records(&self) -> WebResult<()> {
         let rows = self.db.local_records().load_all().await?;
         let records = build_local_records(rows).map_err(|e| WebError::internal(e.to_string()))?;
         self.resolver.local().store(records);

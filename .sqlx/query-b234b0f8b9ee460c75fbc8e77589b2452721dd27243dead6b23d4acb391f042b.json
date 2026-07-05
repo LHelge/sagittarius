@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO admin_users (username, password_hash, role)\n            VALUES (?, ?, ?)\n            ON CONFLICT(username) DO UPDATE SET\n                password_hash = excluded.password_hash,\n                role          = excluded.role,\n                updated_at    = unixepoch()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b234b0f8b9ee460c75fbc8e77589b2452721dd27243dead6b23d4acb391f042b"
+}

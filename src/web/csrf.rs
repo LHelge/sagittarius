@@ -80,7 +80,7 @@ impl AppState {
 }
 
 /// Whether `method` is a safe (non-mutating) method that bypasses CSRF checks.
-fn is_safe(method: &Method) -> bool {
+pub(crate) fn is_safe(method: &Method) -> bool {
     matches!(
         *method,
         Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE

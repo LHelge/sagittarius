@@ -11,12 +11,14 @@
 <p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
 {% endif %}
 
+{% if !chrome.read_only %}
 <form method="post" action="/forwarding/apply-all" class="sgt-actions">
   <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
   <input type="text" name="target" placeholder="192.168.1.1" aria-label="Router/DHCP resolver address" />
   <button type="submit">{% call ui::icon("forwarding") %}{% endcall %}Forward all reverse zones here</button>
 </form>
 <p class="sgt-muted">Points every zone below at one resolver and enables them — the one-click LAN setup. Fine-tune individual zones in the table.</p>
+{% endif %}
 
 <div class="sgt-table-wrap">
   <table>
@@ -28,6 +30,9 @@
       <tr>
         <td class="sgt-mono">{{ z.zone_suffix }}</td>
         <td>
+          {% if chrome.read_only %}
+          <span class="sgt-mono">{% if z.target.is_empty() %}<span class="sgt-muted">—</span>{% else %}{{ z.target }}{% endif %}</span>
+          {% else %}
           <form method="post" action="/forwarding/target" class="sgt-inline-form" role="group">
             <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
             <input type="hidden" name="id" value="{{ z.id }}" />
@@ -35,18 +40,21 @@
                    class="sgt-mono" aria-label="Target resolver for {{ z.zone_suffix }}" />
             <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("save") %}{% endcall %}Save</button>
           </form>
+          {% endif %}
         </td>
         <td>
           {% if z.enabled %}<span class="sgt-badge sgt-badge--forwarded">enabled</span>
           {% else %}<span class="sgt-badge sgt-badge--other">disabled</span>{% endif %}
         </td>
         <td class="sgt-num">
+          {% if !chrome.read_only %}
           <form method="post" action="/forwarding/toggle" class="sgt-inline-form">
             <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
             <input type="hidden" name="id" value="{{ z.id }}" />
             <input type="hidden" name="enabled" value="{% if z.enabled %}false{% else %}true{% endif %}" />
             <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("toggle") %}{% endcall %}{% if z.enabled %}Disable{% else %}Enable{% endif %}</button>
           </form>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

@@ -42,7 +42,7 @@ use argon2::{
 };
 use axum::{
     extract::{FromRequestParts, State},
-    http::{HeaderMap, header, request::Parts},
+    http::{HeaderMap, StatusCode, header, request::Parts},
     response::{IntoResponse, Redirect, Response},
 };
 use rand::Rng;
@@ -291,6 +291,75 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
+// ── API keys (config-sync bearer auth, SPEC §13) ──────────────────────────────
+
+/// How stale a key's last-used stamp must be before a successful auth refreshes
+/// it (a DB write), so a polling secondary does not write on every request.
+const API_KEY_TOUCH_THRESHOLD_SECS: i64 = 300;
+
+/// A freshly minted API key: the one-time plaintext to show the operator plus
+/// the row to persist.
+///
+/// The wire key is `{id}.{token}` — the same shape as the session cookie — but
+/// only `SHA-256(token)` is stored (`row.token_hash`), so the plaintext is
+/// unrecoverable once this value is dropped.  Minted in the primary admin UI
+/// (E18.5) and verified by [`ApiKeyAuth`].
+pub(crate) struct MintedApiKey {
+    /// The `{id}.{token}` wire value — shown to the operator exactly once.
+    pub(crate) plaintext: String,
+    /// The row to insert (id + token hash + label).
+    pub(crate) row: crate::storage::api_keys::NewApiKey,
+}
+
+impl MintedApiKey {
+    /// Number of random bytes behind the opaque key id (matches the session id).
+    const ID_BYTES: usize = 16;
+
+    /// Mint a new key for `label`: a random id plus a 256-bit token, with only
+    /// the token's hash retained for storage.
+    pub(crate) fn mint(label: &str) -> Self {
+        let mut id_bytes = [0u8; Self::ID_BYTES];
+        rand::rng().fill_bytes(&mut id_bytes);
+        let id = id_bytes.to_hex();
+        let token = SessionToken::generate();
+        let plaintext = format!("{id}.{}", token.as_str());
+        Self {
+            plaintext,
+            row: crate::storage::api_keys::NewApiKey {
+                id,
+                token_hash: token.hash(),
+                label: label.to_owned(),
+            },
+        }
+    }
+}
+
+/// The authenticated caller of the config-sync API, identified by a bearer key.
+///
+/// Used as an axum extractor on the API sub-router, which bypasses the cookie
+/// CSRF / wizard guards (SPEC §13).  Unlike [`CurrentUser`], a missing / invalid
+/// / revoked key yields a plain **401** rather than a browser redirect, because
+/// the caller is a machine (a secondary instance), not a browser.
+#[derive(Debug, Clone)]
+pub struct ApiKeyAuth {
+    /// The opaque id of the presented key (for logging and last-used tracking).
+    pub key_id: String,
+}
+
+impl FromRequestParts<AppState> for ApiKeyAuth {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        match state.authenticate_api_key(&parts.headers).await {
+            Some(auth) => Ok(auth),
+            None => Err((StatusCode::UNAUTHORIZED, "invalid or missing API key").into_response()),
+        }
+    }
+}
+
 // ── Session lifecycle + handlers (on AppState) ────────────────────────────────
 
 impl AppState {
@@ -324,6 +393,44 @@ impl AppState {
         Some(CurrentUser {
             user_id: session.user_id,
             session_id: cookie.id,
+        })
+    }
+
+    /// Authenticate a config-sync request by its `Authorization: Bearer
+    /// {id}.{token}` API key (SPEC §13).  Returns `None` for any missing,
+    /// malformed, unknown, revoked, or mismatched key.
+    ///
+    /// On success, the key's `last_used_at` is slid forward — throttled to at
+    /// most once per [`API_KEY_TOUCH_THRESHOLD_SECS`] so a frequently-polling
+    /// secondary does not issue a DB write per request.
+    pub(crate) async fn authenticate_api_key(&self, headers: &HeaderMap) -> Option<ApiKeyAuth> {
+        use crate::storage::api_keys::ApiKeyRepository;
+
+        let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+        let (scheme, value) = raw.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("bearer") {
+            return None;
+        }
+        let (id, token) = value.trim().split_once('.')?;
+
+        let repo = self.db.api_keys();
+        let active = repo.find_active(id).await.ok()??;
+
+        // Constant-time token check against the stored hash.
+        if !SessionToken(token.to_owned()).verify(&active.token_hash) {
+            return None;
+        }
+
+        let now = Clock::now_secs();
+        if active
+            .last_used_at
+            .is_none_or(|t| now - t > API_KEY_TOUCH_THRESHOLD_SECS)
+        {
+            let _ = repo.touch_last_used(id, now).await;
+        }
+
+        Some(ApiKeyAuth {
+            key_id: id.to_owned(),
         })
     }
 
@@ -472,6 +579,113 @@ mod tests {
             token.as_str(),
             SessionToken::generate().as_str(),
             "tokens must be unique"
+        );
+    }
+
+    // ── API-key auth (E18.2) ──────────────────────────────────────────────────
+
+    fn bearer(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {value}").parse().unwrap(),
+        );
+        h
+    }
+
+    #[test]
+    fn minted_key_stores_only_the_hash() {
+        let minted = MintedApiKey::mint("fallback-nas");
+        // Wire form is {id}.{token}; the stored hash matches the token, and the
+        // plaintext is not the hash.
+        let (id, token) = minted.plaintext.split_once('.').expect("id.token");
+        assert_eq!(id, minted.row.id);
+        assert!(SessionToken(token.to_owned()).verify(&minted.row.token_hash));
+        assert_ne!(minted.row.token_hash, minted.plaintext);
+        assert_eq!(minted.row.label, "fallback-nas");
+    }
+
+    #[tokio::test]
+    async fn api_key_auth_round_trips_and_is_scheme_insensitive() {
+        use crate::storage::api_keys::ApiKeyRepository;
+
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = AppState::for_test(db).await;
+        let minted = MintedApiKey::mint("fallback-nas");
+        let plaintext = minted.plaintext.clone();
+        let id = minted.row.id.clone();
+        state
+            .db
+            .api_keys()
+            .insert(&minted.row)
+            .await
+            .expect("insert");
+
+        let auth = state
+            .authenticate_api_key(&bearer(&plaintext))
+            .await
+            .expect("valid key authenticates");
+        assert_eq!(auth.key_id, id);
+
+        // HTTP auth scheme is case-insensitive.
+        let mut lower = HeaderMap::new();
+        lower.insert(
+            header::AUTHORIZATION,
+            format!("bearer {plaintext}").parse().unwrap(),
+        );
+        assert!(state.authenticate_api_key(&lower).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn api_key_auth_rejects_missing_wrong_and_revoked() {
+        use crate::storage::api_keys::ApiKeyRepository;
+
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = AppState::for_test(db).await;
+        let minted = MintedApiKey::mint("k");
+        let plaintext = minted.plaintext.clone();
+        let id = minted.row.id.clone();
+        state
+            .db
+            .api_keys()
+            .insert(&minted.row)
+            .await
+            .expect("insert");
+
+        // No header at all.
+        assert!(
+            state
+                .authenticate_api_key(&HeaderMap::new())
+                .await
+                .is_none()
+        );
+        // Right id, wrong token.
+        assert!(
+            state
+                .authenticate_api_key(&bearer(&format!("{id}.{}", "0".repeat(64))))
+                .await
+                .is_none()
+        );
+        // Malformed (no dot).
+        assert!(state.authenticate_api_key(&bearer("nodot")).await.is_none());
+        // Wrong scheme.
+        let mut basic = HeaderMap::new();
+        basic.insert(header::AUTHORIZATION, "Basic abc".parse().unwrap());
+        assert!(state.authenticate_api_key(&basic).await.is_none());
+
+        // Revoked keys stop authenticating.
+        state
+            .db
+            .api_keys()
+            .revoke(&id, Clock::now_secs())
+            .await
+            .expect("revoke");
+        assert!(
+            state
+                .authenticate_api_key(&bearer(&plaintext))
+                .await
+                .is_none(),
+            "revoked key must not authenticate"
         );
     }
 

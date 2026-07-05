@@ -16,6 +16,7 @@
 //! | [`error`] | Crate-wide error types and `Result` alias |
 //! | [`resolver`] | DNS query pipeline (tower service stack) |
 //! | [`storage`] | SQLite persistence (config, lists, credentials) |
+//! | [`sync`] | Secondary/fallback config mirroring (snapshot DTOs + syncer) |
 //! | [`telemetry`] | Logging initialisation (tracing subscriber setup) |
 //! | [`web`] | axum-based admin HTTP server with askama/Datastar UI |
 
@@ -27,6 +28,7 @@ pub mod config;
 pub mod error;
 pub mod resolver;
 pub mod storage;
+pub mod sync;
 pub mod telemetry;
 pub mod time;
 pub mod web;

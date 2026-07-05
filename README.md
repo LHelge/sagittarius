@@ -175,6 +175,32 @@ headers it sets are trusted for secure-cookie and CSRF origin decisions.
 > Detailed installation and configuration docs will be added as the project
 > stabilizes.
 
+## High availability / fallback
+
+Run a second instance as a **read-only secondary** that mirrors a primary's
+configuration and keeps answering DNS when the primary is offline (a service
+restart, a reboot) — for example the primary as a systemd service on a server and
+the secondary in a container on a NAS.
+
+1. On the **primary**, open the admin UI → *API keys* and create a key (it is
+   shown once — copy it).
+2. Start the **secondary** pointed at the primary with that key:
+
+   ```sh
+   sagittarius \
+     --primary-url https://sagittarius.example.lan \
+     --primary-api-key <the-key-you-copied>
+   # or via env: SAGITTARIUS_PRIMARY_URL / SAGITTARIUS_PRIMARY_API_KEY
+   ```
+
+The secondary polls the primary and mirrors its settings, upstreams, blocklist
+subscriptions, allow/deny lists, local records, forwarding zones, and admin
+logins. Its admin UI is view-only (a banner marks it as a fallback); logs and the
+DNS/blocklist caches stay local, and it re-fetches blocklists on its own. Point
+your clients' secondary DNS at it. Because the sync carries admin password hashes
+and full config, run the primary↔secondary link over TLS (behind the reverse
+proxy) on any untrusted network. See [`SPEC.md`](SPEC.md) §13 for the details.
+
 ## Contributing
 
 Sagittarius is in early development and contributions, ideas, and feedback are

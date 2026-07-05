@@ -32,7 +32,10 @@ interface all included.
 
 - Acting as an authoritative DNS server for public zones.
 - A full-featured DHCP server *(may be revisited later)*.
-- Clustering / multi-node coordination.
+- General clustering / multi-master coordination. A **read-only
+  secondary/fallback** mirror — one node that mirrors a primary's configuration
+  and serves DNS when the primary is offline — *is* supported (§13); bidirectional
+  or multi-writer clustering is not.
 - Replacing a general-purpose recursive resolver's full feature set (DNSSEC
   validation is *(future)*, not part of v0.1).
 
@@ -822,3 +825,85 @@ each feature is filled in as it lands; this list is the milestone scope.
 - Full AdBlock filter syntax.
 - Prometheus metrics / external observability.
 - Import/export and backup tooling.
+
+---
+
+## 13. Secondary / fallback instance
+
+A single Sagittarius node can be run as a **read-only secondary** that mirrors a
+**primary**'s configuration and keeps answering DNS when the primary is offline
+(a service restart, a reboot). This is a one-way fallback replica, not general
+clustering (§1): the secondary never writes config of its own.
+
+### 13.1 Roles and pairing
+
+- **Mode.** An instance becomes a secondary when `--primary-url` (env
+  `SAGITTARIUS_PRIMARY_URL`) is set; otherwise it is a normal **primary**. These
+  are operational/startup parameters (like the bind addresses), not stored in
+  SQLite (§10).
+- **Trust.** The secondary authenticates to the primary with a **bearer API
+  key** minted in the primary's admin UI (an *API keys* page: create — shown
+  once — / list / revoke). The key is supplied to the secondary via
+  `--primary-api-key` (env `SAGITTARIUS_PRIMARY_API_KEY`). Only a SHA-256 hash of
+  each key's token is stored, mirroring the session model (§9). Keys live in an
+  `api_keys` table.
+
+### 13.2 The sync API
+
+- The primary exposes a read-only **`GET /api/v1/config`** returning a JSON
+  **config snapshot** of the mirror-worthy tables. It is authenticated by the
+  API key and served on a **sub-router that bypasses the CSRF and first-run
+  wizard guards** — a machine caller has no browser session, and the wizard must
+  not trap it on a fresh primary.
+- **Conditional polling.** The snapshot carries a content **version** (hex
+  SHA-256 of its canonical JSON — there are no per-row revision columns), returned
+  as an `ETag`. The secondary echoes it as `If-None-Match`, so an unchanged
+  config answers **304** and is neither transferred nor re-applied (the same
+  conditional-GET shape used for blocklist fetches, §6).
+
+### 13.3 What is mirrored (and what is not)
+
+- **Mirrored** (the config snapshot): the `settings` singleton, `upstreams`,
+  blocklist **source definitions**, the admin `blacklist`/`allowlist`,
+  `local_records`, `forward_zones`, and `admin_users` (username + Argon2id hash +
+  role, so the operator logs into the secondary with the same credentials). Per-
+  instance ids and timestamps are excluded; the secondary reconciles by natural
+  key (domain / URL / zone suffix / username).
+- **Kept local, never mirrored:** the moka DNS cache, the aggregated in-memory
+  blocklist set, the offline blocklist **content** cache, `sessions`, the
+  `query_log`, and the runtime-only pause deadline. Blocklists are **re-fetched
+  independently** by the secondary's own refresh scheduler (§6) — only the source
+  rows travel over the wire; the secondary triggers its scheduler after applying
+  them.
+
+### 13.4 Applying a snapshot
+
+The secondary's **config-sync** background task (a long-lived subsystem like the
+blocklist scheduler, §3.1) polls the primary, and on a change writes the snapshot
+**through to its local SQLite** and then swaps the live in-memory state via the
+**same seams the admin UI uses** (`store_settings`, `blacklist/allowlist/local
+.store`, `store_forward_zones`, upstream-pool rebuild, blocklist refresh
+trigger). Because the DNS hot path reads only the atomically-swapped snapshots
+(§3.2), the swap is the visibility point: a query never sees a torn set. If the
+primary is unreachable (or returns a 5xx/timeout), the tick is a no-op and the
+**last-good** configuration keeps serving — the fallback guarantee. The applied
+version is advanced only after a successful apply, so a transient failure retries
+on the next poll.
+
+### 13.5 Read-only admin UI
+
+In secondary mode the admin UI is **view-only**: a middleware (applied outside
+the CSRF layer) refuses every state-changing request with **403**, except
+`/login` and `/logout`; templates hide their edit controls and every page shows a
+persistent *"read-only fallback — mirroring &lt;primary&gt;"* banner. The first-run
+wizard is closed (credentials arrive via sync). A fresh secondary DB still runs
+the migrations/seed and serves DNS from boot; the first successful sync overwrites
+that seed with the primary's configuration.
+
+### 13.6 Security
+
+The snapshot carries admin **password hashes** and the full configuration, and
+the API key is a bearer credential. The primary↔secondary hop must therefore be
+**TLS-fronted** (a reverse proxy, §9/§11) on any untrusted network; the API key
+is held only in the secondary's operational config, redacted from logs, and never
+surfaced to the web layer.

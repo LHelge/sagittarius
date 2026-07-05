@@ -11,6 +11,7 @@
 <p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
 {% endif %}
 
+{% if !chrome.read_only %}
 <form method="post" action="/upstreams/add" class="sgt-actions">
   <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
   <input type="text" name="address" placeholder="1.1.1.1" required aria-label="Address" />
@@ -23,6 +24,7 @@
   <input type="text" name="server_name" placeholder="TLS server name (DoT/DoH)" aria-label="TLS server name" />
   <button type="submit">{% call ui::icon("add") %}{% endcall %}Add</button>
 </form>
+{% endif %}
 
 {% if upstreams.is_empty() %}
 <p class="sgt-notice sgt-notice--error">No upstreams configured — DNS forwarding will fail until one is added.</p>
@@ -43,6 +45,7 @@
           {% else %}<span class="sgt-badge sgt-badge--other">disabled</span>{% endif %}
         </td>
         <td class="sgt-num">
+          {% if !chrome.read_only %}
           <div class="sgt-actions">
             <form method="post" action="/upstreams/toggle" class="sgt-inline-form">
               <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
@@ -56,6 +59,7 @@
               <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("remove") %}{% endcall %}Remove</button>
             </form>
           </div>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

@@ -101,9 +101,12 @@
     </label>
   </fieldset>
 
+  {% if !chrome.read_only %}
   <button type="submit">{% call ui::icon("save") %}{% endcall %}Save settings</button>
+  {% endif %}
 </form>
 
+{% if !chrome.read_only %}
 <article>
   <header><strong>Clear query log</strong></header>
   <p class="sgt-muted">Permanently delete all stored query history. This cannot be undone.</p>
@@ -112,4 +115,5 @@
     <button type="submit" class="secondary">{% call ui::icon("remove") %}{% endcall %}Clear query log now</button>
   </form>
 </article>
+{% endif %}
 {% endblock %}

@@ -45,6 +45,7 @@ const ICONS: &[(&str, &icondata_core::IconData)] = &[
     ("blocklists", icondata_lu::LuListChecks),
     ("upstreams", icondata_lu::LuGlobe),
     ("forwarding", icondata_lu::LuRouter),
+    ("apikeys", icondata_lu::LuKeyRound),
     ("settings", icondata_lu::LuSettings),
     // Chrome controls.
     ("menu", icondata_lu::LuMenu),
