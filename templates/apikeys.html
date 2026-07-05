@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% import "_macros.html" as ui %}
+{% block title %}API keys · sagittarius{% endblock %}
+{% block content %}
+<hgroup>
+  <h1 class="sgt-page-title">{% call ui::icon("apikeys") %}{% endcall %}API keys</h1>
+  <p class="sgt-muted">Bearer keys that let a secondary/fallback instance mirror this instance's configuration.</p>
+</hgroup>
+
+{% if let Some(notice) = notice %}
+<p class="sgt-notice sgt-notice--ok" role="status">{{ notice }}</p>
+{% endif %}
+{% if let Some(error) = error %}
+<p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
+{% endif %}
+
+{% if let Some(key) = new_key %}
+<article class="sgt-notice sgt-notice--ok">
+  <p><strong>Copy this key now — it will not be shown again.</strong></p>
+  <p>Set it on the secondary as <code>SAGITTARIUS_PRIMARY_API_KEY</code>:</p>
+  <pre class="sgt-mono"><code>{{ key }}</code></pre>
+</article>
+{% endif %}
+
+{% if !chrome.read_only %}
+<div class="sgt-actions">
+  <form method="post" action="/apikeys/create" class="sgt-actions" style="flex: 1 1 auto">
+    <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+    <input type="text" name="label" placeholder="fallback-nas" required aria-label="Label" style="flex: 1 1 18rem" />
+    <button type="submit">{% call ui::icon("add") %}{% endcall %}Create key</button>
+  </form>
+</div>
+{% endif %}
+
+{% if keys.is_empty() %}
+<p class="sgt-muted">No API keys yet.</p>
+{% else %}
+<div class="sgt-table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Label</th>
+        <th>Key id</th>
+        <th>Created</th>
+        <th>Last used</th>
+        <th>Status</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for k in keys %}
+      <tr>
+        <td>{{ k.label }}</td>
+        <td class="sgt-mono">{{ k.id }}</td>
+        <td>{{ k.created }}</td>
+        <td>{{ k.last_used }}</td>
+        <td>
+          {% if k.revoked %}<span class="sgt-badge sgt-badge--other">revoked</span>
+          {% else %}<span class="sgt-badge sgt-badge--forwarded">active</span>{% endif %}
+        </td>
+        <td class="sgt-num">
+          {% if !k.revoked && !chrome.read_only %}
+          <form method="post" action="/apikeys/revoke" class="sgt-inline-form">
+            <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
+            <input type="hidden" name="id" value="{{ k.id }}" />
+            <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("remove") %}{% endcall %}Revoke</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

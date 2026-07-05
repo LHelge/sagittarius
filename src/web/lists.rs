@@ -43,14 +43,14 @@ impl AppState {
     // ── Write-through + snapshot-swap core ────────────────────────────────────
 
     /// Rebuild the in-memory admin blacklist snapshot from the database.
-    async fn reload_blacklist(&self) -> WebResult<()> {
+    pub(crate) async fn reload_blacklist(&self) -> WebResult<()> {
         let names = self.db.blacklist().load_all().await?;
         self.resolver.blacklist().store(names.into_iter().collect());
         Ok(())
     }
 
     /// Rebuild the in-memory allowlist snapshot from the database.
-    async fn reload_allowlist(&self) -> WebResult<()> {
+    pub(crate) async fn reload_allowlist(&self) -> WebResult<()> {
         let names = self.db.allowlist().load_all().await?;
         self.resolver.allowlist().store(names.into_iter().collect());
         Ok(())

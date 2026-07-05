@@ -14,6 +14,7 @@
 <p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
 {% endif %}
 
+{% if !chrome.read_only %}
 <div class="sgt-actions">
   <form method="post" action="/blocklists/add" class="sgt-actions" style="flex: 1 1 auto">
     <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
@@ -29,6 +30,7 @@
     <button type="submit" class="secondary">{% call ui::icon("refresh") %}{% endcall %}Refresh now</button>
   </form>
 </div>
+{% endif %}
 
 {% if sources.is_empty() %}
 <p class="sgt-muted">No blocklist sources yet.</p>
@@ -66,7 +68,7 @@
           {% else %}<span class="sgt-badge sgt-badge--other">disabled</span>{% endif %}
         </td>
         <td class="sgt-num">
-          {% if !s.removed %}
+          {% if !s.removed && !chrome.read_only %}
           <div class="sgt-actions">
             <form method="post" action="/blocklists/toggle" class="sgt-inline-form">
               <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />

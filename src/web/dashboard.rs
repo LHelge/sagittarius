@@ -296,6 +296,8 @@ mod tests {
             csrf_token: "tok".to_owned(),
             pause_remaining: None,
             asset_version: "test",
+            read_only: false,
+            primary_label: None,
         }
     }
 

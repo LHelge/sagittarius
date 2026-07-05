@@ -131,12 +131,16 @@ impl Telemetry {
     ///
     /// Call this once after [`init`](Self::init) returns.
     pub fn log_startup(cfg: &Config) {
+        // Log the instance mode and (for a secondary) the primary URL, but never
+        // the API key — that is held in a redacting `Secret` off this struct.
         info!(
             name = env!("CARGO_PKG_NAME"),
             version = env!("CARGO_PKG_VERSION"),
             dns_addrs = ?cfg.dns_addrs,
             admin_addr = %cfg.admin_addr,
             db_path = ?cfg.db_path,
+            mode = if cfg.instance_mode.is_secondary() { "secondary" } else { "primary" },
+            primary_url = ?cfg.instance_mode.primary_url(),
             "starting sagittarius",
         );
     }
@@ -217,7 +221,7 @@ mod tests {
 
     #[test]
     fn log_startup_does_not_panic() {
-        use crate::config::SessionCookieSecurePolicy;
+        use crate::config::{InstanceMode, SessionCookieSecurePolicy};
         use std::net::SocketAddr;
         use std::path::PathBuf;
 
@@ -230,6 +234,8 @@ mod tests {
             admin_addr: "127.0.0.1:8080".parse::<SocketAddr>().unwrap(),
             db_path: PathBuf::from("sagittarius.db"),
             session_cookie_secure: SessionCookieSecurePolicy::Auto,
+            instance_mode: InstanceMode::Primary,
+            primary_api_key: None,
         };
 
         // Must not panic.

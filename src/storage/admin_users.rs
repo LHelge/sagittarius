@@ -143,6 +143,33 @@ pub trait AdminUserRepository {
         username: &str,
         password_hash: &str,
     ) -> impl Future<Output = Result<Option<AdminUser>>>;
+
+    /// List every admin user, ordered by username.
+    ///
+    /// Used by the config-sync snapshot (SPEC §13) so a secondary can mirror
+    /// the admin credentials; the deterministic ordering keeps the snapshot's
+    /// content hash stable.
+    fn list_all(&self) -> impl Future<Output = Result<Vec<AdminUser>>>;
+
+    /// Insert `username`, or update its hash/role if it already exists.
+    ///
+    /// The secondary's config-sync applier (SPEC §13) uses this to mirror the
+    /// primary's admin credentials, reconciling by the UNIQUE `username`.
+    fn upsert(
+        &self,
+        username: &str,
+        password_hash: &str,
+        role: Role,
+    ) -> impl Future<Output = Result<()>>;
+
+    /// List every username (ordered), for reconciliation against a snapshot.
+    fn list_usernames(&self) -> impl Future<Output = Result<Vec<String>>>;
+
+    /// Delete the user with the given `username` (no-op if absent).
+    ///
+    /// Their sessions are removed too via the `ON DELETE CASCADE` on
+    /// `sessions.user_id`.
+    fn delete_by_username(&self, username: &str) -> impl Future<Output = Result<()>>;
 }
 
 // ── SqliteAdminUserRepo ─────────────────────────────────────────────────────
@@ -234,6 +261,58 @@ impl AdminUserRepository for SqliteAdminUserRepo {
         .await?;
 
         row.map(AdminUser::try_from).transpose()
+    }
+
+    async fn list_all(&self) -> Result<Vec<AdminUser>> {
+        let rows = sqlx::query_as!(
+            AdminUserRow,
+            r#"SELECT
+                id            AS "id!",
+                username,
+                password_hash,
+                role,
+                created_at    AS "created_at!",
+                updated_at    AS "updated_at!"
+            FROM admin_users
+            ORDER BY username"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(AdminUser::try_from).collect()
+    }
+
+    async fn upsert(&self, username: &str, password_hash: &str, role: Role) -> Result<()> {
+        let role = role.as_str();
+        sqlx::query!(
+            r#"INSERT INTO admin_users (username, password_hash, role)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                role          = excluded.role,
+                updated_at    = unixepoch()"#,
+            username,
+            password_hash,
+            role,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_usernames(&self) -> Result<Vec<String>> {
+        let names = sqlx::query_scalar!(
+            r#"SELECT username AS "username!" FROM admin_users ORDER BY username"#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(names)
+    }
+
+    async fn delete_by_username(&self, username: &str) -> Result<()> {
+        sqlx::query!("DELETE FROM admin_users WHERE username = ?", username)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
@@ -329,5 +408,66 @@ mod tests {
                 .expect("find")
                 .is_none()
         );
+    }
+
+    // ── Reconcile support (E18.7) ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_all_orders_by_username() {
+        let (_dir, repo) = open_repo().await;
+        repo.create("bob", "$h").await.expect("bob");
+        repo.create("alice", "$h").await.expect("alice");
+        let all = repo.list_all().await.expect("list_all");
+        let names: Vec<_> = all.iter().map(|u| u.username.as_str()).collect();
+        assert_eq!(names, ["alice", "bob"]);
+    }
+
+    #[tokio::test]
+    async fn upsert_inserts_then_updates_hash_and_role() {
+        let (_dir, repo) = open_repo().await;
+
+        // First upsert inserts.
+        repo.upsert("admin", "$hash1", Role::Admin)
+            .await
+            .expect("insert via upsert");
+        let u = repo
+            .find_by_username("admin")
+            .await
+            .expect("find")
+            .expect("present");
+        assert_eq!(u.password_hash, "$hash1");
+
+        // Second upsert on the same username updates the hash in place (no dup).
+        repo.upsert("admin", "$hash2", Role::Admin)
+            .await
+            .expect("update via upsert");
+        assert_eq!(repo.count().await.expect("count"), 1);
+        let u = repo
+            .find_by_username("admin")
+            .await
+            .expect("find")
+            .expect("present");
+        assert_eq!(u.password_hash, "$hash2");
+    }
+
+    #[tokio::test]
+    async fn list_usernames_and_delete_by_username() {
+        let (_dir, repo) = open_repo().await;
+        repo.create("alice", "$h").await.expect("alice");
+        repo.create("bob", "$h").await.expect("bob");
+
+        assert_eq!(
+            repo.list_usernames().await.expect("usernames"),
+            vec!["alice".to_owned(), "bob".to_owned()]
+        );
+
+        repo.delete_by_username("alice").await.expect("delete");
+        assert_eq!(
+            repo.list_usernames().await.expect("usernames"),
+            vec!["bob".to_owned()]
+        );
+        // Deleting an absent user is a no-op.
+        repo.delete_by_username("ghost").await.expect("no-op");
+        assert_eq!(repo.count().await.expect("count"), 1);
     }
 }

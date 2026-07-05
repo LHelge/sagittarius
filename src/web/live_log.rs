@@ -67,12 +67,13 @@ impl AppState {
         // page() is newest-first, so the last row carries the smallest id — the
         // cursor for loading the next older page.
         let oldest = records.last().map(|r| r.id).unwrap_or(0);
+        let read_only = state.instance_mode.is_secondary();
         let mut rows = Vec::with_capacity(records.len());
         for r in &records {
             // Decorate the client IP with its cached hostname (E14.2); never
             // blocks — a miss renders the IP and warms the cache for next time.
             let client = state.client_label(&r.client).await;
-            if let Ok(html) = LogRowView::from_record(r, client).render() {
+            if let Ok(html) = LogRowView::from_record(r, client, read_only).render() {
                 rows.push(html);
             }
         }
@@ -105,10 +106,11 @@ impl AppState {
             Err(e) => return WebError::from(e).into_response(),
         };
         let new_oldest = records.last().map(|r| r.id).unwrap_or(0);
+        let read_only = state.instance_mode.is_secondary();
         let mut html = String::new();
         for r in &records {
             let client = state.client_label(&r.client).await;
-            if let Ok(row) = LogRowView::from_record(r, client).render() {
+            if let Ok(row) = LogRowView::from_record(r, client, read_only).render() {
                 html.push_str(&row);
             }
         }
@@ -133,6 +135,7 @@ impl AppState {
     pub async fn events(_user: CurrentUser, State(state): State<AppState>) -> impl IntoResponse {
         let mut rx = state.telemetry.live_log.subscribe();
         let stats = Arc::clone(&state.telemetry.stats);
+        let read_only = state.instance_mode.is_secondary();
 
         let stream = async_stream::stream! {
             // Send the current counters immediately so a freshly opened
@@ -146,7 +149,7 @@ impl AppState {
                         // a miss renders the IP and warms the cache in the
                         // background for subsequent rows.
                         let client = state.client_label_ip(ev.client.ip()).await;
-                        yield Ok(row_event(&ev, client));
+                        yield Ok(row_event(&ev, client, read_only));
                         yield Ok(counters_event(&stats));
                     }
                     // Drop-oldest semantics: a lagging subscriber skips the
@@ -162,8 +165,8 @@ impl AppState {
 }
 
 /// Build the `PatchElements` event that prepends one query row.
-fn row_event(ev: &QueryEvent, client: String) -> Event {
-    let html = LogRowView::from_event(ev, client)
+fn row_event(ev: &QueryEvent, client: String, read_only: bool) -> Event {
+    let html = LogRowView::from_event(ev, client, read_only)
         .render()
         .unwrap_or_default();
     PatchElements::new(html)
@@ -210,7 +213,8 @@ impl LogRowView {
     ///
     /// `client` is the pre-decorated client label (`"hostname (ip)"` or the
     /// bare IP), resolved from the E14.1 reverse-lookup cache by the caller.
-    fn from_event(ev: &QueryEvent, client: String) -> Self {
+    /// `read_only` suppresses the one-click action on a secondary (SPEC §13).
+    fn from_event(ev: &QueryEvent, client: String, read_only: bool) -> Self {
         // Display the bare domain; the canonical trailing dot stays internal.
         let qname = ev.qname.to_string().display_domain().to_owned();
         Self::build(
@@ -222,13 +226,15 @@ impl LogRowView {
             ev.outcome.category(),
             ev.outcome.log_action(),
             ev.latency.as_millis() as u64,
+            read_only,
         )
     }
 
     /// Build a row from a persisted [`QueryLogRecord`] (carries its DB id).
     ///
     /// `client` is the pre-decorated client label (see [`from_event`](Self::from_event)).
-    fn from_record(record: &QueryLogRecord, client: String) -> Self {
+    /// `read_only` suppresses the one-click action on a secondary (SPEC §13).
+    fn from_record(record: &QueryLogRecord, client: String, read_only: bool) -> Self {
         let qname = record.qname.display_domain().to_owned();
         Self::build(
             record.id,
@@ -239,6 +245,7 @@ impl LogRowView {
             record.outcome.category(),
             record.outcome.log_action(),
             record.latency_ms.max(0) as u64,
+            read_only,
         )
     }
 
@@ -253,8 +260,12 @@ impl LogRowView {
         outcome_cat: &'static str,
         action: Option<LogAction>,
         latency_ms: u64,
+        read_only: bool,
     ) -> Self {
         let search = format!("{} {}", qname.to_lowercase(), client);
+        // A read-only secondary offers no one-click list actions — those routes
+        // are refused by the read-only guard, so hide the buttons entirely.
+        let action = if read_only { None } else { action };
         let action_html = ActionButton::for_outcome(action, qname.clone())
             .render()
             .unwrap_or_default();
@@ -342,6 +353,7 @@ mod tests {
         let html = LogRowView::from_event(
             &event("ads.example.com", Outcome::BlockedByBlocklist),
             "192.168.1.5".to_owned(),
+            false,
         )
         .render()
         .expect("render row");
@@ -363,30 +375,51 @@ mod tests {
     fn row_action_is_keyed_on_outcome() {
         // Resolved rows (cached/forwarded) offer Block.
         for o in [Outcome::Cached, Outcome::Forwarded] {
-            let html = LogRowView::from_event(&event("good.example.com", o), "10.0.0.1".to_owned())
-                .render()
-                .unwrap();
+            let html =
+                LogRowView::from_event(&event("good.example.com", o), "10.0.0.1".to_owned(), false)
+                    .render()
+                    .unwrap();
             assert!(html.contains("Block"), "{o:?} must offer block");
             assert!(html.contains("/log/block?domain=good.example.com"));
         }
 
         // Both kinds of blocked row offer Unblock.
         for o in [Outcome::BlockedByAdmin, Outcome::BlockedByBlocklist] {
-            let html = LogRowView::from_event(&event("ads.example.com", o), "10.0.0.1".to_owned())
-                .render()
-                .unwrap();
+            let html =
+                LogRowView::from_event(&event("ads.example.com", o), "10.0.0.1".to_owned(), false)
+                    .render()
+                    .unwrap();
             assert!(html.contains("Unblock"), "{o:?} must offer unblock");
             assert!(html.contains("/log/unblock?domain=ads.example.com"));
         }
 
         // Local / error rows offer no action (rendered as a dash).
         for o in [Outcome::Local, Outcome::LocalNoData, Outcome::Servfail] {
-            let html = LogRowView::from_event(&event("x.example.com", o), "10.0.0.1".to_owned())
-                .render()
-                .unwrap();
+            let html =
+                LogRowView::from_event(&event("x.example.com", o), "10.0.0.1".to_owned(), false)
+                    .render()
+                    .unwrap();
             assert!(!html.contains("Block"), "{o:?} must offer no action");
             assert!(!html.contains("Unblock"), "{o:?} must offer no action");
         }
+    }
+
+    #[test]
+    fn read_only_row_suppresses_one_click_actions() {
+        // A row that would normally offer Unblock renders no action when the
+        // instance is a read-only secondary (SPEC §13).
+        let html = LogRowView::from_event(
+            &event("ads.example.com", Outcome::BlockedByBlocklist),
+            "10.0.0.1".to_owned(),
+            true,
+        )
+        .render()
+        .unwrap();
+        assert!(
+            !html.contains("Unblock"),
+            "read-only rows must hide actions"
+        );
+        assert!(!html.contains("/log/unblock"));
     }
 
     #[test]

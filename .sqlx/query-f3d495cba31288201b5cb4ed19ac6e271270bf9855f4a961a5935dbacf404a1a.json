@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT username AS \"username!\" FROM admin_users ORDER BY username",
+  "describe": {
+    "columns": [
+      {
+        "name": "username!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f3d495cba31288201b5cb4ed19ac6e271270bf9855f4a961a5935dbacf404a1a"
+}

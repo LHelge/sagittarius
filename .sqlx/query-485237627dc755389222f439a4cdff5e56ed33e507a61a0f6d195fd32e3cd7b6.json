@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                token_hash   AS \"token_hash!\",\n                last_used_at AS \"last_used_at\"\n            FROM api_keys\n            WHERE id = ? AND revoked_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "token_hash!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_used_at",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "485237627dc755389222f439a4cdff5e56ed33e507a61a0f6d195fd32e3cd7b6"
+}

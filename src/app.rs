@@ -247,6 +247,7 @@ impl App {
             tracker: self.tracker.clone(),
             started_at: std::time::Instant::now(),
             reverse,
+            instance_mode: self.config.instance_mode.clone(),
         };
 
         let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());
@@ -259,6 +260,17 @@ impl App {
         // listener set; with `:0` these carry the OS-chosen ports.
         let dns_udp = listeners.udp_local_addrs();
         listeners.serve(engine, self.shutdown_token.clone(), &self.tracker);
+
+        // ── Config-sync subsystem (secondary/fallback, SPEC §13) ──────────────
+        // In secondary mode, mirror the primary's configuration into this
+        // instance on a background poll. Built from a clone of `app_state`
+        // before it is moved into the admin server below.
+        let config_syncer = match (&self.config.instance_mode, &self.config.primary_api_key) {
+            (crate::config::InstanceMode::Secondary { primary_url }, Some(api_key)) => Some(
+                crate::sync::ConfigSyncer::new(app_state.clone(), primary_url, api_key.expose()),
+            ),
+            _ => None,
+        };
 
         // ── Web admin server ──────────────────────────────────────────────────
         // Bind here (not inside the spawned task) so a bad --admin-addr fails
@@ -289,6 +301,13 @@ impl App {
         self.spawn_subsystem("query-log-purge", move |token| async move {
             query_log_purger.run(token).await;
         });
+
+        // Mirror the primary's config on a background poll (secondary mode only).
+        if let Some(syncer) = config_syncer {
+            self.spawn_subsystem("config-sync", move |token| async move {
+                syncer.run(token).await;
+            });
+        }
 
         // Close the tracker so `wait()` can complete once tracked tasks drain.
         // `TaskTracker` still tracks later spawns, such as rebuilt upstream
@@ -402,7 +421,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::config::{Config, SessionCookieSecurePolicy};
+    use crate::config::{Config, InstanceMode, SessionCookieSecurePolicy};
 
     /// Build a minimal [`Config`] for tests that calls `run_until_shutdown`.
     ///
@@ -418,6 +437,8 @@ mod tests {
             admin_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             db_path,
             session_cookie_secure: SessionCookieSecurePolicy::Never,
+            instance_mode: InstanceMode::Primary,
+            primary_api_key: None,
         };
         (dir, config)
     }
@@ -430,6 +451,8 @@ mod tests {
             admin_addr: "127.0.0.1:18080".parse::<SocketAddr>().unwrap(),
             db_path: PathBuf::from(":memory:"),
             session_cookie_secure: SessionCookieSecurePolicy::Never,
+            instance_mode: InstanceMode::Primary,
+            primary_api_key: None,
         }
     }
 
@@ -566,6 +589,8 @@ mod tests {
             admin_addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
             db_path,
             session_cookie_secure: SessionCookieSecurePolicy::Never,
+            instance_mode: InstanceMode::Primary,
+            primary_api_key: None,
         };
 
         // Launch the fully-assembled App on a background task; the readiness

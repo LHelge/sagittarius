@@ -45,6 +45,7 @@
         </ul>
         <ul class="sgt-nav-actions" data-class="{'sgt-collapse--open': $navOpen}">
           {% if chrome.authenticated %}
+          {% if !chrome.read_only %}
           <li>
             <details class="dropdown sgt-pause-menu">
               <summary class="sgt-icon-btn sgt-pause-summary">{% call ui::icon("pause") %}{% endcall %}Pause</summary>
@@ -70,6 +71,11 @@
               </button>
             </form>
           </li>
+          {% endif %}
+          <li>
+            <a href="/apikeys" class="sgt-icon-btn"{% if chrome.active == "apikeys" %} aria-current="page"{% endif %}
+               aria-label="API keys" title="API keys">{% call ui::icon("apikeys") %}{% endcall %}</a>
+          </li>
           <li>
             <a href="/settings" class="sgt-icon-btn"{% if chrome.active == "settings" %} aria-current="page"{% endif %}
                aria-label="Settings" title="Settings">{% call ui::icon("settings") %}{% endcall %}</a>
@@ -84,6 +90,14 @@
         </ul>
       </nav>
     </header>
+    {% endif %}
+    {% if chrome.read_only %}
+    <div class="sgt-paused" role="status">
+      <span>
+        🔒 Read-only fallback{% if let Some(primary) = chrome.primary_label %} — mirroring {{ primary }}{% endif %}.
+        Configuration is managed on the primary.
+      </span>
+    </div>
     {% endif %}
     {% if let Some(remaining) = chrome.pause_remaining %}
     <div class="sgt-paused" role="status"

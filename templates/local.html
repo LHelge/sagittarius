@@ -11,6 +11,7 @@
 <p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
 {% endif %}
 
+{% if !chrome.read_only %}
 <form method="post" action="/local/add" class="sgt-actions">
   <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
   <input type="text" name="name" placeholder="router.home.lan" required aria-label="Name" />
@@ -22,6 +23,7 @@
   <input type="number" name="ttl" value="300" min="0" max="2147483647" required aria-label="TTL" style="width: 7rem" />
   <button type="submit">{% call ui::icon("add") %}{% endcall %}Add</button>
 </form>
+{% endif %}
 
 {% if records.is_empty() %}
 <p class="sgt-muted">No local records yet.</p>
@@ -39,11 +41,13 @@
         <td class="sgt-mono">{{ r.value }}</td>
         <td class="sgt-num">{{ r.ttl }}</td>
         <td class="sgt-num">
+          {% if !chrome.read_only %}
           <form method="post" action="/local/remove" class="sgt-inline-form">
             <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
             <input type="hidden" name="id" value="{{ r.id }}" />
             <button type="submit" class="secondary outline sgt-btn-sm">{% call ui::icon("remove") %}{% endcall %}Remove</button>
           </form>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}

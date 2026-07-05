@@ -47,7 +47,7 @@ use sagittarius::{
         reader::Reader,
         writer::Writer,
     },
-    config::{Config, SessionCookieSecurePolicy},
+    config::{Config, InstanceMode, SessionCookieSecurePolicy},
     error::Result,
     storage::{
         Db,
@@ -222,6 +222,8 @@ impl Harness {
             admin_addr: "127.0.0.1:0".parse().unwrap(),
             db_path,
             session_cookie_secure: SessionCookieSecurePolicy::Never,
+            instance_mode: InstanceMode::Primary,
+            primary_api_key: None,
         };
 
         let app = App::new(config).with_drain_timeout(Duration::from_secs(2));

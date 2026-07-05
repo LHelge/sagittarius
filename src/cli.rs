@@ -18,7 +18,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
 
-use crate::config::{Config, Error, SessionCookieSecurePolicy};
+use crate::config::{Config, Error, InstanceMode, Secret, SessionCookieSecurePolicy};
 
 /// Sagittarius — a self-hosted DNS sinkhole.
 ///
@@ -74,6 +74,21 @@ pub struct Cli {
         value_name = "POLICY"
     )]
     pub session_cookie_secure: SessionCookieSecurePolicy,
+
+    /// Base URL of a primary instance to mirror (enables **secondary/fallback**
+    /// mode, SPEC §13).
+    ///
+    /// When set, this instance becomes a read-only secondary: it polls the
+    /// primary's config-sync API and mirrors its configuration, and its own
+    /// admin UI is read-only. Requires `--primary-api-key`. When unset the
+    /// instance runs as a normal (primary) standalone server.
+    #[arg(long, env = "SAGITTARIUS_PRIMARY_URL", value_name = "URL")]
+    pub primary_url: Option<String>,
+
+    /// API key used to authenticate to the primary (required with
+    /// `--primary-url`). Mint it on the primary's API-keys page.
+    #[arg(long, env = "SAGITTARIUS_PRIMARY_API_KEY", value_name = "KEY")]
+    pub primary_api_key: Option<String>,
 }
 
 impl TryFrom<Cli> for Config {
@@ -94,13 +109,40 @@ impl TryFrom<Cli> for Config {
             cli.dns_addr
         };
 
+        // Instance mode: a `--primary-url` turns this into a read-only secondary
+        // and requires a matching API key. The key is kept separate from the
+        // mode so it never reaches the web state or logs (see `config::Secret`).
+        let (instance_mode, primary_api_key) = match cli.primary_url {
+            Some(url) => {
+                let url = normalize_primary_url(&url)?;
+                let key = cli.primary_api_key.ok_or(Error::MissingApiKey)?;
+                (
+                    InstanceMode::Secondary { primary_url: url },
+                    Some(Secret::new(key)),
+                )
+            }
+            None => (InstanceMode::Primary, None),
+        };
+
         Ok(Self {
             dns_addrs,
             admin_addr: cli.admin_addr,
             db_path: cli.db_path,
             session_cookie_secure: cli.session_cookie_secure,
+            instance_mode,
+            primary_api_key,
         })
     }
+}
+
+/// Validate and normalize a `--primary-url`: require an absolute `http(s)://`
+/// URL and strip any trailing slash so `{url}/api/v1/config` joins cleanly.
+fn normalize_primary_url(url: &str) -> Result<String, Error> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(Error::InvalidPrimaryUrl(url.to_owned()));
+    }
+    Ok(trimmed.trim_end_matches('/').to_owned())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -302,6 +344,65 @@ mod tests {
         );
     }
 
+    // ── Instance mode (E18.6) ─────────────────────────────────────────────
+
+    #[test]
+    fn config_defaults_to_primary_mode() {
+        let cli = Cli::try_parse_from(["sagittarius"]).unwrap();
+        let config = Config::try_from(cli).unwrap();
+        assert_eq!(config.instance_mode, InstanceMode::Primary);
+        assert!(config.primary_api_key.is_none());
+    }
+
+    #[test]
+    fn primary_url_with_key_enables_secondary_mode() {
+        let cli = Cli::try_parse_from([
+            "sagittarius",
+            "--primary-url",
+            "https://primary.home.lan/",
+            "--primary-api-key",
+            "abc.def",
+        ])
+        .unwrap();
+        let config = Config::try_from(cli).unwrap();
+        assert_eq!(
+            config.instance_mode,
+            // The trailing slash is normalized away.
+            InstanceMode::Secondary {
+                primary_url: "https://primary.home.lan".to_owned()
+            }
+        );
+        assert_eq!(
+            config
+                .primary_api_key
+                .as_ref()
+                .map(|s| s.expose().to_owned()),
+            Some("abc.def".to_owned())
+        );
+    }
+
+    #[test]
+    fn primary_url_without_key_is_error() {
+        let cli = Cli::try_parse_from(["sagittarius", "--primary-url", "https://p.lan"]).unwrap();
+        assert!(matches!(Config::try_from(cli), Err(Error::MissingApiKey)));
+    }
+
+    #[test]
+    fn non_http_primary_url_is_error() {
+        let cli = Cli::try_parse_from([
+            "sagittarius",
+            "--primary-url",
+            "ftp://p.lan",
+            "--primary-api-key",
+            "k",
+        ])
+        .unwrap();
+        assert!(matches!(
+            Config::try_from(cli),
+            Err(Error::InvalidPrimaryUrl(_))
+        ));
+    }
+
     // ── --help output ─────────────────────────────────────────────────────
 
     #[test]
@@ -320,6 +421,11 @@ mod tests {
         assert!(
             help.contains("--session-cookie-secure"),
             "help missing --session-cookie-secure"
+        );
+        assert!(help.contains("--primary-url"), "help missing --primary-url");
+        assert!(
+            help.contains("--primary-api-key"),
+            "help missing --primary-api-key"
         );
     }
 

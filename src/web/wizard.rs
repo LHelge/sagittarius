@@ -43,6 +43,13 @@ impl AppState {
     /// `false` so a transient failure does not trap the operator in the wizard;
     /// the normal auth flow then applies.
     async fn needs_setup(&self) -> bool {
+        // A read-only secondary is never set up locally: its admin credentials
+        // arrive via config-sync (SPEC §13). Closing the wizard here keeps
+        // /setup shut so the operator logs in with the mirrored credentials
+        // once the first sync completes.
+        if self.instance_mode.is_secondary() {
+            return false;
+        }
         if self.setup_done.load(Ordering::Relaxed) {
             return false;
         }

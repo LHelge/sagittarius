@@ -17,6 +17,7 @@
 //! trigger — and is cloned into every request via axum's [`State`] extractor.
 //! Fields are added as later subtasks wire them in.
 
+pub mod apikeys;
 pub mod assets;
 pub mod auth;
 pub mod blocking;
@@ -29,9 +30,11 @@ pub mod icons;
 pub mod lists;
 pub mod live_log;
 pub mod origin;
+pub mod readonly;
 pub mod records;
 pub mod render;
 pub mod settings;
+pub mod sync;
 pub mod upstreams;
 pub mod wizard;
 
@@ -52,7 +55,7 @@ use tracing::warn;
 
 use crate::{
     blocklist::scheduler::RefreshTrigger,
-    config::SessionCookieSecurePolicy,
+    config::{InstanceMode, SessionCookieSecurePolicy},
     resolver::{
         reverse::SharedReverseResolver, state::ResolverState, upstream::SharedUpstreamPool,
     },
@@ -109,6 +112,12 @@ pub struct Chrome {
     /// upgraded binary's CSS/JS reaches browsers holding an immutable-cached
     /// copy of the previous build (see [`assets::Assets::fingerprint`]).
     pub asset_version: &'static str,
+    /// Whether this is a read-only **secondary/fallback** instance (SPEC §13).
+    /// When `true`, templates hide edit controls and render the mirroring
+    /// banner; the read-only middleware also rejects mutations server-side.
+    pub read_only: bool,
+    /// The primary's base URL, shown in the read-only banner (secondary only).
+    pub primary_label: Option<String>,
 }
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -150,6 +159,9 @@ pub struct AppState {
     pub reverse: SharedReverseResolver,
     /// Process start instant, for the dashboard uptime figure (E15.7).
     pub started_at: std::time::Instant,
+    /// The instance role (primary / read-only secondary, SPEC §13).  Drives the
+    /// read-only middleware and the page chrome's banner + edit-control gating.
+    pub instance_mode: InstanceMode,
 }
 
 /// Generate a fresh random key for signing session-bound CSRF tokens.
@@ -190,6 +202,8 @@ impl AppState {
             csrf_token: self.csrf_token(&user.session_id).into_string(),
             pause_remaining: self.pause_remaining(),
             asset_version: Assets::fingerprint(),
+            read_only: self.instance_mode.is_secondary(),
+            primary_label: self.instance_mode.primary_url().map(str::to_owned),
         }
     }
 
@@ -239,12 +253,14 @@ impl AppState {
             csrf_token: String::new(),
             pause_remaining: None,
             asset_version: Assets::fingerprint(),
+            read_only: self.instance_mode.is_secondary(),
+            primary_label: self.instance_mode.primary_url().map(str::to_owned),
         }
     }
 
     /// Assemble the admin [`Router`] with all routes and the shared state.
     fn router(self) -> Router {
-        Router::new()
+        let admin = Router::new()
             .route("/", get(Self::dashboard))
             // Live query log + the shared SSE stream (log + dashboard counters).
             .route("/log", get(Self::query_log))
@@ -277,6 +293,10 @@ impl AppState {
                 get(Self::settings_page).post(Self::settings_save),
             )
             .route("/settings/clear-log", post(Self::settings_clear_log))
+            // API keys for the config-sync surface (SPEC §13).
+            .route("/apikeys", get(Self::apikeys_page))
+            .route("/apikeys/create", post(Self::apikey_create))
+            .route("/apikeys/revoke", post(Self::apikey_revoke))
             .route("/theme/toggle", post(Self::theme_toggle))
             // Temporarily pause / resume all blocking (E12).
             .route("/blocking/pause", post(Self::blocking_pause))
@@ -302,10 +322,26 @@ impl AppState {
             // CSRF protection wraps every route; it self-skips safe methods and
             // pre-auth (no-session) mutations (E8.3).
             .layer(middleware::from_fn_with_state(self.clone(), csrf::guard))
-            // The wizard gate is outermost (E8.4): until the first admin exists
-            // it forces all UI traffic to /setup; afterwards it closes /setup.
+            // The wizard gate (E8.4): until the first admin exists it forces all
+            // UI traffic to /setup; afterwards it closes /setup.
             .layer(middleware::from_fn_with_state(self.clone(), wizard::guard))
-            .with_state(self)
+            // Read-only enforcement for a secondary (SPEC §13) is outermost so a
+            // mutation is refused before CSRF/wizard handling; a no-op on a
+            // primary.
+            .layer(middleware::from_fn_with_state(
+                self.clone(),
+                readonly::guard,
+            ));
+
+        // The config-sync API (SPEC §13) is a separate sub-router: each handler
+        // carries its own api-key auth, and it is merged *after* the CSRF /
+        // wizard layers above so those browser-oriented guards never see a
+        // machine-to-machine request. A cookieless cross-origin request from a
+        // secondary would otherwise be rejected by CSRF, and the wizard gate
+        // would bounce it to /setup on a fresh primary.
+        let api = Router::new().route("/api/v1/config", get(Self::sync_config));
+
+        admin.merge(api).with_state(self)
     }
 }
 
@@ -409,6 +445,7 @@ impl AppState {
             tracker,
             started_at: std::time::Instant::now(),
             reverse,
+            instance_mode: InstanceMode::Primary,
         }
     }
 }
@@ -852,6 +889,101 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 303);
         assert_eq!(r.headers().get("location").unwrap(), "/");
+
+        token.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("shutdown")
+            .expect("task");
+    }
+
+    /// E18.4: the config-sync API authenticates by bearer key, bypasses the
+    /// CSRF and wizard guards (it answers on a *fresh* DB with no admin), and
+    /// supports conditional GET via `ETag` / `If-None-Match`.
+    #[tokio::test]
+    async fn config_sync_api_key_auth_and_conditional_get() {
+        use crate::storage::api_keys::ApiKeyRepository;
+        use crate::web::auth::MintedApiKey;
+        use reqwest::redirect::Policy;
+
+        // Fresh state: no admin user exists, so the wizard would trap browser
+        // traffic at /setup — the api sub-router must be exempt.
+        let (_dir, state) = test_state().await;
+        let minted = MintedApiKey::mint("secondary");
+        let key = minted.plaintext.clone();
+        state.db.api_keys().insert(&minted.row).await.unwrap();
+
+        let server = AdminServer::bind("127.0.0.1:0".parse().unwrap(), state)
+            .await
+            .unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let token = CancellationToken::new();
+        let token2 = token.clone();
+        let handle = tokio::spawn(async move { server.serve(token2).await });
+
+        let client = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .build()
+            .unwrap();
+        let url = format!("{base}/api/v1/config");
+
+        // No key → 401 (crucially NOT a 303 redirect to /setup).
+        let r = client.get(&url).send().await.unwrap();
+        assert_eq!(
+            r.status(),
+            401,
+            "missing key must be 401, not a wizard bounce"
+        );
+
+        // Malformed key → 401.
+        let r = client
+            .get(&url)
+            .header("authorization", "Bearer bad.key")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+
+        // Valid key → 200 with an ETag and JSON body, even with no admin user.
+        let r = client
+            .get(&url)
+            .header("authorization", format!("Bearer {key}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert!(
+            r.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("application/json")
+        );
+        let etag = r
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let body = r.bytes().await.unwrap();
+        let snap: crate::sync::dto::ConfigSnapshot = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            snap.upstreams.len(),
+            2,
+            "seeded upstreams travel in the snapshot"
+        );
+
+        // Conditional GET with the same ETag → 304, no body.
+        let r = client
+            .get(&url)
+            .header("authorization", format!("Bearer {key}"))
+            .header("if-none-match", &etag)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 304);
 
         token.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)

@@ -17,6 +17,7 @@
 //! | Sub-module | Responsibility |
 //! |---|---|
 //! | [`admin_users`] | Web-admin credentials: [`admin_users::AdminUserRepository`] + [`admin_users::SqliteAdminUserRepo`] |
+//! | [`api_keys`] | Config-sync bearer keys: [`api_keys::ApiKeyRepository`] + [`api_keys::SqliteApiKeyRepo`] |
 //! | [`blocklists`] | Blocklist source + offline cache: [`blocklists::BlocklistRepository`] + [`blocklists::SqliteBlocklistRepo`] |
 //! | [`forward_zones`] | Conditional-forward zone rows: [`forward_zones::ForwardZoneRepository`] + [`forward_zones::SqliteForwardZoneRepo`] |
 //! | [`lists`] | Blacklist + allowlist repos: [`lists::BlacklistRepository`] + [`lists::AllowlistRepository`] |
@@ -26,6 +27,7 @@
 //! | [`upstreams`] | Upstream resolver rows: [`upstreams::UpstreamRepository`] + [`upstreams::SqliteUpstreamRepo`] |
 
 pub mod admin_users;
+pub mod api_keys;
 pub mod blocklists;
 pub mod forward_zones;
 pub mod lists;
@@ -186,6 +188,11 @@ impl Db {
         sessions::SqliteSessionRepo::new(self.pool.clone())
     }
 
+    /// Repository for config-sync API keys (SPEC §13).
+    pub fn api_keys(&self) -> api_keys::SqliteApiKeyRepo {
+        api_keys::SqliteApiKeyRepo::new(self.pool.clone())
+    }
+
     /// Repository for the durable per-query log.
     pub fn query_log(&self) -> query_log::SqliteQueryLogRepo {
         query_log::SqliteQueryLogRepo::new(self.pool.clone())
@@ -231,6 +238,7 @@ mod tests {
             "blacklist",
             "allowlist",
             "local_records",
+            "api_keys",
         ];
 
         for table in expected {
@@ -809,6 +817,70 @@ mod tests {
         .await
         .expect("sqlite_master query for forward_zones index after down");
         assert_eq!(index_count, 0, "forward_zones index must be dropped");
+    }
+
+    // ── api_keys migration (E18.1) ────────────────────────────────────────────
+
+    /// The api_keys table, its columns, and the active-lookup index must exist.
+    #[tokio::test]
+    async fn api_keys_table_columns_and_index() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+
+        for column in [
+            "id",
+            "token_hash",
+            "label",
+            "created_at",
+            "last_used_at",
+            "revoked_at",
+        ] {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = ?",
+            )
+            .bind(column)
+            .fetch_one(db.pool())
+            .await
+            .unwrap_or_else(|e| panic!("pragma_table_info for api_keys.{column}: {e}"));
+            assert_eq!(count, 1, "column '{column}' must exist in api_keys");
+        }
+
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'index' AND tbl_name = 'api_keys' AND name = 'idx_api_keys_active'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for api_keys index");
+        assert_eq!(index_count, 1, "idx_api_keys_active must exist");
+    }
+
+    /// The down migration must cleanly drop the index and table.
+    #[tokio::test]
+    async fn api_keys_down_migration_is_clean_inverse() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+
+        let down_sql = include_str!("../../migrations/20260705123646_api_keys.down.sql");
+        sqlx::raw_sql(down_sql)
+            .execute(db.pool())
+            .await
+            .expect("apply api_keys down migration");
+
+        let table_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'api_keys'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for api_keys after down");
+        assert_eq!(table_count, 0, "api_keys table must be dropped");
+
+        let index_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'index' AND name = 'idx_api_keys_active'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .expect("sqlite_master query for api_keys index after down");
+        assert_eq!(index_count, 0, "api_keys index must be dropped");
     }
 
     #[tokio::test]
