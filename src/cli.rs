@@ -17,6 +17,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
+use url::Url;
 
 use crate::config::{Config, Error, InstanceMode, Secret, SessionCookieSecurePolicy};
 
@@ -135,14 +136,15 @@ impl TryFrom<Cli> for Config {
     }
 }
 
-/// Validate and normalize a `--primary-url`: require an absolute `http(s)://`
-/// URL and strip any trailing slash so `{url}/api/v1/config` joins cleanly.
-fn normalize_primary_url(url: &str) -> Result<String, Error> {
-    let trimmed = url.trim();
-    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-        return Err(Error::InvalidPrimaryUrl(url.to_owned()));
+/// Validate and normalize a `--primary-url` via the [`url`] crate: require an
+/// absolute `http(s)://` URL with a host, then return its canonical form with
+/// any trailing slash stripped so `{url}/api/v1/config` joins cleanly.
+fn normalize_primary_url(input: &str) -> Result<String, Error> {
+    let url = Url::parse(input.trim()).map_err(|_| Error::InvalidPrimaryUrl(input.to_owned()))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(Error::InvalidPrimaryUrl(input.to_owned()));
     }
-    Ok(trimmed.trim_end_matches('/').to_owned())
+    Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -401,6 +403,44 @@ mod tests {
             Config::try_from(cli),
             Err(Error::InvalidPrimaryUrl(_))
         ));
+    }
+
+    #[test]
+    fn malformed_primary_url_is_error() {
+        // Not a parseable absolute URL (no scheme/host).
+        for bad in ["not a url", "primary.home.lan", "https://"] {
+            let cli = Cli::try_parse_from([
+                "sagittarius",
+                "--primary-url",
+                bad,
+                "--primary-api-key",
+                "k",
+            ])
+            .unwrap();
+            assert!(
+                matches!(Config::try_from(cli), Err(Error::InvalidPrimaryUrl(_))),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn primary_url_is_canonicalized() {
+        // The url crate lowercases the host and normalizes; the trailing slash
+        // is stripped so the endpoint path joins cleanly.
+        let cli = Cli::try_parse_from([
+            "sagittarius",
+            "--primary-url",
+            "HTTPS://Primary.Home.LAN:8080/",
+            "--primary-api-key",
+            "k",
+        ])
+        .unwrap();
+        let config = Config::try_from(cli).unwrap();
+        assert_eq!(
+            config.instance_mode.primary_url(),
+            Some("https://primary.home.lan:8080")
+        );
     }
 
     // ── --help output ─────────────────────────────────────────────────────
