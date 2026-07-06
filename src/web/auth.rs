@@ -45,6 +45,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header, request::Parts},
     response::{IntoResponse, Redirect, Response},
 };
+use headers::{Authorization, HeaderMapExt, authorization::Bearer};
 use rand::Rng;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -406,12 +407,12 @@ impl AppState {
     pub(crate) async fn authenticate_api_key(&self, headers: &HeaderMap) -> Option<ApiKeyAuth> {
         use crate::storage::api_keys::ApiKeyRepository;
 
-        let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-        let (scheme, value) = raw.split_once(' ')?;
-        if !scheme.eq_ignore_ascii_case("bearer") {
-            return None;
-        }
-        let (id, token) = value.trim().split_once('.')?;
+        // Parse `Authorization: Bearer {id}.{token}` with the `headers` crate
+        // (which `axum-extra`'s TypedHeader wraps): it validates the header and
+        // matches the scheme case-insensitively. The credential itself is our
+        // own `id.token` wire form.
+        let Authorization(bearer) = headers.typed_get::<Authorization<Bearer>>()?;
+        let (id, token) = bearer.token().split_once('.')?;
 
         let repo = self.db.api_keys();
         let active = repo.find_active(id).await.ok()??;
