@@ -186,6 +186,14 @@ pub trait LocalRecordRepository {
     /// If no row with that `id` exists, the call succeeds silently (no-op).
     fn remove(&self, id: i64) -> impl Future<Output = Result<()>>;
 
+    /// Atomically replace **all** local records with `records`.
+    ///
+    /// Names are normalized like [`add`](Self::add). Runs the delete and every
+    /// insert in a single transaction, so a failure (or crash) mid-way leaves
+    /// the previous rows fully intact — the config-sync applier (SPEC §13.4)
+    /// relies on this to never persist a torn record set on a secondary.
+    fn replace_all(&self, records: &[NewLocalRecord]) -> impl Future<Output = Result<()>>;
+
     /// List all local records ordered by name, then record type.
     ///
     /// Intended for the admin UI.
@@ -249,6 +257,30 @@ impl LocalRecordRepository for SqliteLocalRecordRepo {
         Ok(())
     }
 
+    async fn replace_all(&self, records: &[NewLocalRecord]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query!("DELETE FROM local_records")
+            .execute(&mut *tx)
+            .await?;
+        for r in records {
+            let name = normalize_local_name(&r.name);
+            let record_type = r.record_type.as_str();
+            let ttl = r.ttl as i64;
+            sqlx::query!(
+                r#"INSERT INTO local_records (name, record_type, value, ttl)
+                VALUES (?, ?, ?, ?)"#,
+                name,
+                record_type,
+                r.value,
+                ttl,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn list(&self) -> Result<Vec<LocalRecord>> {
         let rows = sqlx::query_as!(
             LocalRecordRow,
@@ -298,6 +330,32 @@ mod tests {
             value: value.to_owned(),
             ttl,
         }
+    }
+
+    // ── replace_all() ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn replace_all_swaps_and_normalizes() {
+        let (_dir, repo) = open_repo().await;
+        repo.add(new_record("old.home.lan", RecordType::A, "10.0.0.1", 60))
+            .await
+            .expect("seed");
+
+        repo.replace_all(&[new_record(
+            "New.Home.LAN",
+            RecordType::A,
+            "192.168.1.2",
+            300,
+        )])
+        .await
+        .expect("replace_all");
+
+        let all = repo.list().await.expect("list");
+        assert_eq!(all.len(), 1, "old rows must be replaced, not appended");
+        assert_eq!(all[0].name, "new.home.lan.", "names must normalize");
+
+        repo.replace_all(&[]).await.expect("replace with empty");
+        assert!(repo.list().await.expect("list").is_empty());
     }
 
     // ── RecordType unit tests ─────────────────────────────────────────────────

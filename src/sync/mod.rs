@@ -30,6 +30,18 @@ pub enum SyncError {
     #[error("primary returned unexpected status {0}")]
     UnexpectedStatus(reqwest::StatusCode),
 
+    /// The primary answered with a redirect ({0}).
+    ///
+    /// The syncer deliberately does not follow redirects: `reqwest` strips the
+    /// `Authorization` header on any scheme/host/port change, so following an
+    /// `http → https` redirect would surface as a misleading 401. Point
+    /// `--primary-url` at the primary's canonical URL instead.
+    #[error(
+        "primary redirected ({0}) — set --primary-url to the primary's canonical URL \
+         (check http vs https)"
+    )]
+    Redirected(reqwest::StatusCode),
+
     /// The response body could not be decoded into a [`dto::ConfigSnapshot`], or
     /// a field within it could not be parsed.
     #[error("could not decode config snapshot: {0}")]
@@ -102,6 +114,12 @@ impl ConfigSyncer {
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .gzip(true)
+            // Never follow redirects: reqwest strips the Authorization header
+            // on any scheme/host/port change (so an http→https redirect from a
+            // TLS-fronting proxy would turn into a baffling 401 loop). A
+            // machine client should talk to the canonical URL only; a redirect
+            // surfaces as [`SyncError::Redirected`] with a fix-the-URL hint.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest::Client build should never fail with ring installed");
 
@@ -138,14 +156,24 @@ impl ConfigSyncer {
                 let snapshot: ConfigSnapshot =
                     serde_json::from_slice(&body).map_err(|e| SyncError::Decode(e.to_string()))?;
 
-                self.app.apply_config_snapshot(&snapshot).await?;
+                if let Err(e) = self.app.apply_config_snapshot(&snapshot).await {
+                    // The apply may have written and swapped some sections
+                    // before failing, so the local state can be a mix of old
+                    // and new. Drop the last-known version: if it survived and
+                    // the primary later returned to exactly that config, a 304
+                    // would freeze the half-applied mix forever. Clearing it
+                    // forces a full re-fetch + re-apply on the next tick.
+                    self.last_version = None;
+                    return Err(e);
+                }
 
-                // Advance the version only after a successful apply.
+                // Advance the version only after a fully successful apply.
                 let version = etag.unwrap_or_else(|| snapshot.version());
                 self.last_version = Some(version.clone());
                 Ok(SyncOutcome::Applied(version))
             }
             reqwest::StatusCode::NOT_MODIFIED => Ok(SyncOutcome::NotModified),
+            other if other.is_redirection() => Err(SyncError::Redirected(other)),
             other => Err(SyncError::UnexpectedStatus(other)),
         }
     }
@@ -173,8 +201,17 @@ impl ConfigSyncer {
 
     /// One tick with logging of the outcome (never propagates errors — a
     /// secondary must keep serving from its last-good config).
+    ///
+    /// Also mirrors the outcome into [`AppState::sync_error`] so the login
+    /// page can tell an operator *why* a fresh secondary has no accounts yet
+    /// (SPEC §13.5) instead of leaving the failure in stdout only.
     async fn tick(&mut self) {
-        match self.sync_once().await {
+        let outcome = self.sync_once().await;
+        *self.app.sync_error.lock().expect("sync_error lock") = match &outcome {
+            Ok(_) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        match outcome {
             Ok(SyncOutcome::Applied(version)) => {
                 info!(version = %version, "config-sync applied a new snapshot");
             }
@@ -213,6 +250,81 @@ mod tests {
         assert_eq!(strip_etag_quotes("\"abc\""), "abc");
         assert_eq!(strip_etag_quotes("W/\"abc\""), "abc");
         assert_eq!(strip_etag_quotes("abc"), "abc");
+    }
+
+    /// Regression (review finding): the syncer must NOT follow redirects —
+    /// reqwest strips the Authorization header on a scheme/port change, so an
+    /// http→https redirect from a TLS-fronting proxy would loop as a baffling
+    /// 401. Instead a redirect surfaces as a dedicated, actionable error.
+    #[tokio::test]
+    async fn redirect_is_reported_not_followed() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/config"))
+            .respond_with(
+                ResponseTemplate::new(301).insert_header("location", "https://primary.lan/"),
+            )
+            .mount(&server)
+            .await;
+
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let app = AppState::for_test(db).await;
+        let mut syncer = ConfigSyncer::new(app, &server.uri(), "id.token");
+
+        let err = syncer.sync_once().await.expect_err("redirect must error");
+        assert!(
+            matches!(err, SyncError::Redirected(_)),
+            "expected Redirected, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("http vs https"),
+            "error must hint at the URL scheme: {err}"
+        );
+    }
+
+    /// Regression (review finding): a failed apply may have mutated some
+    /// sections, so the last-known version must be dropped — otherwise, if the
+    /// primary later returns to exactly that config, a 304 would freeze the
+    /// half-applied mix forever.
+    #[tokio::test]
+    async fn failed_apply_clears_last_version() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // A wire-valid snapshot whose settings section fails to APPLY (unknown
+        // blocking_mode token — e.g. a newer primary).
+        let mut snapshot = {
+            let (_d, db) = crate::test_support::temp_db().await;
+            let app = AppState::for_test(db).await;
+            app.build_config_snapshot().await.expect("snapshot")
+        };
+        snapshot.settings.blocking_mode = "bogus-future-mode".to_owned();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/config"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("etag", "\"v-bad\"")
+                    .set_body_json(&snapshot),
+            )
+            .mount(&server)
+            .await;
+
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let app = AppState::for_test(db).await;
+        let mut syncer = ConfigSyncer::new(app, &server.uri(), "id.token");
+        syncer.last_version = Some("previously-applied".to_owned());
+
+        let err = syncer.sync_once().await.expect_err("apply must fail");
+        assert!(matches!(err, SyncError::Decode(_)), "got: {err}");
+        assert_eq!(
+            syncer.last_version, None,
+            "a failed apply must drop last_version so the next tick re-applies fully"
+        );
     }
 
     /// End-to-end: a change on a live primary reaches the secondary's live

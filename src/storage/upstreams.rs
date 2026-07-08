@@ -164,6 +164,14 @@ pub trait UpstreamRepository {
     /// Insert a new upstream and return the inserted row (including the new `id`).
     fn insert(&self, upstream: NewUpstream) -> impl Future<Output = Result<Upstream>>;
 
+    /// Atomically replace **all** upstream rows with `upstreams`.
+    ///
+    /// Runs the delete and every insert inside a single transaction, so a
+    /// failure (or crash) mid-way leaves the previous rows fully intact — the
+    /// config-sync applier (SPEC §13.4) relies on this to never persist a torn
+    /// upstream set on a secondary.
+    fn replace_all(&self, upstreams: &[NewUpstream]) -> impl Future<Output = Result<()>>;
+
     /// Persist all mutable fields of an existing upstream row.
     fn update(&self, upstream: &Upstream) -> impl Future<Output = Result<()>>;
 
@@ -254,6 +262,30 @@ impl UpstreamRepository for SqliteUpstreamRepo {
             enabled: upstream.enabled,
             sort_order: upstream.sort_order,
         })
+    }
+
+    async fn replace_all(&self, upstreams: &[NewUpstream]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query!("DELETE FROM upstreams")
+            .execute(&mut *tx)
+            .await?;
+        for u in upstreams {
+            let transport = u.transport.as_str();
+            let enabled = u.enabled as i64;
+            sqlx::query!(
+                r#"INSERT INTO upstreams (address, transport, tls_server_name, enabled, sort_order)
+                VALUES (?, ?, ?, ?, ?)"#,
+                u.address,
+                transport,
+                u.tls_server_name,
+                enabled,
+                u.sort_order,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn update(&self, upstream: &Upstream) -> Result<()> {
@@ -440,6 +472,31 @@ mod tests {
         let inserted = repo.insert(new).await.expect("insert DoH");
         assert_eq!(inserted.transport, Transport::Doh);
         assert!(!inserted.enabled);
+    }
+
+    // ── replace_all() ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn replace_all_swaps_the_full_set_atomically() {
+        let (_dir, repo) = open_repo().await;
+
+        repo.replace_all(&[NewUpstream {
+            address: "9.9.9.9".to_owned(),
+            transport: Transport::Udp,
+            tls_server_name: None,
+            enabled: true,
+            sort_order: 0,
+        }])
+        .await
+        .expect("replace_all");
+
+        let all = repo.list().await.expect("list");
+        assert_eq!(all.len(), 1, "seeded rows must be replaced, not appended");
+        assert_eq!(all[0].address, "9.9.9.9");
+
+        // An empty replacement empties the table (still atomic).
+        repo.replace_all(&[]).await.expect("replace with empty");
+        assert!(repo.list().await.expect("list").is_empty());
     }
 
     // ── update() ─────────────────────────────────────────────────────────────
