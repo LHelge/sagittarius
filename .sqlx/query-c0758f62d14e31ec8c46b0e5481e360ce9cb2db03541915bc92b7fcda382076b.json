@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM local_records",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "c0758f62d14e31ec8c46b0e5481e360ce9cb2db03541915bc92b7fcda382076b"
+}

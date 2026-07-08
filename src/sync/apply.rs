@@ -83,24 +83,27 @@ impl AppState {
     }
 
     /// Replace all upstreams, then rebuild the live pool.
+    ///
+    /// Every DTO is parsed **before** any database write, and the write itself
+    /// is a single transactional [`replace_all`](UpstreamRepository::replace_all)
+    /// — so a bad token from a version-skewed primary (or a crash mid-apply)
+    /// can never leave a torn upstream table behind for the next restart to
+    /// hydrate from.
     async fn apply_upstreams(&self, want: &[UpstreamDto]) -> Result<(), SyncError> {
-        let have = self.db.upstreams().list().await?;
-        for u in &have {
-            self.db.upstreams().delete(u.id).await?;
-        }
-        for dto in want {
-            let transport: Transport = dto.transport.parse().map_err(decode_err)?;
-            self.db
-                .upstreams()
-                .insert(NewUpstream {
+        let rows = want
+            .iter()
+            .map(|dto| {
+                Ok(NewUpstream {
                     address: dto.address.clone(),
-                    transport,
+                    transport: dto.transport.parse::<Transport>().map_err(decode_err)?,
                     tls_server_name: dto.tls_server_name.clone(),
                     enabled: dto.enabled,
                     sort_order: dto.sort_order,
                 })
-                .await?;
-        }
+            })
+            .collect::<Result<Vec<_>, SyncError>>()?;
+
+        self.db.upstreams().replace_all(&rows).await?;
         self.rebuild_upstream_pool().await.map_err(apply_err)
     }
 
@@ -155,26 +158,26 @@ impl AppState {
     }
 
     /// Replace all local records, then swap (also invalidates the reverse cache).
+    ///
+    /// Parse-first + transactional [`replace_all`](LocalRecordRepository::replace_all),
+    /// for the same torn-table reason as [`apply_upstreams`](Self::apply_upstreams).
     async fn apply_local_records(
         &self,
         want: &[crate::sync::dto::LocalRecordDto],
     ) -> Result<(), SyncError> {
-        let have = self.db.local_records().list().await?;
-        for r in &have {
-            self.db.local_records().remove(r.id).await?;
-        }
-        for dto in want {
-            let record_type: RecordType = dto.record_type.parse().map_err(decode_err)?;
-            self.db
-                .local_records()
-                .add(NewLocalRecord {
+        let rows = want
+            .iter()
+            .map(|dto| {
+                Ok(NewLocalRecord {
                     name: dto.name.clone(),
-                    record_type,
+                    record_type: dto.record_type.parse::<RecordType>().map_err(decode_err)?,
                     value: dto.value.clone(),
                     ttl: dto.ttl,
                 })
-                .await?;
-        }
+            })
+            .collect::<Result<Vec<_>, SyncError>>()?;
+
+        self.db.local_records().replace_all(&rows).await?;
         self.reload_local_records().await.map_err(apply_err)
     }
 
@@ -459,5 +462,53 @@ mod tests {
             st.apply_config_snapshot(&snap).await,
             Err(crate::sync::SyncError::Decode(_))
         ));
+    }
+
+    /// Regression (review finding): a snapshot carrying an unknown transport or
+    /// record-type token — e.g. from a version-skewed, newer primary — must
+    /// fail WITHOUT touching the existing rows. Previously the applier deleted
+    /// every row before parsing, so the failure left a torn table that survived
+    /// restarts.
+    #[tokio::test]
+    async fn bad_token_leaves_existing_rows_untouched() {
+        let (_d, st) = state().await;
+
+        // Unknown upstream transport: the seeded Cloudflare rows must survive.
+        let mut snap = snapshot();
+        snap.upstreams[0].transport = "doq".to_owned();
+        assert!(matches!(
+            st.apply_config_snapshot(&snap).await,
+            Err(crate::sync::SyncError::Decode(_))
+        ));
+        let ups = st.db.upstreams().list().await.unwrap();
+        assert_eq!(ups.len(), 2, "seeded upstreams must survive a bad token");
+
+        // Unknown local record type: pre-seeded records must survive.
+        st.db
+            .local_records()
+            .add(crate::storage::local_records::NewLocalRecord {
+                name: "keep.home.lan".to_owned(),
+                record_type: crate::storage::local_records::RecordType::A,
+                value: "10.0.0.1".to_owned(),
+                ttl: 60,
+            })
+            .await
+            .unwrap();
+        let mut snap = snapshot();
+        snap.local_records[0].record_type = "CNAME".to_owned();
+        assert!(matches!(
+            st.apply_config_snapshot(&snap).await,
+            Err(crate::sync::SyncError::Decode(_))
+        ));
+        assert!(
+            st.db
+                .local_records()
+                .list()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.name == "keep.home.lan."),
+            "existing local records must survive a bad token"
+        );
     }
 }

@@ -248,6 +248,7 @@ impl App {
             started_at: std::time::Instant::now(),
             reverse,
             instance_mode: self.config.instance_mode.clone(),
+            sync_error: Arc::new(std::sync::Mutex::new(None)),
         };
 
         let engine = build_engine(state, pool, telemetry, &ProtectiveConfig::default());

@@ -162,6 +162,14 @@ pub struct AppState {
     /// The instance role (primary / read-only secondary, SPEC §13).  Drives the
     /// read-only middleware and the page chrome's banner + edit-control gating.
     pub instance_mode: InstanceMode,
+    /// Last config-sync error message, or `None` after a successful tick
+    /// (secondary only; always `None` on a primary).
+    ///
+    /// Written by the [`ConfigSyncer`](crate::sync::ConfigSyncer) and read by
+    /// the login page so a fresh secondary whose sync is failing (bad key,
+    /// wrong URL) shows *why* sign-in is impossible instead of a bare
+    /// "invalid credentials" dead end (SPEC §13.5).
+    pub sync_error: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// Generate a fresh random key for signing session-bound CSRF tokens.
@@ -446,6 +454,7 @@ impl AppState {
             started_at: std::time::Instant::now(),
             reverse,
             instance_mode: InstanceMode::Primary,
+            sync_error: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }

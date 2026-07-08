@@ -455,12 +455,32 @@ impl AppState {
         Ok(cookie.set_header(secure, ABSOLUTE_SECS))
     }
 
+    /// On a secondary with no mirrored accounts yet, the message explaining
+    /// why sign-in cannot succeed (SPEC §13.5) — including the last sync error
+    /// when one is recorded. `None` on a primary or once users exist.
+    async fn awaiting_first_sync(&self) -> Option<String> {
+        let primary = self.instance_mode.primary_url()?;
+        match self.db.admin_users().count().await {
+            Ok(0) => {}
+            _ => return None,
+        }
+        let mut msg = format!(
+            "Waiting for the first configuration sync from {primary}. Sign-in becomes \
+             available once the primary's admin accounts have been mirrored."
+        );
+        if let Some(err) = self.sync_error.lock().expect("sync_error lock").as_deref() {
+            msg.push_str(&format!(" Last sync error: {err}"));
+        }
+        Some(msg)
+    }
+
     /// `GET /login` — render the login form, or bounce to `/` if already signed in.
     pub async fn login_form(State(state): State<AppState>, headers: HeaderMap) -> Response {
         if state.current_user(&headers).await.is_some() {
             return Redirect::to("/").into_response();
         }
         LoginTemplate {
+            notice: state.awaiting_first_sync().await,
             chrome: state.bare_chrome().await,
             error: None,
         }
@@ -491,6 +511,7 @@ impl AppState {
 
         if !authenticated {
             return Ok(LoginTemplate {
+                notice: state.awaiting_first_sync().await,
                 chrome: state.bare_chrome().await,
                 error: Some("Invalid username or password.".to_owned()),
             }
@@ -531,6 +552,8 @@ use askama_web::WebTemplate;
 struct LoginTemplate {
     chrome: Chrome,
     error: Option<String>,
+    /// Secondary-only "waiting for first config sync" explanation (SPEC §13.5).
+    notice: Option<String>,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -688,6 +711,56 @@ mod tests {
                 .is_none(),
             "revoked key must not authenticate"
         );
+    }
+
+    /// Regression (review finding): a fresh secondary whose sync has not yet
+    /// mirrored any admin accounts must explain itself on the login page —
+    /// including the last sync error — instead of a bare "invalid credentials"
+    /// dead end (SPEC §13.5).
+    #[tokio::test]
+    async fn login_page_explains_awaiting_first_sync_on_secondary() {
+        use crate::config::InstanceMode;
+        use crate::storage::admin_users::AdminUserRepository;
+
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let mut state = AppState::for_test(db).await;
+
+        // Primary mode: no notice, even with zero users (the wizard covers it).
+        assert!(state.awaiting_first_sync().await.is_none());
+
+        // Secondary mode with zero users: the waiting notice names the primary.
+        state.instance_mode = InstanceMode::Secondary {
+            primary_url: "https://primary.home.lan".to_owned(),
+        };
+        let notice = state.awaiting_first_sync().await.expect("notice");
+        assert!(notice.contains("first configuration sync"));
+        assert!(notice.contains("https://primary.home.lan"));
+        assert!(!notice.contains("Last sync error"), "no error recorded yet");
+
+        // A recorded sync failure is surfaced in the notice.
+        *state.sync_error.lock().unwrap() =
+            Some("primary returned unexpected status 401".to_owned());
+        let notice = state.awaiting_first_sync().await.expect("notice");
+        assert!(notice.contains("Last sync error"));
+        assert!(notice.contains("401"));
+
+        // And the login page itself renders it.
+        let resp = AppState::login_form(State(state.clone()), HeaderMap::new()).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("first configuration sync"));
+        assert!(html.contains("401"));
+
+        // Once accounts are mirrored, the notice disappears.
+        state
+            .db
+            .admin_users()
+            .create("admin", "$argon2id$dummy")
+            .await
+            .unwrap();
+        assert!(state.awaiting_first_sync().await.is_none());
     }
 
     #[test]

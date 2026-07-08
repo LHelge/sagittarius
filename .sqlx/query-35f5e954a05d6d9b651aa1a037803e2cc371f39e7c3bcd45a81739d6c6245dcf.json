@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO upstreams (address, transport, tls_server_name, enabled, sort_order)\n                VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "35f5e954a05d6d9b651aa1a037803e2cc371f39e7c3bcd45a81739d6c6245dcf"
+}

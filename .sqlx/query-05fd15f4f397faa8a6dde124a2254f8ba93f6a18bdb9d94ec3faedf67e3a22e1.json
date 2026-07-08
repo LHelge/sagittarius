@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO local_records (name, record_type, value, ttl)\n                VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "05fd15f4f397faa8a6dde124a2254f8ba93f6a18bdb9d94ec3faedf67e3a22e1"
+}
