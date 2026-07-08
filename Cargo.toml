@@ -1,6 +1,6 @@
 [package]
 name = "sagittarius"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "A fast, self-hosted DNS sinkhole in a single Rust binary"
 license = "MIT OR Apache-2.0"
