@@ -19,7 +19,7 @@
 
 use std::sync::LazyLock;
 
-use axum::response::Response;
+use axum::{http::HeaderMap, response::Response};
 
 use crate::web::assets::Assets;
 
@@ -85,6 +85,17 @@ const ICONS: &[(&str, &icondata_core::IconData)] = &[
 /// lifetime (the icon set is fixed per build).
 static SPRITE: LazyLock<String> = LazyLock::new(Icons::build_sprite);
 
+/// Strong, quoted `ETag` for the sprite — a content hash that changes exactly
+/// when the icon set does, so a browser revalidating the un-fingerprinted
+/// `/assets/icons.svg` URL (see [`Icons::sprite`]) gets a cheap 304 within a
+/// build and the fresh sprite after an upgrade that adds an icon.
+static SPRITE_ETAG: LazyLock<String> = LazyLock::new(|| {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    SPRITE.as_bytes().hash(&mut hasher);
+    format!("\"{:016x}\"", hasher.finish())
+});
+
 /// Namespace for the icon-sprite route handler and its builder.
 ///
 /// A unit struct (rather than free functions) per the repository convention
@@ -92,10 +103,20 @@ static SPRITE: LazyLock<String> = LazyLock::new(Icons::build_sprite);
 pub struct Icons;
 
 impl Icons {
-    /// `GET /assets/icons.svg` — the generated Lucide sprite, served with the
-    /// same immutable-cache headers as every other vendored asset.
-    pub async fn sprite() -> Response {
-        Assets::serve(SPRITE.as_bytes(), "image/svg+xml; charset=utf-8")
+    /// `GET /assets/icons.svg` — the generated Lucide sprite.
+    ///
+    /// Served with `ETag` revalidation rather than the `immutable` policy used
+    /// for fingerprinted assets: the `icon` macro references this URL without a
+    /// `?v=` cache-buster, so `immutable` would pin a stale sprite and a
+    /// newly-added icon would never reach a returning browser (see
+    /// [`Assets::serve_revalidatable`]).
+    pub async fn sprite(headers: HeaderMap) -> Response {
+        Assets::serve_revalidatable(
+            &headers,
+            SPRITE.as_bytes(),
+            "image/svg+xml; charset=utf-8",
+            SPRITE_ETAG.as_str(),
+        )
     }
 
     /// The rendered sprite bytes — folded into the asset cache-busting
@@ -170,18 +191,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sprite_route_sets_svg_content_type_and_cache() {
-        let resp = Icons::sprite().await;
+    async fn sprite_route_sets_svg_content_type_and_revalidating_cache() {
+        let resp = Icons::sprite(HeaderMap::new()).await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
             resp.headers().get(header::CONTENT_TYPE).unwrap(),
             "image/svg+xml; charset=utf-8"
         );
+        // Un-fingerprinted URL → must revalidate, not be pinned immutable, so a
+        // new icon reaches returning browsers on the next build.
+        let cache = resp.headers().get(header::CACHE_CONTROL).unwrap();
+        assert_eq!(cache, "no-cache");
         assert!(
-            resp.headers()
-                .get(header::CACHE_CONTROL)
-                .is_some_and(|v| v.to_str().unwrap().contains("immutable")),
-            "sprite must be served with an immutable cache header"
+            !cache.to_str().unwrap().contains("immutable"),
+            "sprite must not be immutable (it has no ?v= cache-buster)"
         );
+        assert!(
+            resp.headers().get(header::ETAG).is_some(),
+            "must carry ETag"
+        );
+    }
+
+    #[tokio::test]
+    async fn sprite_route_answers_304_when_if_none_match_matches() {
+        // First fetch to learn the current ETag.
+        let etag = Icons::sprite(HeaderMap::new())
+            .await
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .clone();
+
+        // A conditional request carrying that ETag gets a bodyless 304.
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag.clone());
+        let resp = Icons::sprite(headers).await;
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(resp.headers().get(header::ETAG).unwrap(), &etag);
+
+        // A stale ETag still gets the full sprite.
+        let mut stale = HeaderMap::new();
+        stale.insert(
+            header::IF_NONE_MATCH,
+            header::HeaderValue::from_static("\"stale\""),
+        );
+        assert_eq!(Icons::sprite(stale).await.status(), StatusCode::OK);
     }
 }
