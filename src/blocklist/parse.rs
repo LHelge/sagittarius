@@ -8,11 +8,12 @@
 //!
 //! ```rust
 //! use sagittarius::blocklist::parse::{BlocklistParser as _, Parser};
+//! use sagittarius::codec::name::Name;
 //! use sagittarius::storage::blocklists::BlocklistFormat;
 //!
 //! let text = "0.0.0.0 ads.example.com\n";
 //! let names = Parser::from(BlocklistFormat::Hosts).parse(text);
-//! assert!(names.contains(&"ads.example.com".parse().unwrap()));
+//! assert!(names.contains(&"ads.example.com".parse::<Name>().unwrap()));
 //! ```
 //!
 //! # Comment handling
