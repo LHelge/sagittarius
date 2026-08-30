@@ -196,6 +196,48 @@ mod tests {
         state.blocklist().store(map);
     }
 
+    /// A `BlockedByBlocklist` event for a **subdomain of a suffix rule**
+    /// persists the suffix rule's `blocklist_id` (E19.3).
+    #[tokio::test]
+    async fn suffix_blocked_event_persists_rule_source() {
+        use std::collections::HashMap;
+
+        let (_dir, repo, db, state) = open_repo().await;
+        state
+            .blocklist()
+            .store_tiers(crate::resolver::matchset::AttributedTiers {
+                exact: HashMap::new(),
+                suffix: [("ads.example.com".parse::<Name>().unwrap(), 7)]
+                    .into_iter()
+                    .collect(),
+                exceptions: HashMap::new(),
+            });
+
+        let (tx, rx) = mpsc::channel(64);
+        let token = CancellationToken::new();
+        let t2 = token.clone();
+        let writer = QueryLogWriter::new(rx, repo, state);
+        let handle = tokio::spawn(async move { writer.run(t2).await });
+
+        tx.send(event_with(
+            "cdn.ads.example.com",
+            Outcome::BlockedByBlocklist,
+        ))
+        .await
+        .unwrap();
+        token.cancel();
+        drop(tx);
+        handle.await.unwrap();
+
+        let rows = db.query_log().page(None, 10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].blocklist_id,
+            Some(7),
+            "suffix block must be attributed to the matched rule's source"
+        );
+    }
+
     #[tokio::test]
     async fn writes_enqueued_events_to_db() {
         let (_dir, repo, db, state) = open_repo().await;
