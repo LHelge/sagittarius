@@ -220,6 +220,7 @@ impl BlocklistScheduler {
         let text = String::from_utf8_lossy(&body);
         let rules = Parser::from(source.format).parse_rules(&text);
         let count = rules.accepted();
+        let skipped = rules.skipped;
 
         // A 200 that parses to zero domains is almost always breakage — an empty
         // body, a soft-404 HTML error page, or a moved endpoint — not a list
@@ -252,6 +253,7 @@ impl BlocklistScheduler {
         }
         let meta = RefreshMetadata {
             entry_count: count as u64,
+            skipped_count: skipped as u64,
             last_updated: Clock::now_secs(),
             etag: validators.etag,
             last_modified: validators.last_modified,
@@ -723,6 +725,7 @@ mod tests {
             src.id,
             &RefreshMetadata {
                 entry_count: 2,
+                skipped_count: 0,
                 last_updated: 1_700_000_000,
                 etag: Some(r#""etag-v1""#.to_owned()),
                 last_modified: None,
