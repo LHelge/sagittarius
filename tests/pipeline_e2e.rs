@@ -301,6 +301,63 @@ async fn blocked_by_blocklist() {
     .expect("test timed out");
 }
 
+// ── 2b. Tiered blocklist: suffix block and @@ exception (E19) ────────────────
+
+/// An AdBlock-format snippet — a `||domain^` suffix rule plus an `@@||…^`
+/// exception — aggregated through the real parser/aggregator path must block
+/// subdomains of the rule over the live UDP stack, while the exception keeps
+/// its own name resolving.
+#[tokio::test]
+async fn adblock_suffix_block_and_exception_end_to_end() {
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        let h = build_harness(|state| {
+            // Real parse → aggregate → install path (E19.1/E19.2).
+            use sagittarius::blocklist::aggregate::Aggregator;
+            use sagittarius::blocklist::parse::{AdBlockParser, BlocklistRulesParser as _};
+
+            let text = "\
+#adblock fixture
+||tracker.suffix.example^
+@@||safe.tracker.suffix.example^
+";
+            let mut agg = Aggregator::new();
+            agg.add(1, AdBlockParser.parse_rules(text));
+            let contributions = agg.install(state.blocklist());
+            assert_eq!(contributions[0].count, 2, "fixture must parse to 2 rules");
+        })
+        .await;
+
+        // A subdomain of the suffix rule is blocked (null-IP, no upstream).
+        let q = build_a_query(0x2411, "cdn.tracker.suffix.example");
+        let reply = send_query(h.server_addr, &q).await;
+        let hdr = parse_header(&reply);
+        assert_eq!(hdr.id, 0x2411);
+        assert_eq!(hdr.rcode(), Rcode::NoError, "null-ip block → NOERROR");
+        assert_eq!(hdr.ancount, 1, "null-ip A → one answer (0.0.0.0)");
+
+        // The apex of the suffix rule is blocked too.
+        let q = build_a_query(0x2412, "tracker.suffix.example");
+        let reply = send_query(h.server_addr, &q).await;
+        let hdr = parse_header(&reply);
+        assert_eq!(hdr.ancount, 1, "apex of a suffix rule is blocked");
+
+        // The @@-exception name resolves via the mock upstream instead.
+        let before = h.upstream_calls.load(Ordering::Relaxed);
+        let q = build_a_query(0x2413, "safe.tracker.suffix.example");
+        let reply = send_query(h.server_addr, &q).await;
+        let hdr = parse_header(&reply);
+        assert_eq!(hdr.rcode(), Rcode::NoError);
+        assert!(
+            h.upstream_calls.load(Ordering::Relaxed) > before,
+            "exception-served name must be forwarded to the upstream"
+        );
+
+        h.shutdown().await;
+    })
+    .await
+    .expect("test timed out");
+}
+
 // ── 3. Local record → authoritative answer ────────────────────────────────────
 
 /// A query for a locally-configured A record must return AA=1, NOERROR,

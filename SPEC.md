@@ -59,7 +59,7 @@ interface all included.
 | Persistent storage | SQLite via [`sqlx`](https://docs.rs/sqlx) | System of record for config, credentials, lists, local records, and the durable query-log history. Compile-time-checked queries (`query!`/`query_as!`); migrations embedded in the binary via the `sqlx::migrate!` macro |
 | Logging / telemetry | [`tracing`](https://docs.rs/tracing) + [`tracing-subscriber`](https://docs.rs/tracing-subscriber) | Structured app + query logging to stdout; operator handles retention externally |
 | CLI arguments | [`clap`](https://docs.rs/clap) | Operational flags (bind addresses, database path) with env fallbacks and sane defaults |
-| In-memory blocking sets | `HashSet` / `HashMap` | Admin blacklist and allowlist (`HashSet`); the aggregated blocklist is a `HashMap<Name, blocklist_id>` recording each domain's primary source (§3.1, §6) |
+| In-memory blocking sets | `HashSet` / `HashMap` | Admin blacklist and allowlist (`HashSet`); the aggregated blocklist is three tiered `HashMap<Name, blocklist_id>` maps (exact / suffix / exceptions) recording each rule's primary source (§3.1, §6, E19) |
 | Lock-free state swap | [`arc-swap`](https://docs.rs/arc-swap) | Atomically swap immutable list snapshots so hot-path reads never block (§3.2) |
 | Local DNS records | `HashMap` (exact) + suffix-probe wildcards | Handful of entries; wildcards like `*.home.lan` via most-specific suffix match |
 | DNS cache | [`moka`](https://docs.rs/moka) | Per-entry expiration driven by record TTL |
@@ -170,12 +170,14 @@ DoT/DoH); it is not used to deserialize received messages on the hot path.
    - **Allowlist** (`HashSet`) — domains the admin explicitly allowed; an
      *exception* that suppresses blocklist matching (but not the admin
      blacklist). Persisted in SQLite, mirrored in memory.
-   - **Blocklist set** (`HashMap<Name, blocklist_id>`) — the aggregated,
-     deduplicated domains expanded from all enabled blocklist *sources*, each
-     mapped to its **primary source** so a block can be attributed to a list
-     (§6). The decision layer still treats it as a presence check (`Name → bool`);
-     attribution is read only off the hot path. **Memory-only at runtime**; only
-     source definitions and cached fetched copies are persisted (§6).
+   - **Blocklist set** — the aggregated, deduplicated rules expanded from all
+     enabled blocklist *sources*, held as three attributed tiers (exact,
+     suffix, exceptions — each a `Name → blocklist_id` map recording the
+     rule's primary source) so a block can be attributed to a list (§6,
+     E19). The decision layer reads it as a bounded hash-probe match
+     (`Name → BlockDecision`); attribution is read only off the hot path.
+     **Memory-only at runtime**; only source definitions and cached fetched
+     copies are persisted (§6).
    - **Local records** — a small set (typically a handful) served
      authoritatively. Records are keyed by normalized name and type (A/AAAA in
      v0.1), so the same local name may have both IPv4 and IPv6 answers. Exact
@@ -262,8 +264,9 @@ path) and occasional writers (admin edits, blocklist refresh):
   `Arc<…>` snapshot inside an `ArcSwap`. A query reads the current snapshot with
   a cheap atomic load and never blocks; a writer builds a fresh structure *off*
   the hot path and atomically swaps it in, so no reader ever sees a torn or
-  partially-updated set. The blocklist snapshot is a `Name → primary
-  blocklist_id` map, but the decision layer reads it as a presence check; the
+  partially-updated set. The blocklist snapshot is three tiered
+  `Name → primary blocklist_id` maps (exact / suffix / exceptions, §6); the
+  decision layer reads them as a bounded hash-probe match, and the
   attribution value is consulted only off the hot path (§6).
 - **Cache.** `moka` is already a concurrent cache; shared via `Arc`, no extra
   locking.
@@ -469,10 +472,14 @@ would-be-blocked query during a pause resolves and logs as **forwarded** /
     the in-memory runtime stats, and push the event onto the live-log broadcast
     for the admin SSE stream. No database write in v0.1.
 
-**Blocking granularity (v0.1): exact match only.** Both the admin blacklist and
-the blocklist set are matched as exact domains (a single `HashSet` lookup).
-Subdomain / parent-label blocking is future scope — it is the feature that would
-motivate the reversed-label trie noted in §3.1 (§12).
+**Blocking granularity: exact + suffix, with exceptions (E19).** The admin
+blacklist and allowlist match as **exact domains**. The aggregated blocklist
+matches exact **and** `||domain^`-style suffix rules (a bounded, allocation-free
+label walk), with `@@||domain^` exceptions suppressing blocklist matches for a
+name and its subdomains — see §6 for the tiered design. Subdomain blocking
+beyond the hash-walk (a reversed-label trie for memory efficiency) remains
+future scope — it is the feature that would motivate the trie noted in §3.1
+(§12).
 
 **Response codes.** Beyond the synthesized block answers above (`NXDOMAIN` /
 null-IP / custom, per the configured block mode) and authoritative local
@@ -492,10 +499,26 @@ null-IP / custom, per the configured block mode) and authoritative local
 
 - **Sources.** Users subscribe to blocklist URLs. Supported input formats:
   - **hosts** format (`0.0.0.0 example.com`),
-  - **domain lists** (one domain per line).
+  - **domain lists** (one domain per line),
+  - **AdBlock-style filters** (E19) — the domain-oriented subset:
+    `||domain^` (block the domain and all subdomains), `@@||domain^`
+    (exception), and bare domains (exact rules). Option-carrying rules
+    (`$third-party`, `$domain=…`), in-pattern wildcards, `/regex/`, and
+    single-pipe anchors are **not** matched: they are counted per source as
+    *skipped* and surfaced in the UI, and parsing is never fatal.
 
-  AdBlock-style rule parsing is future scope; v0.1 deliberately keeps parsers
-  to the two simple domain-oriented formats above.
+- **Tiered matching (E19).** The aggregated blocklist snapshot carries three
+  attributed tiers, matched in this order: **exact** rules (the queried name
+  only), **suffix** rules (an ancestor walk over the name's labels,
+  most-specific first, apex included, root never probed), and **exceptions**
+  (the same ancestor walk, consulted only when a block matched — a hit
+  suppresses the block). The hot-path decision is a handful of hash probes —
+  one exact probe, at most one probe per name label, plus the exception walk
+  on a hit — with no allocation. Aggregation merges all enabled sources per
+  tier with first-writer-wins attribution (lowest `blocklist_id` wins); the
+  decision layer probes exact before suffix, so an exact rule for a name
+  outranks a broader suffix rule. Exceptions suppress blocklist matches
+  only — never the admin blacklist (§5).
 - **Refresh.** Lists are fetched on a schedule and on demand, using
   `ETag`/`Last-Modified` for conditional requests. A cached copy is retained
   **in the SQLite database** (not as separate files) so startup works offline.
@@ -505,19 +528,20 @@ null-IP / custom, per the configured block mode) and authoritative local
   cached copies) are persisted. The admin **blacklist** and **allowlist** are
   kept as separate sets (§3.1) and applied with their own precedence at query
   time (§5); they are never merged into the blocklist set.
-- **Per-domain attribution.** The aggregated set is a `Name → primary
-  blocklist_id` map: each domain records the **primary source** that contributed
-  it. On overlap, the first writer wins; sources are aggregated in ascending
+- **Per-rule attribution.** The aggregated set is a `Name → primary
+  blocklist_id` map **per tier** (exact / suffix / exceptions, §6): each rule
+  records the **primary source** that contributed it. On overlap within a
+  tier, the first writer wins; sources are aggregated in ascending
   `blocklist_id` order, so the **lowest-id (oldest-subscribed) list** is the
   primary. Only this single primary is stored — a deliberate trade-off that keeps
-  the map value a bare `i64` (no bitmask, no per-domain source list) at the cost
+  the map value a bare `i64` (no bitmask, no per-rule source list) at the cost
   of overlap / "uniquely blocked by X" analysis (a junction table could add that
   later). Attribution is resolved **off the hot path** by the query-log writer,
-  which reads the live snapshot and stamps `query_log.blocklist_id` for
-  `blocked-blocklist` rows; the decision layer itself stays a pure presence
-  check. This is eventually consistent — a refresh in the ~1s write delay can
-  shift or drop an attribution (→ `NULL`), which is acceptable for effectiveness
-  telemetry.
+  which reads the live snapshot (exact probe, then most-specific suffix
+  ancestor) and stamps `query_log.blocklist_id` for `blocked-blocklist` rows,
+  including suffix blocks (E19.3). This is eventually consistent — a refresh
+  in the ~1s write delay can shift or drop an attribution (→ `NULL`), which is
+  acceptable for effectiveness telemetry.
 - **Counts.** Per-list entry counts and last-update times are surfaced in the UI.
 
 ---
@@ -615,11 +639,14 @@ null-IP / custom, per the configured block mode) and authoritative local
     example local-record answers, or admin-blacklist blocks that the allowlist
     cannot override) do not offer that one-click action. The list change writes
     through to SQLite and refreshes the in-memory sets immediately.
-  - Blocklist subscription management (add/remove/enable, manual refresh). The
-    page also shows **per-list effectiveness**: each source's windowed block
+  - Blocklist subscription management (add/remove/enable, manual refresh,
+    `hosts` / `domain-list` / `adblock` format selection). The page also shows
+    **per-list effectiveness**: each source's windowed block
     count (last 24h) and its share of all blocklist blocks, so the admin can see
-    which lists are pulling their weight. Blocks credited to a source that has
-    since been removed are summarized as a "removed list" row (§6).
+    which lists are pulling their weight. AdBlock-format sources additionally
+    show how many rules were **skipped** as unsupported (§6). Blocks credited to
+    a source that has since been removed are summarized as a "removed list" row
+    (§6).
   - Manual blacklist / whitelist editing.
   - **Pause blocking** for a chosen duration (5 m / 30 m / 1 h, or a custom value)
     with a *Resume now* control — a navbar menu plus a countdown banner shown on
@@ -822,7 +849,9 @@ each feature is filled in as it lands; this list is the milestone scope.
 - Native TLS / built-in ACME (Let's Encrypt) for the admin interface.
 - Per-client / per-group policies.
 - Integrated DHCP server and DHCP-driven local records.
-- Full AdBlock filter syntax.
+- Remaining AdBlock syntax (in-pattern wildcards, `/regex/`, option
+  qualifiers like `$domain=…`) — the domain-oriented subset (`||…^`, `@@||…^`,
+  bare domains) shipped in E19; the rest is skipped and counted per source.
 - Prometheus metrics / external observability.
 - Import/export and backup tooling.
 

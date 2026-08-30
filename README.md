@@ -31,8 +31,11 @@ traffic disappear.
 
 ## Planned features (v0.1)
 
-- 🛡️ **DNS blocking** via subscribable blocklists (hosts / domain-list formats)
-  plus manual allow/deny lists. Exact-domain matching in v0.1. **Per-list
+- 🛡️ **DNS blocking** via subscribable blocklists (hosts / domain-list /
+  AdBlock-style formats) plus manual allow/deny lists. AdBlock `||domain^`
+  rules block whole domains **and their subdomains**, with `@@` exceptions;
+  unsupported rule types (options, wildcards, regex) are skipped and counted
+  per source. **Per-list
   effectiveness** shows how many blocks each source contributed (last 24h) and
   its share of the total, so you can see which lists are pulling their weight.
 - ⏸️ **Pause blocking** temporarily — snooze all blocking for 5 min / 30 min /
@@ -72,7 +75,7 @@ milestone.
 | Persistent storage | SQLite via [`sqlx`](https://docs.rs/sqlx) — compile-time-checked queries, embedded migrations; stores config and the durable query-log history |
 | Logging | [`tracing`](https://docs.rs/tracing) to stdout; live log streamed to the UI over SSE |
 | CLI / config | [`clap`](https://docs.rs/clap) flags (bind addresses, db path) with sane defaults |
-| Hot-path state | `HashSet` blacklist/allowlist + a `HashMap` blocklist (domain → primary source) and `HashMap` local records, hot-swapped via [`arc-swap`](https://docs.rs/arc-swap); [`moka`](https://docs.rs/moka) cache with per-entry TTL |
+| Hot-path state | `HashSet` blacklist/allowlist + three tiered `HashMap` blocklists (exact / suffix / exceptions, each domain → primary source) and `HashMap` local records, hot-swapped via [`arc-swap`](https://docs.rs/arc-swap); [`moka`](https://docs.rs/moka) cache with per-entry TTL |
 | Web server | [`axum`](https://docs.rs/axum) |
 | Templating / UI | [`askama`](https://docs.rs/askama) + [Datastar](https://data-star.dev) (SSE) + [Pico CSS](https://picocss.com) |
 | Frontend assets | Vendored and embedded via `include_str!` / `include_bytes!` — no CDN, no Node build; Lucide icons (`icondata_lu`) served as one `<symbol>` sprite |
