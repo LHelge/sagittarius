@@ -24,7 +24,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// The file format of a subscribed blocklist source.
 ///
-/// Maps to/from the `format` TEXT column values `'hosts'` and `'domain-list'`.
+/// Maps to/from the `format` TEXT column values `'hosts'`, `'domain-list'`,
+/// and `'adblock'`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum BlocklistFormat {
     /// A `hosts`-style file (`0.0.0.0 ads.example.com` or `127.0.0.1 …`).
@@ -33,6 +34,9 @@ pub enum BlocklistFormat {
     /// A plain-text domain list — one domain per line.
     #[strum(serialize = "domain-list")]
     DomainList,
+    /// An AdBlock-style filter list (`||domain^` / `@@||domain^`, E19.1).
+    #[strum(serialize = "adblock")]
+    AdBlock,
 }
 
 impl BlocklistFormat {
@@ -58,6 +62,7 @@ impl FromStr for BlocklistFormat {
         match s {
             "hosts" => Ok(Self::Hosts),
             "domain-list" => Ok(Self::DomainList),
+            "adblock" => Ok(Self::AdBlock),
             other => Err(Error::Decode(format!(
                 "unknown blocklist format value: {other:?}"
             ))),
@@ -80,6 +85,10 @@ pub struct Blocklist {
     pub enabled: bool,
     /// Number of domain entries from the last successful fetch.
     pub entry_count: u64,
+    /// Number of recognized-but-unsupported rules (options, wildcards, …)
+    /// skipped by the parser on the last successful fetch (E19.4).  Always 0
+    /// for the `hosts` and `domain-list` formats.
+    pub skipped_count: u64,
     /// Unix epoch seconds of the last successful fetch; `None` until first fetch.
     pub last_updated: Option<i64>,
     /// HTTP ETag for conditional requests; `None` until first fetch.
@@ -122,6 +131,9 @@ pub struct CachedContent {
 pub struct RefreshMetadata {
     /// Number of domain entries parsed from the fetched content.
     pub entry_count: u64,
+    /// Number of recognized-but-unsupported rules skipped by the parser
+    /// (E19.4).
+    pub skipped_count: u64,
     /// Unix epoch seconds of the successful fetch.
     pub last_updated: i64,
     /// HTTP ETag for use in the next conditional request, if provided.
@@ -145,6 +157,7 @@ struct BlocklistRow {
     format: String,
     enabled: bool,
     entry_count: i64,
+    skipped_count: i64,
     last_updated: Option<i64>,
     etag: Option<String>,
     last_modified: Option<String>,
@@ -161,6 +174,12 @@ impl TryFrom<BlocklistRow> for Blocklist {
                 row.entry_count
             ))
         })?;
+        let skipped_count = u64::try_from(row.skipped_count).map_err(|_| {
+            Error::Decode(format!(
+                "column skipped_count value {} is out of u64 range",
+                row.skipped_count
+            ))
+        })?;
 
         Ok(Blocklist {
             id: row.id,
@@ -168,6 +187,7 @@ impl TryFrom<BlocklistRow> for Blocklist {
             format,
             enabled: row.enabled,
             entry_count,
+            skipped_count,
             last_updated: row.last_updated,
             etag: row.etag,
             last_modified: row.last_modified,
@@ -222,7 +242,8 @@ pub trait BlocklistRepository {
 
     /// Persist post-fetch metadata on the source row after a successful fetch.
     ///
-    /// Updates `entry_count`, `last_updated`, `etag`, and `last_modified`.
+    /// Updates `entry_count`, `skipped_count`, `last_updated`, `etag`, and
+    /// `last_modified`.
     fn update_refresh_metadata(
         &self,
         id: i64,
@@ -278,6 +299,7 @@ impl BlocklistRepository for SqliteBlocklistRepo {
             format: blocklist.format,
             enabled: blocklist.enabled,
             entry_count: 0,
+            skipped_count: 0,
             last_updated: None,
             etag: None,
             last_modified: None,
@@ -293,6 +315,7 @@ impl BlocklistRepository for SqliteBlocklistRepo {
                 format,
                 enabled         AS "enabled!: bool",
                 entry_count     AS "entry_count!",
+                skipped_count   AS "skipped_count!",
                 last_updated,
                 etag,
                 last_modified
@@ -314,6 +337,7 @@ impl BlocklistRepository for SqliteBlocklistRepo {
                 format,
                 enabled         AS "enabled!: bool",
                 entry_count     AS "entry_count!",
+                skipped_count   AS "skipped_count!",
                 last_updated,
                 etag,
                 last_modified
@@ -348,14 +372,17 @@ impl BlocklistRepository for SqliteBlocklistRepo {
 
     async fn update_refresh_metadata(&self, id: i64, meta: &RefreshMetadata) -> Result<()> {
         let entry_count = meta.entry_count as i64;
+        let skipped_count = meta.skipped_count as i64;
         sqlx::query!(
             r#"UPDATE blocklists SET
                 entry_count   = ?,
+                skipped_count = ?,
                 last_updated  = ?,
                 etag          = ?,
                 last_modified = ?
             WHERE id = ?"#,
             entry_count,
+            skipped_count,
             meta.last_updated,
             meta.etag,
             meta.last_modified,
@@ -441,12 +468,14 @@ mod tests {
     fn format_display() {
         assert_eq!(BlocklistFormat::Hosts.to_string(), "hosts");
         assert_eq!(BlocklistFormat::DomainList.to_string(), "domain-list");
+        assert_eq!(BlocklistFormat::AdBlock.to_string(), "adblock");
     }
 
     #[test]
     fn format_as_str() {
         assert_eq!(BlocklistFormat::Hosts.as_str(), "hosts");
         assert_eq!(BlocklistFormat::DomainList.as_str(), "domain-list");
+        assert_eq!(BlocklistFormat::AdBlock.as_str(), "adblock");
     }
 
     #[test]
@@ -459,15 +488,19 @@ mod tests {
             "domain-list".parse::<BlocklistFormat>().unwrap(),
             BlocklistFormat::DomainList
         );
+        assert_eq!(
+            "adblock".parse::<BlocklistFormat>().unwrap(),
+            BlocklistFormat::AdBlock
+        );
     }
 
     #[test]
     fn format_from_str_invalid() {
-        let err = "adblock".parse::<BlocklistFormat>();
+        let err = "yaml".parse::<BlocklistFormat>();
         assert!(err.is_err(), "invalid format must fail");
         let msg = err.unwrap_err().to_string();
         assert!(
-            msg.contains("adblock"),
+            msg.contains("yaml"),
             "error must mention the bad value: {msg}"
         );
     }
@@ -617,6 +650,7 @@ mod tests {
 
         let meta = RefreshMetadata {
             entry_count: 42_000,
+            skipped_count: 7,
             last_updated: 1_700_000_000,
             etag: Some(r#""abc123""#.to_owned()),
             last_modified: Some("Thu, 01 Jan 2026 00:00:00 GMT".to_owned()),
@@ -630,6 +664,7 @@ mod tests {
         assert_eq!(all.len(), 1);
         let row = &all[0];
         assert_eq!(row.entry_count, 42_000);
+        assert_eq!(row.skipped_count, 7, "skipped count must round-trip");
         assert_eq!(row.last_updated, Some(1_700_000_000));
         assert_eq!(row.etag.as_deref(), Some(r#""abc123""#));
         assert_eq!(
@@ -649,6 +684,7 @@ mod tests {
 
         let meta = RefreshMetadata {
             entry_count: 100,
+            skipped_count: 0,
             last_updated: 1_700_000_001,
             etag: None,
             last_modified: None,

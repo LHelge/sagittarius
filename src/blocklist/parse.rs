@@ -1,4 +1,5 @@
-//! Blocklist text parsers — `hosts` and `domain-list` formats (SPEC §6, E7.2).
+//! Blocklist text parsers — `hosts` and `domain-list` formats (SPEC §6, E7.2)
+//! plus an AdBlock-style filter parser (E19.1).
 //!
 //! Each format is implemented as a zero-sized unit struct that implements
 //! [`BlocklistParser`].  The [`Parser`] enum unifies them and can be obtained
@@ -7,11 +8,12 @@
 //!
 //! ```rust
 //! use sagittarius::blocklist::parse::{BlocklistParser as _, Parser};
+//! use sagittarius::codec::name::Name;
 //! use sagittarius::storage::blocklists::BlocklistFormat;
 //!
 //! let text = "0.0.0.0 ads.example.com\n";
 //! let names = Parser::from(BlocklistFormat::Hosts).parse(text);
-//! assert!(names.contains(&"ads.example.com".parse().unwrap()));
+//! assert!(names.contains(&"ads.example.com".parse::<Name>().unwrap()));
 //! ```
 //!
 //! # Comment handling
@@ -56,6 +58,67 @@ pub trait BlocklistParser {
     /// [`Name`] normalizes to lowercase and implements [`Eq`] + [`Hash`] on
     /// the normalized form.
     fn parse(&self, text: &str) -> HashSet<Name>;
+}
+
+// ── ParsedRules ───────────────────────────────────────────────────────────────
+
+/// The tiered output of a rules-aware parser (E19.1).
+///
+/// AdBlock-style lists distinguish three tiers of domain-oriented rules; all
+/// three are [`HashSet`]s that deduplicate case-insensitively because [`Name`]
+/// normalizes to lowercase and implements [`Eq`] + [`Hash`] on the normalized
+/// form.  Everything a parser recognizes *as a rule* but cannot represent is
+/// counted in `skipped` instead of being silently dropped or treated as fatal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParsedRules {
+    /// Bare domain rules — blocked by exact match (and any admin-level
+    /// suffix semantics added later).
+    pub exact: HashSet<Name>,
+    /// `||domain^` anchor rules — `domain` and every subdomain of it are
+    /// blocked (suffix match; the domain apex itself included).
+    pub suffix: HashSet<Name>,
+    /// `@@||domain^` exception rules — suppress blocklist matches for
+    /// `domain` and its subdomains.
+    pub exceptions: HashSet<Name>,
+    /// How many content lines were recognized as rules but are unsupported
+    /// (options like `$third-party`, in-pattern wildcards, `/regex/`,
+    /// single-pipe anchors, malformed anchors, invalid domains).
+    pub skipped: usize,
+}
+
+impl ParsedRules {
+    /// Wrap a flat exact-domain set (the output of the plain
+    /// `hosts` / `domain-list` parsers) as exact-tier rules with nothing
+    /// skipped.
+    #[must_use]
+    pub fn exact_only(names: HashSet<Name>) -> Self {
+        Self {
+            exact: names,
+            suffix: HashSet::new(),
+            exceptions: HashSet::new(),
+            skipped: 0,
+        }
+    }
+
+    /// Total number of accepted rules across all tiers.
+    #[must_use]
+    pub fn accepted(&self) -> usize {
+        self.exact.len() + self.suffix.len() + self.exceptions.len()
+    }
+}
+
+// ── BlocklistRulesParser trait ────────────────────────────────────────────────
+
+/// Parses raw blocklist text into tiered [`ParsedRules`].
+///
+/// A sibling of [`BlocklistParser`] for callers that need the tier
+/// information (the blocklist scheduler / aggregator, E19.2).  Implementors
+/// must uphold the same comment/pre-processing contract as
+/// [`BlocklistParser`] and never treat an unparseable rule as fatal — it is
+/// counted in [`ParsedRules::skipped`] instead.
+pub trait BlocklistRulesParser {
+    /// Parse `text` into tiered [`ParsedRules`].
+    fn parse_rules(&self, text: &str) -> ParsedRules;
 }
 
 // ── Shared pre-processing ─────────────────────────────────────────────────────
@@ -141,6 +204,12 @@ impl BlocklistParser for HostsParser {
     }
 }
 
+impl BlocklistRulesParser for HostsParser {
+    fn parse_rules(&self, text: &str) -> ParsedRules {
+        ParsedRules::exact_only(self.parse(text))
+    }
+}
+
 // ── DomainListParser ──────────────────────────────────────────────────────────
 
 /// Parser for `domain-list`-style blocklists.
@@ -186,6 +255,150 @@ impl BlocklistParser for DomainListParser {
     }
 }
 
+impl BlocklistRulesParser for DomainListParser {
+    fn parse_rules(&self, text: &str) -> ParsedRules {
+        ParsedRules::exact_only(self.parse(text))
+    }
+}
+
+// ── AdBlockParser ─────────────────────────────────────────────────────────────
+
+/// Parser for AdBlock-style filter lists (E19.1).
+///
+/// Supports the **domain-oriented subset** of the AdBlock grammar; everything
+/// else is counted in [`ParsedRules::skipped`] and never fatal:
+///
+/// ```text
+/// ||ads.example.com^      → suffix rule (ads.example.com + subdomains)
+/// @@||cdn.example.com^    → exception (suppresses blocklist matches)
+/// ads.example.com         → bare domain → exact rule
+/// ```
+///
+/// Supported rule shapes:
+///
+/// - `||domain^` — the anchors must wrap the whole rule: `||` at the start,
+///   a single trailing `^`, and a valid domain in between.
+/// - `@@||domain^` — the exception form of the above.
+/// - A bare domain line (many "AdBlock" lists mix plain domains in).
+///
+/// A rule is **skipped** (counted, not fatal) when it:
+///
+/// - carries options (`$third-party`, `$domain=…`, …) — any `$` in the line;
+/// - uses unsupported pattern syntax: an in-pattern wildcard `*`, a
+///   `/regex/`, a single-pipe `|` anchor, `~` negation, or a `^` separator
+///   anywhere other than the trailing position;
+/// - is otherwise not a valid domain (`Name::from_str` rejects it).
+///
+/// # Differences from the other parsers
+///
+/// Unparseable content lines are **counted as skipped** rather than silently
+/// dropped, because in an AdBlock list such a line is almost certainly a rule
+/// the parser chose not to support — the count is what surfaces as
+/// "N rules skipped" in the UI (E19.4).
+///
+/// # Transitional [`BlocklistParser`] behaviour
+///
+/// The inherited [`BlocklistParser::parse`] returns **exact-tier rules only**
+/// — the suffix/exception tiers cannot be represented in a flat
+/// `HashSet<Name>`.  Callers that want tiered semantics must use
+/// [`BlocklistRulesParser::parse_rules`] (the scheduler does so from E19.2).
+/// Until then, subscribing an `adblock`-format source behaves like a
+/// domain-list of its bare-domain rules.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AdBlockParser;
+
+/// Characters that mark a rule as outside the supported domain-oriented
+/// subset: single-pipe anchors, wildcards, regex bodies, negation, and
+/// separator `^` (only a *trailing* `^` is consumed by [`strip_anchors`]).
+const UNSUPPORTED_CHARS: [char; 5] = ['|', '*', '/', '~', '^'];
+
+/// Strip the `||` … `^` anchors from an anchored rule body, returning the
+/// interior domain — or `None` if the anchors are malformed or the body uses
+/// unsupported pattern syntax (caller counts it as skipped).
+fn strip_anchors(rule: &str) -> Option<&str> {
+    let body = rule.strip_prefix("||")?;
+    let body = body.strip_suffix('^')?;
+
+    if body.is_empty() || body.chars().any(|c| UNSUPPORTED_CHARS.contains(&c)) {
+        return None;
+    }
+
+    Some(body)
+}
+
+impl AdBlockParser {
+    /// Classify one pre-processed content line into the tiered rules.
+    ///
+    /// `Some(true)` marks an exception (`@@`) rule, `Some(false)` a blocking
+    /// rule; `None` means the line is not a well-formed anchored rule.
+    fn classify_anchored(rule: &str) -> Option<(bool, Name)> {
+        let (exception, rest) = if let Some(rest) = rule.strip_prefix("@@") {
+            (true, rest)
+        } else {
+            (false, rule)
+        };
+
+        let domain = strip_anchors(rest)?;
+        let name = domain.parse::<Name>().ok()?;
+        Some((exception, name))
+    }
+}
+
+impl BlocklistParser for AdBlockParser {
+    fn parse(&self, text: &str) -> HashSet<Name> {
+        // Transitional: exact tier only — see the type's docs.
+        AdBlockParser.parse_rules(text).exact
+    }
+}
+
+impl BlocklistRulesParser for AdBlockParser {
+    fn parse_rules(&self, text: &str) -> ParsedRules {
+        let mut rules = ParsedRules::default();
+
+        for line in text.lines() {
+            let Some(content) = preprocess(line) else {
+                continue;
+            };
+
+            // Option-carrying rules ($third-party, $domain=…, …) are
+            // unsupported; a `$` anywhere marks one.
+            if content.contains('$') {
+                rules.skipped += 1;
+                continue;
+            }
+
+            if content.starts_with("@@") || content.starts_with("||") {
+                match Self::classify_anchored(content) {
+                    Some((true, name)) => {
+                        rules.exceptions.insert(name);
+                    }
+                    Some((false, name)) => {
+                        rules.suffix.insert(name);
+                    }
+                    None => rules.skipped += 1,
+                }
+                continue;
+            }
+
+            // Unanchored line: bare domain → exact rule; anything using
+            // unsupported pattern syntax is a skipped rule.
+            if content.chars().any(|c| UNSUPPORTED_CHARS.contains(&c)) {
+                rules.skipped += 1;
+                continue;
+            }
+
+            match content.parse::<Name>() {
+                Ok(name) => {
+                    rules.exact.insert(name);
+                }
+                Err(_) => rules.skipped += 1,
+            }
+        }
+
+        rules
+    }
+}
+
 // ── Parser (format dispatch) ──────────────────────────────────────────────────
 
 /// A unified parser that dispatches to the correct format-specific
@@ -207,6 +420,8 @@ pub enum Parser {
     Hosts(HostsParser),
     /// Dispatch to [`DomainListParser`].
     DomainList(DomainListParser),
+    /// Dispatch to [`AdBlockParser`].
+    AdBlock(AdBlockParser),
 }
 
 impl From<BlocklistFormat> for Parser {
@@ -214,6 +429,7 @@ impl From<BlocklistFormat> for Parser {
         match format {
             BlocklistFormat::Hosts => Self::Hosts(HostsParser),
             BlocklistFormat::DomainList => Self::DomainList(DomainListParser),
+            BlocklistFormat::AdBlock => Self::AdBlock(AdBlockParser),
         }
     }
 }
@@ -223,6 +439,17 @@ impl BlocklistParser for Parser {
         match self {
             Self::Hosts(p) => p.parse(text),
             Self::DomainList(p) => p.parse(text),
+            Self::AdBlock(p) => p.parse(text),
+        }
+    }
+}
+
+impl BlocklistRulesParser for Parser {
+    fn parse_rules(&self, text: &str) -> ParsedRules {
+        match self {
+            Self::Hosts(p) => p.parse_rules(text),
+            Self::DomainList(p) => p.parse_rules(text),
+            Self::AdBlock(p) => p.parse_rules(text),
         }
     }
 }
@@ -561,5 +788,172 @@ mod tests {
         assert_eq!(set.len(), 1_000);
         assert!(set.contains(&name("host0.example.com")));
         assert!(set.contains(&name("host999.example.com")));
+    }
+
+    // ── AdBlockParser: tiered rules (E19.1) ──────────────────────────────────
+
+    /// `||domain^` lands in the suffix tier, normalized.
+    #[test]
+    fn adblock_anchored_rule_is_suffix() {
+        let rules = AdBlockParser.parse_rules("||ADS.Example.COM^\n");
+        assert!(rules.suffix.contains(&name("ads.example.com")));
+        assert!(rules.exact.is_empty() && rules.exceptions.is_empty());
+        assert_eq!(rules.skipped, 0);
+    }
+
+    /// `@@||domain^` lands in the exceptions tier.
+    #[test]
+    fn adblock_exception_rule_is_exception() {
+        let rules = AdBlockParser.parse_rules("@@||cdn.example.com^\n");
+        assert!(rules.exceptions.contains(&name("cdn.example.com")));
+        assert!(rules.exact.is_empty() && rules.suffix.is_empty());
+        assert_eq!(rules.skipped, 0);
+    }
+
+    /// A bare domain line lands in the exact tier.
+    #[test]
+    fn adblock_bare_domain_is_exact() {
+        let rules = AdBlockParser.parse_rules("ads.example.com\n");
+        assert!(rules.exact.contains(&name("ads.example.com")));
+        assert!(rules.suffix.is_empty() && rules.exceptions.is_empty());
+        assert_eq!(rules.skipped, 0);
+    }
+
+    /// A mixed list distributes across all three tiers; accepted() sums them.
+    #[test]
+    fn adblock_mixed_tiers() {
+        let text = "\
+# mixed list
+||ads.example.com^
+@@||cdn.example.com^
+tracker.example.org
+0.0.0.0
+";
+        let rules = AdBlockParser.parse_rules(text);
+        assert!(rules.suffix.contains(&name("ads.example.com")));
+        assert!(rules.exceptions.contains(&name("cdn.example.com")));
+        assert!(rules.exact.contains(&name("tracker.example.org")));
+        assert_eq!(rules.accepted(), 4);
+        // `0.0.0.0` parses as a valid Name → exact rule, not skipped
+        // (adblock lists are expected to use proper filter syntax).
+        assert_eq!(rules.skipped, 0);
+    }
+
+    /// Option-carrying rules are skipped and counted.
+    #[test]
+    fn adblock_option_rule_skipped() {
+        let rules = AdBlockParser.parse_rules(
+            "||ads.example.com^$third-party\n||ads2.example.com^$domain=example.org\n",
+        );
+        assert!(rules.suffix.is_empty());
+        assert_eq!(rules.skipped, 2);
+    }
+
+    /// Wildcard, regex, single-pipe, and negation syntax are skipped.
+    #[test]
+    fn adblock_unsupported_pattern_syntax_skipped() {
+        let text = "\
+||ads.*.example.com^
+/ads?ample/
+|http://ads.example.com|
+~ads.example.com
+||multi^caret.example.com^
+||ads.example.com
+||
+||^
+";
+        let rules = AdBlockParser.parse_rules(text);
+        assert!(rules.exact.is_empty());
+        assert!(rules.suffix.is_empty());
+        assert!(rules.exceptions.is_empty());
+        assert_eq!(
+            rules.skipped, 8,
+            "every unsupported line counted: {rules:?}"
+        );
+    }
+
+    /// An anchored rule whose domain is not a valid Name is skipped, not fatal.
+    #[test]
+    fn adblock_invalid_anchored_domain_skipped() {
+        let rules = AdBlockParser.parse_rules("||foo..bar^\n||ads.example.com^\n");
+        assert_eq!(rules.suffix.len(), 1);
+        assert!(rules.suffix.contains(&name("ads.example.com")));
+        assert_eq!(rules.skipped, 1);
+    }
+
+    /// An unanchored line that is not a valid domain is skipped and counted.
+    #[test]
+    fn adblock_invalid_bare_line_skipped() {
+        let rules = AdBlockParser.parse_rules("foo..bar\nads.example.com\n");
+        assert_eq!(rules.exact.len(), 1);
+        assert_eq!(rules.skipped, 1);
+    }
+
+    /// Mixed case and duplicates collapse within each tier.
+    #[test]
+    fn adblock_normalizes_and_dedupes_within_tiers() {
+        let text = "\
+||ADS.Example.com^
+||ads.example.com^
+@@||CDN.example.com^
+@@||cdn.example.com^
+Tracker.Example.ORG
+tracker.example.org
+";
+        let rules = AdBlockParser.parse_rules(text);
+        assert_eq!(rules.suffix.len(), 1);
+        assert_eq!(rules.exceptions.len(), 1);
+        assert_eq!(rules.exact.len(), 1);
+    }
+
+    /// CRLF line endings are handled by the AdBlock parser too.
+    #[test]
+    fn adblock_crlf_line_endings() {
+        let rules = AdBlockParser.parse_rules("||ads.example.com^\r\n@@||cdn.example.com^\r\n");
+        assert_eq!(rules.suffix.len(), 1);
+        assert_eq!(rules.exceptions.len(), 1);
+        assert_eq!(rules.skipped, 0);
+    }
+
+    /// A bare-domain-only AdBlock list parses identically to domain-list.
+    #[test]
+    fn adblock_bare_domains_equivalent_to_domain_list() {
+        let text = "ads.example.com\ntracker.example.org\n# comment\n";
+        let adblock = AdBlockParser.parse_rules(text);
+        let dl = DomainListParser.parse(text);
+        assert_eq!(adblock.exact, dl);
+        assert_eq!(adblock.skipped, 0);
+    }
+
+    /// Transitional `BlocklistParser::parse` yields exact-tier rules only.
+    #[test]
+    fn adblock_flat_parse_is_exact_only() {
+        let text = "||ads.example.com^\n@@||cdn.example.com^\nbare.example.org\n";
+        let flat = AdBlockParser.parse(text);
+        assert!(flat.contains(&name("bare.example.org")));
+        assert!(!flat.contains(&name("ads.example.com")));
+        assert!(!flat.contains(&name("cdn.example.com")));
+        assert_eq!(flat.len(), 1);
+    }
+
+    /// `Parser::from(BlocklistFormat::AdBlock)` dispatches tiered parsing.
+    #[test]
+    fn parser_dispatch_adblock_format() {
+        let parser = Parser::from(BlocklistFormat::AdBlock);
+        let rules = parser.parse_rules("||ads.example.com^\n");
+        assert!(rules.suffix.contains(&name("ads.example.com")));
+
+        let flat = parser.parse("bare.example.org\n");
+        assert!(flat.contains(&name("bare.example.org")));
+    }
+
+    /// The rules parser wraps the flat hosts output as exact-only.
+    #[test]
+    fn hosts_rules_parser_is_exact_only() {
+        let rules = HostsParser.parse_rules("0.0.0.0 ads.example.com\n");
+        assert!(rules.exact.contains(&name("ads.example.com")));
+        assert!(rules.suffix.is_empty());
+        assert!(rules.exceptions.is_empty());
+        assert_eq!(rules.skipped, 0);
     }
 }

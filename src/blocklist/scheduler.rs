@@ -45,7 +45,7 @@ use crate::{
     blocklist::{
         aggregate::Aggregator,
         fetch::{FetchOutcome, Fetcher, Validators},
-        parse::{BlocklistParser as _, Parser},
+        parse::{BlocklistRulesParser as _, Parser},
     },
     resolver::state::ResolverState,
     storage::blocklists::{Blocklist, BlocklistRepository, RefreshMetadata, SqliteBlocklistRepo},
@@ -166,8 +166,8 @@ impl BlocklistScheduler {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /// Decode `content` bytes with `format` and add the resulting name set to
-    /// `aggregator` under `source_id`.
+    /// Decode `content` bytes with `format` and add the resulting rule tiers
+    /// to `aggregator` under `source_id`.
     ///
     /// This DRYs the identical decode-parse-add step used by both
     /// [`load_from_cache`](Self::load_from_cache) and
@@ -179,8 +179,8 @@ impl BlocklistScheduler {
         content: &[u8],
     ) {
         let text = String::from_utf8_lossy(content);
-        let names = Parser::from(format).parse(&text);
-        aggregator.add(source_id, names);
+        let rules = Parser::from(format).parse_rules(&text);
+        aggregator.add(source_id, rules);
     }
 
     async fn refresh_source(
@@ -218,8 +218,9 @@ impl BlocklistScheduler {
         summary: &mut RefreshSummary,
     ) -> SourceRefresh {
         let text = String::from_utf8_lossy(&body);
-        let names = Parser::from(source.format).parse(&text);
-        let count = names.len();
+        let rules = Parser::from(source.format).parse_rules(&text);
+        let count = rules.accepted();
+        let skipped = rules.skipped;
 
         // A 200 that parses to zero domains is almost always breakage — an empty
         // body, a soft-404 HTML error page, or a moved endpoint — not a list
@@ -240,7 +241,7 @@ impl BlocklistScheduler {
                 .await;
         }
 
-        aggregator.add(source.id, names);
+        aggregator.add(source.id, rules);
 
         if let Err(e) = self.repo.save_cache(source.id, &body).await {
             warn!(
@@ -252,6 +253,7 @@ impl BlocklistScheduler {
         }
         let meta = RefreshMetadata {
             entry_count: count as u64,
+            skipped_count: skipped as u64,
             last_updated: Clock::now_secs(),
             etag: validators.etag,
             last_modified: validators.last_modified,
@@ -723,6 +725,7 @@ mod tests {
             src.id,
             &RefreshMetadata {
                 entry_count: 2,
+                skipped_count: 0,
                 last_updated: 1_700_000_000,
                 etag: Some(r#""etag-v1""#.to_owned()),
                 last_modified: None,

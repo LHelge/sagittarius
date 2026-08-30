@@ -88,6 +88,7 @@ impl AppState {
                     format: b.format.as_str(),
                     enabled: b.enabled,
                     entry_count: group(b.entry_count),
+                    skipped: (b.skipped_count > 0).then(|| group(b.skipped_count)),
                     last_updated: b
                         .last_updated
                         .map_or_else(|| "never".to_owned(), |t| ago(now, t)),
@@ -107,6 +108,7 @@ impl AppState {
                 format: "—",
                 enabled: false,
                 entry_count: "—".to_owned(),
+                skipped: None,
                 last_updated: "—".to_owned(),
                 blocked: group(removed_blocks.max(0) as u64),
                 share: share_pct(removed_blocks, total_blocks),
@@ -153,7 +155,7 @@ impl AppState {
     async fn add_blocklist(&self, url: &str, format: &str) -> WebResult<()> {
         let format: BlocklistFormat = format
             .parse()
-            .map_err(|_| WebError::bad_request("Format must be hosts or domain-list."))?;
+            .map_err(|_| WebError::bad_request("Format must be hosts, domain-list, or adblock."))?;
         let url = url.trim();
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(WebError::bad_request(
@@ -278,6 +280,9 @@ struct BlocklistView {
     format: &'static str,
     enabled: bool,
     entry_count: String,
+    /// Recognized-but-unsupported rules the parser skipped (E19.4); `None`
+    /// hides the indicator (zero skipped, or the "removed list" row).
+    skipped: Option<String>,
     /// Windowed block count (last 24h), thousands-grouped.
     blocked: String,
     /// This list's share of all blocklist blocks in the window, e.g. `"42%"`.

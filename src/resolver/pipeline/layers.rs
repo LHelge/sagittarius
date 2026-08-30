@@ -31,6 +31,7 @@ use crate::{
     codec::synth::{LocalRecord, Response},
     resolver::{
         local::{LocalMatch, RecordData},
+        matchset::BlockDecision,
         pipeline::{BoxError, DnsRequest, Outcome, PipelineResponse},
         state::ResolverState,
     },
@@ -203,11 +204,29 @@ where
 
             // ── Stage 4: Blocklist ────────────────────────────────────────────
             //
-            // Skipped when the allowlist granted bypass.
-            if !bypass && state.blocklist().contains(&name) {
-                let bytes =
-                    Response::block(req.query(), &block_mode, BLOCK_TTL_SECS, edns.as_ref());
-                return Ok(PipelineResponse::new(bytes, Outcome::BlockedByBlocklist));
+            // Skipped when the allowlist granted bypass. The decision is
+            // tier-aware (E19): an exact probe, then a bounded label-walk
+            // over the suffix tier (`||domain^`), plus an exception walk
+            // (`@@`) only on a hit — a handful of hash probes, no allocation.
+            // An exception decision stands down so the query resolves
+            // normally; the admin blacklist above is unaffected either way.
+            // Attribution is resolved off the hot path by the query-log
+            // writer via `primary_source` (E11/E19), not threaded through
+            // here.
+            if !bypass {
+                match state.blocklist().match_name(&name) {
+                    Some(BlockDecision::Block { .. }) => {
+                        let bytes = Response::block(
+                            req.query(),
+                            &block_mode,
+                            BLOCK_TTL_SECS,
+                            edns.as_ref(),
+                        );
+                        return Ok(PipelineResponse::new(bytes, Outcome::BlockedByBlocklist));
+                    }
+                    // `@@` exception covers this name — suppress the block.
+                    Some(BlockDecision::Exception { .. }) | None => {}
+                }
             }
 
             // ── Stage 5: Miss — hand off to the inner service ─────────────────
@@ -254,6 +273,7 @@ impl<S> Layer<S> for DecisionLayer {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::net::{Ipv4Addr, SocketAddr};
 
     use bytes::Bytes;
@@ -274,6 +294,7 @@ mod tests {
         resolver::{
             forward_zone::ForwardZoneSet,
             local::{LocalRecords, RecordData as LRecordData},
+            matchset::AttributedTiers,
             pipeline::{
                 BoxError, DnsRequest, Outcome, PipelineResponse, cache_layer::CacheService,
                 forward::ForwardService,
@@ -465,6 +486,158 @@ mod tests {
             resp.outcome,
             Outcome::BlockedByBlocklist,
             "plain blocklist hit must return BlockedByBlocklist"
+        );
+    }
+
+    // ── Tiered blocklist decisions (E19.3) ─────────────────────────────────────
+
+    /// A subdomain of a suffix-tier rule (`||domain^`) is blocked, and the
+    /// rule's apex is blocked too.
+    #[tokio::test]
+    async fn suffix_blocklist_hit_blocks_subdomain_and_apex() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        state.blocklist().store_tiers(AttributedTiers {
+            exact: HashMap::new(),
+            suffix: [(name("tracker.net"), 3)].into_iter().collect(),
+            exceptions: HashMap::new(),
+        });
+
+        let stack = DecisionStack::new(state.clone(), tower::service_fn(stub_fn));
+
+        for qname in ["tracker.net", "ads.tracker.net", "a.b.tracker.net"] {
+            let raw = a_query(0x0100, qname);
+            let resp = stack.clone().oneshot(make_request(raw)).await.unwrap();
+            assert_eq!(
+                resp.outcome,
+                Outcome::BlockedByBlocklist,
+                "{qname} must be blocked by the suffix rule"
+            );
+        }
+        // A sibling domain is untouched.
+        let raw = a_query(0x0101, "tracker.org");
+        let resp = stack.clone().oneshot(make_request(raw)).await.unwrap();
+        assert_eq!(resp.outcome, Outcome::Forwarded);
+    }
+
+    /// An `@@||domain^` exception suppresses the suffix block for the name
+    /// and its subdomains; a sibling under the same suffix stays blocked.
+    #[tokio::test]
+    async fn blocklist_exception_suppresses_suffix_block() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        state.blocklist().store_tiers(AttributedTiers {
+            exact: HashMap::new(),
+            suffix: [(name("example.net"), 2)].into_iter().collect(),
+            exceptions: [(name("safe.example.net"), 4)].into_iter().collect(),
+        });
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+
+        for qname in ["safe.example.net", "deep.safe.example.net"] {
+            let raw = a_query(0x0200, qname);
+            let resp = stack.clone().oneshot(make_request(raw)).await.unwrap();
+            assert_eq!(
+                resp.outcome,
+                Outcome::Forwarded,
+                "{qname} must be excepted from the suffix block"
+            );
+        }
+        let raw = a_query(0x0201, "other.example.net");
+        let resp = stack.clone().oneshot(make_request(raw)).await.unwrap();
+        assert_eq!(
+            resp.outcome,
+            Outcome::BlockedByBlocklist,
+            "sibling of the exception must stay blocked"
+        );
+    }
+
+    /// The admin blacklist still wins when a `@@` exception would cover the
+    /// name in the blocklist tiers.
+    #[tokio::test]
+    async fn admin_blacklist_beats_blocklist_exception() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let target = name("banned.example.net");
+        state
+            .blacklist()
+            .store([target.clone()].into_iter().collect());
+        state.blocklist().store_tiers(AttributedTiers {
+            exact: HashMap::new(),
+            suffix: [(name("example.net"), 1)].into_iter().collect(),
+            exceptions: [(target, 2)].into_iter().collect(),
+        });
+
+        let raw = a_query(0x0300, "banned.example.net");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.outcome,
+            Outcome::BlockedByAdmin,
+            "admin blacklist must win over a blocklist exception"
+        );
+    }
+
+    /// The allowlist bypass flag still skips the whole blocklist stage —
+    /// even when a suffix rule (and no exception) covers the name.
+    #[tokio::test]
+    async fn allowlist_bypass_beats_suffix_block() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        let target = name("user-safe.example.net");
+        state
+            .allowlist()
+            .store([target.clone()].into_iter().collect());
+        state.blocklist().store_tiers(AttributedTiers {
+            exact: HashMap::new(),
+            suffix: [(name("example.net"), 1)].into_iter().collect(),
+            exceptions: HashMap::new(),
+        });
+
+        let raw = a_query(0x0400, "user-safe.example.net");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.outcome,
+            Outcome::Forwarded,
+            "admin allowlist must bypass the suffix block"
+        );
+    }
+
+    /// While blocking is paused, a suffix-blocked name must fall through to
+    /// the inner service (the pause gate sits above the blocking stages).
+    #[tokio::test]
+    async fn paused_suffix_blocked_name_falls_through() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let state = ResolverState::hydrate(&db).await.expect("hydrate");
+
+        state.blocklist().store_tiers(AttributedTiers {
+            exact: HashMap::new(),
+            suffix: [(name("example.net"), 1)].into_iter().collect(),
+            exceptions: HashMap::new(),
+        });
+        state.pause_for_secs(300);
+
+        let raw = a_query(0x0500, "anything.example.net");
+        let req = make_request(raw);
+
+        let stack = DecisionStack::new(state, tower::service_fn(stub_fn));
+        let resp = stack.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.outcome,
+            Outcome::Forwarded,
+            "paused blocking must let a suffix-blocked name through"
         );
     }
 
@@ -897,7 +1070,7 @@ mod tests {
         let stack = stack_with_real_inner(state, empty_pool().await);
 
         let raw = a_query(0x0003, "example.com");
-        let resp = stack.oneshot(make_request(raw)).await.unwrap();
+        let resp = stack.clone().oneshot(make_request(raw)).await.unwrap();
         assert_eq!(
             resp.outcome,
             Outcome::Servfail,
@@ -916,7 +1089,7 @@ mod tests {
         let stack = stack_with_real_inner(state, empty_pool().await);
 
         let raw = ptr_query(0x0004, "1.1.168.192.in-addr.arpa");
-        let resp = stack.oneshot(make_request(raw)).await.unwrap();
+        let resp = stack.clone().oneshot(make_request(raw)).await.unwrap();
         assert_eq!(
             resp.outcome,
             Outcome::Servfail,
@@ -945,7 +1118,7 @@ mod tests {
 
         // Falls under both zones; the more-specific 0.10.in-addr.arpa must win.
         let raw = ptr_query(0x0005, "5.1.0.10.in-addr.arpa");
-        let resp = stack.oneshot(make_request(raw)).await.unwrap();
+        let resp = stack.clone().oneshot(make_request(raw)).await.unwrap();
         assert_eq!(resp.outcome, Outcome::Forwarded);
         assert_eq!(
             resp.upstream,
