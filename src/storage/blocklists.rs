@@ -24,7 +24,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// The file format of a subscribed blocklist source.
 ///
-/// Maps to/from the `format` TEXT column values `'hosts'` and `'domain-list'`.
+/// Maps to/from the `format` TEXT column values `'hosts'`, `'domain-list'`,
+/// and `'adblock'`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
 pub enum BlocklistFormat {
     /// A `hosts`-style file (`0.0.0.0 ads.example.com` or `127.0.0.1 …`).
@@ -33,6 +34,9 @@ pub enum BlocklistFormat {
     /// A plain-text domain list — one domain per line.
     #[strum(serialize = "domain-list")]
     DomainList,
+    /// An AdBlock-style filter list (`||domain^` / `@@||domain^`, E19.1).
+    #[strum(serialize = "adblock")]
+    AdBlock,
 }
 
 impl BlocklistFormat {
@@ -58,6 +62,7 @@ impl FromStr for BlocklistFormat {
         match s {
             "hosts" => Ok(Self::Hosts),
             "domain-list" => Ok(Self::DomainList),
+            "adblock" => Ok(Self::AdBlock),
             other => Err(Error::Decode(format!(
                 "unknown blocklist format value: {other:?}"
             ))),
@@ -441,12 +446,14 @@ mod tests {
     fn format_display() {
         assert_eq!(BlocklistFormat::Hosts.to_string(), "hosts");
         assert_eq!(BlocklistFormat::DomainList.to_string(), "domain-list");
+        assert_eq!(BlocklistFormat::AdBlock.to_string(), "adblock");
     }
 
     #[test]
     fn format_as_str() {
         assert_eq!(BlocklistFormat::Hosts.as_str(), "hosts");
         assert_eq!(BlocklistFormat::DomainList.as_str(), "domain-list");
+        assert_eq!(BlocklistFormat::AdBlock.as_str(), "adblock");
     }
 
     #[test]
@@ -459,15 +466,19 @@ mod tests {
             "domain-list".parse::<BlocklistFormat>().unwrap(),
             BlocklistFormat::DomainList
         );
+        assert_eq!(
+            "adblock".parse::<BlocklistFormat>().unwrap(),
+            BlocklistFormat::AdBlock
+        );
     }
 
     #[test]
     fn format_from_str_invalid() {
-        let err = "adblock".parse::<BlocklistFormat>();
+        let err = "yaml".parse::<BlocklistFormat>();
         assert!(err.is_err(), "invalid format must fail");
         let msg = err.unwrap_err().to_string();
         assert!(
-            msg.contains("adblock"),
+            msg.contains("yaml"),
             "error must mention the bad value: {msg}"
         );
     }
