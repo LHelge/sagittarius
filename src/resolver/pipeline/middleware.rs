@@ -235,7 +235,6 @@ mod tests {
 
     use bytes::Bytes;
     use tokio::sync::Notify;
-    use tower::ServiceExt as _;
 
     use super::*;
     use crate::test_support::a_query;
