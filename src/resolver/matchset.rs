@@ -224,41 +224,149 @@ impl FromIterator<Name> for MatchSet {
 /// [`primary_source`](AttributedSet::primary_source) to attribute a block to a
 /// specific list.
 ///
-/// # Attribution model
+/// # Tiers (E19)
 ///
-/// Exactly one **primary** source is stored per name (first-writer-wins as the
-/// aggregator iterates enabled sources in `blocklist_id` order, so the
-/// lowest-id list wins an overlap).  This keeps the value a single `i64` — no
-/// bitmask, no per-name source list — at the cost of not tracking every list a
-/// domain appears on.
+/// Since E19 the snapshot carries **three** attributed tiers, matched in this
+/// order:
+///
+/// 1. `exact` — bare-domain rules; only the queried name itself matches.
+/// 2. `suffix` — `||domain^` rules; the name matches if any ancestor of it
+///    (most-specific first) is a rule.  The rule's own apex matches too, so
+///    `||example.com^` blocks `example.com` *and* all its subdomains.
+/// 3. `exceptions` — `@@||domain^` rules; checked with the same ancestor walk
+///    **only when** a block match was found.  A hit suppresses the block
+///    (returns [`BlockDecision::Exception`]).
+///
+/// The hot-path decision is [`match_name`](AttributedSet::match_name): one
+/// exact hash probe, then at most one probe per name label (no allocation —
+/// the walk slices the normalized FQDN string), plus an exception walk only
+/// on a block hit.  Attribution follows the matched rule, per tier,
+/// first-writer-wins (the aggregator iterates enabled sources in
+/// `blocklist_id` order, so the lowest-id list wins an overlap).
 ///
 /// # Usage
 ///
 /// ```rust
-/// use std::collections::HashMap;
-/// use sagittarius::resolver::matchset::AttributedSet;
+/// use sagittarius::resolver::matchset::{AttributedSet, AttributedTiers};
 /// use sagittarius::codec::name::Name;
 ///
-/// let mut map: HashMap<Name, i64> = HashMap::new();
-/// map.insert("ads.example.com".parse().unwrap(), 7);
+/// let tiers = AttributedTiers {
+///     exact: [("ads.example.com".parse().unwrap(), 7)].into_iter().collect(),
+///     suffix: [("doubleclick.net".parse().unwrap(), 3)].into_iter().collect(),
+///     exceptions: [("safe.doubleclick.net".parse().unwrap(), 4)].into_iter().collect(),
+/// };
 ///
-/// let set = AttributedSet::new(map);
+/// let set = AttributedSet::new_tiered(tiers);
 /// assert!(set.contains(&"ads.example.com".parse().unwrap()));
-/// assert_eq!(set.primary_source(&"ads.example.com".parse().unwrap()), Some(7));
+/// // A subdomain of a suffix rule is blocked by that rule's source.
+/// assert!(set.contains(&"stats.doubleclick.net".parse().unwrap()));
+/// // …unless an exception covers it.
+/// match set.match_name(&"safe.doubleclick.net".parse().unwrap()) {
+///     Some(d) => assert!(d.is_exception()),
+///     None => panic!("suffix rule must match"),
+/// }
+/// assert_eq!(set.primary_source(&"stats.doubleclick.net".parse().unwrap()), Some(3));
 /// assert_eq!(set.primary_source(&"safe.example.com".parse().unwrap()), None);
 /// ```
 ///
 /// [`DecisionStack`]: crate::resolver::pipeline
 pub struct AttributedSet {
-    inner: HotSwap<HashMap<Name, i64>>,
+    inner: HotSwap<AttributedTiers>,
+}
+
+/// The three attributed tiers of an [`AttributedSet`] snapshot (E19).
+///
+/// Each tier maps a rule domain to the `blocklist_id` of the source that
+/// contributed it (first-writer-wins per tier).  Constructed by the
+/// aggregator and installed atomically via
+/// [`AttributedSet::store_tiers`](AttributedSet::store_tiers).
+#[derive(Debug, Clone, Default)]
+pub struct AttributedTiers {
+    /// Bare-domain rules — exact match only.
+    pub exact: HashMap<Name, i64>,
+    /// `||domain^` rules — matched by ancestor (suffix) walk, apex included.
+    pub suffix: HashMap<Name, i64>,
+    /// `@@||domain^` rules — suppress blocklist matches on ancestor walk.
+    pub exceptions: HashMap<Name, i64>,
+}
+
+/// The outcome of the hot-path blocklist decision
+/// ([`AttributedSet::match_name`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockDecision {
+    /// The name is blocked by a rule whose primary source is `source`.
+    Block { source: i64 },
+    /// A `@@` exception covers the name and suppresses the block; `source`
+    /// is the exception rule's primary source.
+    Exception { source: i64 },
+}
+
+impl BlockDecision {
+    /// `true` if this decision is a block (not an exception).
+    #[must_use]
+    pub fn is_block(self) -> bool {
+        matches!(self, Self::Block { .. })
+    }
+
+    /// `true` if this decision is an exception (block suppressed).
+    #[must_use]
+    pub fn is_exception(self) -> bool {
+        matches!(self, Self::Exception { .. })
+    }
+
+    /// The `blocklist_id` of the rule that produced this decision.
+    #[must_use]
+    pub fn source(self) -> i64 {
+        match self {
+            Self::Block { source } | Self::Exception { source } => source,
+        }
+    }
+}
+
+/// Walk `search` (a normalized FQDN with trailing dot) and its ancestors,
+/// probing `map` at each step.  Most-specific (leftmost) match wins.
+///
+/// The walk is bounded by the label count: each iteration slices off one
+/// label and stops when nothing remains.  The root (`.`) is never probed.
+/// No allocation — every candidate is a `&str` slice of the original.
+fn walk_labels(map: &HashMap<Name, i64>, mut search: &str) -> Option<i64> {
+    loop {
+        if let Some(&id) = map.get(search) {
+            return Some(id);
+        }
+        let pos = search.find('.')?;
+        search = &search[pos + 1..];
+        if search.is_empty() {
+            return None;
+        }
+    }
+}
+
+/// Resolve the blocking source for `name`: exact probe first, then the
+/// suffix ancestor walk.  `None` if no blocking rule matches.
+fn block_source(tiers: &AttributedTiers, name: &Name) -> Option<i64> {
+    if let Some(&id) = tiers.exact.get(name.as_str()) {
+        return Some(id);
+    }
+    walk_labels(&tiers.suffix, name.as_str())
 }
 
 impl AttributedSet {
-    /// Construct an [`AttributedSet`] pre-populated with `map`.
+    /// Construct an [`AttributedSet`] pre-populated with an exact-tier `map`.
     #[must_use]
     pub fn new(map: HashMap<Name, i64>) -> Self {
+        Self::new_tiered(AttributedTiers {
+            exact: map,
+            suffix: HashMap::new(),
+            exceptions: HashMap::new(),
+        })
+    }
+
+    /// Construct an [`AttributedSet`] from all three tiers.
+    #[must_use]
+    pub fn new_tiered(tiers: AttributedTiers) -> Self {
         Self {
-            inner: HotSwap::new(map),
+            inner: HotSwap::new(tiers),
         }
     }
 
@@ -273,65 +381,116 @@ impl AttributedSet {
 
     // ── Hot-path reads ────────────────────────────────────────────────────────
 
-    /// Return `true` if `name` is a member of the current snapshot.
+    /// Return the hot-path blocklist decision for `name`.
     ///
-    /// This is the hot-path presence check used by the decision layer; it is a
-    /// cheap atomic load followed by [`HashMap::contains_key`] and never blocks.
-    /// The attribution value is intentionally ignored here so the decision
-    /// layer stays a pure presence test.
+    /// Matching order (E19):
+    ///
+    /// 1. Exact probe of the `exact` tier.
+    /// 2. Ancestor walk of the `suffix` tier (most-specific first, apex
+    ///    included, root never probed).
+    /// 3. Only when a block match was found: ancestor walk of the
+    ///    `exceptions` tier — a hit suppresses the block.
+    ///
+    /// The work is a handful of hash probes (one exact + at most one per
+    /// name label, plus the exception walk on a hit) with **no allocation**.
+    /// Returns `None` when no blocking rule matches.
     #[must_use]
-    pub fn contains(&self, name: &Name) -> bool {
-        self.inner.snapshot().contains_key(name)
+    pub fn match_name(&self, name: &Name) -> Option<BlockDecision> {
+        let snap = self.inner.snapshot();
+        let source = block_source(&snap, name)?;
+
+        if let Some(exc) = walk_labels(&snap.exceptions, name.as_str()) {
+            return Some(BlockDecision::Exception { source: exc });
+        }
+
+        Some(BlockDecision::Block { source })
     }
 
-    /// Return the primary `blocklist_id` for `name`, or `None` if it is not a
-    /// member of the current snapshot.
+    /// Return `true` if `name` is blocked by any tier (exact or suffix).
     ///
-    /// Used off the hot path by the query-log writer (E11.3) to attribute a
-    /// block to the source that introduced the name.
+    /// This is the hot-path presence check; it is a cheap atomic load plus
+    /// hash probes and never blocks.  Exceptions are **not** consulted here —
+    /// the decision layer uses [`match_name`](AttributedSet::match_name) when
+    /// it needs exception-aware semantics (E19.3).
+    #[must_use]
+    pub fn contains(&self, name: &Name) -> bool {
+        block_source(&self.inner.snapshot(), name).is_some()
+    }
+
+    /// Return the primary `blocklist_id` for `name`, or `None` if it is not
+    /// blocked.
+    ///
+    /// Resolves an exact-tier hit first, then the most-specific suffix-tier
+    /// ancestor.  Used off the hot path by the query-log writer (E11.3) to
+    /// attribute a block to the source that introduced the name.
     #[must_use]
     pub fn primary_source(&self, name: &Name) -> Option<i64> {
-        self.inner.snapshot().get(name).copied()
+        block_source(&self.inner.snapshot(), name)
     }
 
     /// Load the current snapshot as a short-lived [`Guard`]
     /// (see [`HotSwap::snapshot`]).
     #[must_use]
-    pub fn snapshot(&self) -> Guard<Arc<HashMap<Name, i64>>> {
+    pub fn snapshot(&self) -> Guard<Arc<AttributedTiers>> {
         self.inner.snapshot()
     }
 
     /// Load the current snapshot as a full, owned [`Arc`]
     /// (see [`HotSwap::load_full`]).
     #[must_use]
-    pub fn load_full(&self) -> Arc<HashMap<Name, i64>> {
+    pub fn load_full(&self) -> Arc<AttributedTiers> {
         self.inner.load_full()
     }
 
-    /// Return the number of entries in the current snapshot.
+    /// Return the number of blocking entries (exact + suffix tiers) in the
+    /// current snapshot.
+    ///
+    /// Exception rules are not blocking entries and are not counted; they are
+    /// available via [`exceptions_len`](AttributedSet::exceptions_len).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner.snapshot().len()
+        let snap = self.inner.snapshot();
+        snap.exact.len() + snap.suffix.len()
     }
 
-    /// Return `true` if the current snapshot is empty.
+    /// Return the number of exception rules in the current snapshot.
+    #[must_use]
+    pub fn exceptions_len(&self) -> usize {
+        self.inner.snapshot().exceptions.len()
+    }
+
+    /// Return `true` if the current snapshot has no blocking entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.inner.snapshot().is_empty()
+        self.len() == 0
     }
 
     // ── Rebuild-and-swap writer ───────────────────────────────────────────────
 
-    /// Atomically install `map` as the new current snapshot.
+    /// Atomically install `map` as the new exact tier, clearing the suffix
+    /// and exception tiers.
     ///
-    /// The caller (the aggregator) builds the `Name → blocklist_id` map *off*
-    /// the hot path; the install gives the [`HotSwap`] no-torn-read guarantee.
+    /// The caller (the aggregator) builds the map *off* the hot path; the
+    /// install gives the [`HotSwap`] no-torn-read guarantee.  Tiered callers
+    /// should use [`store_tiers`](AttributedSet::store_tiers) instead.
     pub fn store(&self, map: HashMap<Name, i64>) {
-        self.inner.store(map);
+        self.store_tiers(AttributedTiers {
+            exact: map,
+            suffix: HashMap::new(),
+            exceptions: HashMap::new(),
+        });
+    }
+
+    /// Atomically install all three tiers as the new current snapshot.
+    ///
+    /// The caller (the aggregator) builds the tiers *off* the hot path; the
+    /// install gives the [`HotSwap`] no-torn-read guarantee.
+    pub fn store_tiers(&self, tiers: AttributedTiers) {
+        self.inner.store(tiers);
     }
 
     /// Atomically install a pre-boxed snapshot (see [`HotSwap::store_arc`]).
-    pub fn store_arc(&self, arc: Arc<HashMap<Name, i64>>) {
+    pub fn store_arc(&self, arc: Arc<AttributedTiers>) {
         self.inner.store_arc(arc);
     }
 }
@@ -345,8 +504,11 @@ impl Default for AttributedSet {
 
 impl fmt::Debug for AttributedSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let snap = self.inner.snapshot();
         f.debug_struct("AttributedSet")
-            .field("len", &self.len())
+            .field("exact", &snap.exact.len())
+            .field("suffix", &snap.suffix.len())
+            .field("exceptions", &snap.exceptions.len())
             .finish()
     }
 }
@@ -654,14 +816,247 @@ mod tests {
     #[test]
     fn attributed_snapshot_and_load_full_reflect_current() {
         let set = attributed(&[("a.com", 3)]);
-        assert_eq!(set.snapshot().get(&name("a.com")).copied(), Some(3));
-        assert_eq!(set.load_full().get(&name("a.com")).copied(), Some(3));
+        assert_eq!(set.snapshot().exact.get(&name("a.com")).copied(), Some(3));
+        assert_eq!(set.load_full().exact.get(&name("a.com")).copied(), Some(3));
     }
 
     #[test]
-    fn attributed_debug_shows_len() {
-        let set = attributed(&[("a.com", 1), ("b.com", 2)]);
+    fn attributed_debug_shows_tiers() {
+        let set = AttributedSet::new_tiered(AttributedTiers {
+            exact: attributed_map(&[("a.com", 1)]),
+            suffix: attributed_map(&[("b.com", 2), ("c.net", 3)]),
+            exceptions: attributed_map(&[("safe.b.com", 2)]),
+        });
         let s = format!("{set:?}");
-        assert!(s.contains("len: 2"), "debug output was: {s}");
+        assert!(
+            s.contains("exact: 1") && s.contains("suffix: 2") && s.contains("exceptions: 1"),
+            "debug output was: {s}"
+        );
+    }
+
+    // ── Tiered matching (E19) ─────────────────────────────────────────────────
+
+    /// Build a `Name → id` map from `(name, id)` pairs.
+    fn attributed_map(entries: &[(&str, i64)]) -> HashMap<Name, i64> {
+        entries
+            .iter()
+            .map(|(n, id)| (name(n), *id))
+            .collect::<HashMap<_, _>>()
+    }
+
+    fn tiers_of(
+        exact: &[(&str, i64)],
+        suffix: &[(&str, i64)],
+        exceptions: &[(&str, i64)],
+    ) -> AttributedTiers {
+        AttributedTiers {
+            exact: attributed_map(exact),
+            suffix: attributed_map(suffix),
+            exceptions: attributed_map(exceptions),
+        }
+    }
+
+    /// An exact-tier hit blocks the name itself and attributes to its source.
+    #[test]
+    fn tiered_exact_hit_blocks_with_source() {
+        let set = AttributedSet::new_tiered(tiers_of(&[("ads.example.com", 7)], &[], &[]));
+        assert_eq!(
+            set.match_name(&name("ads.example.com")),
+            Some(BlockDecision::Block { source: 7 })
+        );
+        // Exact rules never match subdomains.
+        assert_eq!(set.match_name(&name("sub.ads.example.com")), None);
+    }
+
+    /// A suffix rule blocks its apex and every subdomain, most-specific
+    /// ancestor first, with the rule's source as attribution.
+    #[test]
+    fn tiered_suffix_blocks_apex_and_subdomains() {
+        let set = AttributedSet::new_tiered(tiers_of(&[], &[("doubleclick.net", 3)], &[]));
+        for qname in [
+            "doubleclick.net",
+            "stats.doubleclick.net",
+            "a.b.stats.doubleclick.net",
+        ] {
+            assert_eq!(
+                set.match_name(&name(qname)),
+                Some(BlockDecision::Block { source: 3 }),
+                "{qname} must be blocked by the suffix rule"
+            );
+        }
+        assert_eq!(set.match_name(&name("doubleclick.org")), None);
+    }
+
+    /// A deeper suffix rule wins over a shallower one (most-specific first).
+    #[test]
+    fn tiered_suffix_most_specific_wins() {
+        let set = AttributedSet::new_tiered(tiers_of(
+            &[],
+            &[("example.com", 1), ("ads.example.com", 9)],
+            &[],
+        ));
+        assert_eq!(
+            set.match_name(&name("x.ads.example.com")),
+            Some(BlockDecision::Block { source: 9 })
+        );
+        assert_eq!(
+            set.match_name(&name("www.example.com")),
+            Some(BlockDecision::Block { source: 1 })
+        );
+    }
+
+    /// An exact-tier hit takes precedence over a suffix-tier ancestor.
+    #[test]
+    fn tiered_exact_beats_suffix() {
+        let set = AttributedSet::new_tiered(tiers_of(
+            &[("mail.example.com", 2)],
+            &[("example.com", 1)],
+            &[],
+        ));
+        assert_eq!(
+            set.match_name(&name("mail.example.com")),
+            Some(BlockDecision::Block { source: 2 })
+        );
+    }
+
+    /// An exception suppresses both exact and suffix blocks for the name and
+    /// its subdomains, and carries the exception's source.
+    #[test]
+    fn tiered_exception_suppresses_block() {
+        let set = AttributedSet::new_tiered(tiers_of(
+            &[("banned.example.net", 1)],
+            &[("example.net", 2)],
+            &[("safe.example.net", 4)],
+        ));
+        for qname in ["safe.example.net", "deep.safe.example.net"] {
+            assert_eq!(
+                set.match_name(&name(qname)),
+                Some(BlockDecision::Exception { source: 4 }),
+                "{qname} must be excepted"
+            );
+        }
+        // A sibling under the same suffix is still blocked.
+        assert_eq!(
+            set.match_name(&name("other.example.net")),
+            Some(BlockDecision::Block { source: 2 })
+        );
+    }
+
+    /// An exception on its own never blocks anything.
+    #[test]
+    fn tiered_exception_alone_does_not_block() {
+        let set = AttributedSet::new_tiered(tiers_of(&[], &[], &[("safe.example.net", 4)]));
+        assert_eq!(set.match_name(&name("safe.example.net")), None);
+        assert_eq!(set.match_name(&name("sub.safe.example.net")), None);
+        assert!(!set.contains(&name("safe.example.net")));
+    }
+
+    /// No exceptions are consulted when no block matched (hot-path budget).
+    #[test]
+    fn tiered_no_block_no_exception_walk() {
+        // An exception that is also an ancestor of the queried name but the
+        // name is not blocked → None, not an Exception decision.
+        let set = AttributedSet::new_tiered(tiers_of(
+            &[],
+            &[("ads.example.net", 1)],
+            &[("example.net", 5)],
+        ));
+        // Blocked, but the more general exception does not cover the deeper
+        // suffix hit — wait: example.net IS an ancestor, so it excepts.
+        assert_eq!(
+            set.match_name(&name("ads.example.net")),
+            Some(BlockDecision::Exception { source: 5 })
+        );
+        // Unblocked name → None (exception never manufactures a decision).
+        assert_eq!(set.match_name(&name("www.example.net")), None);
+    }
+
+    /// `contains` ignores exceptions (pure presence check).
+    #[test]
+    fn tiered_contains_ignores_exceptions() {
+        let set = AttributedSet::new_tiered(tiers_of(
+            &[],
+            &[("example.net", 1)],
+            &[("safe.example.net", 2)],
+        ));
+        assert!(set.contains(&name("safe.example.net")));
+        assert!(
+            set.match_name(&name("safe.example.net"))
+                .unwrap()
+                .is_exception()
+        );
+    }
+
+    /// `len` counts blocking entries only; `exceptions_len` the rest.
+    #[test]
+    fn tiered_len_counts_blocking_entries_only() {
+        let set = AttributedSet::new_tiered(tiers_of(
+            &[("a.com", 1)],
+            &[("b.com", 1), ("c.com", 2)],
+            &[("safe.b.com", 2)],
+        ));
+        assert_eq!(set.len(), 3);
+        assert_eq!(set.exceptions_len(), 1);
+        assert!(!set.is_empty());
+    }
+
+    /// `store_tiers` replaces the whole snapshot; stale entries in every tier
+    /// are gone.
+    #[test]
+    fn tiered_store_tiers_replaces_everything() {
+        let set = AttributedSet::new_tiered(tiers_of(
+            &[("stale.com", 1)],
+            &[("old.net", 2)],
+            &[("gone.org", 3)],
+        ));
+
+        set.store_tiers(tiers_of(
+            &[("fresh.com", 9)],
+            &[("new.net", 8)],
+            &[("ok.net", 7)],
+        ));
+
+        assert!(set.contains(&name("fresh.com")));
+        assert!(set.contains(&name("sub.new.net")));
+        assert_eq!(
+            set.match_name(&name("ok.net")),
+            None,
+            "exception alone never blocks"
+        );
+        assert!(!set.contains(&name("stale.com")));
+        assert!(!set.contains(&name("old.net")));
+        assert_eq!(set.exceptions_len(), 1);
+    }
+
+    /// The flat `store` path (exact-only callers) clears suffix + exceptions.
+    #[test]
+    fn flat_store_clears_other_tiers() {
+        let set = AttributedSet::new_tiered(tiers_of(
+            &[("a.com", 1)],
+            &[("b.com", 2)],
+            &[("safe.b.com", 3)],
+        ));
+
+        set.store(attributed_map(&[("c.com", 4)]));
+
+        assert!(set.contains(&name("c.com")));
+        assert!(!set.contains(&name("b.com")));
+        assert!(!set.contains(&name("sub.b.com")));
+        assert_eq!(set.exceptions_len(), 0);
+    }
+
+    /// The root is never probed: a rule for the root zone is unreachable by
+    /// the walk, and single-label names terminate cleanly.
+    #[test]
+    fn tiered_walk_terminates_on_tld() {
+        let set = AttributedSet::new_tiered(tiers_of(&[], &[("com", 1)], &[]));
+        // "com." itself matches (the apex is probed)…
+        assert_eq!(
+            set.match_name(&name("com")),
+            Some(BlockDecision::Block { source: 1 })
+        );
+        // …and the walk stops after the last label without probing root.
+        assert!(set.contains(&name("anything.com")));
+        assert_eq!(set.match_name(&name("org")), None);
     }
 }

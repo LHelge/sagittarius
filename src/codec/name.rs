@@ -511,6 +511,19 @@ impl Hash for Name {
     }
 }
 
+impl std::borrow::Borrow<str> for Name {
+    /// Borrow the normalized FQDN string.
+    ///
+    /// Sound per the `Borrow` contract: `Eq`/`Hash` operate on exactly this
+    /// normalized string, so a name and its borrowed string hash and compare
+    /// identically.  This lets hot-path code probe `HashMap<Name, _>` maps by
+    /// `&str` slices (e.g. label-walking suffix probes) without constructing
+    /// or allocating a `Name`.
+    fn borrow(&self) -> &str {
+        &self.inner
+    }
+}
+
 impl fmt::Display for Name {
     /// Format the name in its normalized, fully-qualified form (trailing dot).
     ///
