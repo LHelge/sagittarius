@@ -22,6 +22,7 @@
     <select name="format" aria-label="Format">
       <option value="hosts">hosts</option>
       <option value="domain-list">domain-list</option>
+      <option value="adblock">adblock</option>
     </select>
     <button type="submit">{% call ui::icon("add") %}{% endcall %}Add</button>
   </form>
@@ -58,7 +59,7 @@
         <td class="sgt-mono">{{ s.url }}</td>
         {% endif %}
         <td>{{ s.format }}</td>
-        <td class="sgt-num">{{ s.entry_count }}</td>
+        <td class="sgt-num">{{ s.entry_count }}{% if let Some(skipped) = s.skipped %} <span class="sgt-muted" title="{{ skipped }} rule(s) used unsupported AdBlock syntax (options, wildcards, regex) and were ignored">({{ skipped }} skipped)</span>{% endif %}</td>
         <td class="sgt-num">{{ s.blocked }}</td>
         <td class="sgt-num">{{ s.share }}</td>
         <td>{{ s.last_updated }}</td>

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT\n                id              AS \"id!\",\n                url,\n                format,\n                enabled         AS \"enabled!: bool\",\n                entry_count     AS \"entry_count!\",\n                last_updated,\n                etag,\n                last_modified\n            FROM blocklists\n            WHERE enabled = 1\n            ORDER BY id",
+  "query": "SELECT\n                id              AS \"id!\",\n                url,\n                format,\n                enabled         AS \"enabled!: bool\",\n                entry_count     AS \"entry_count!\",\n                skipped_count   AS \"skipped_count!\",\n                last_updated,\n                etag,\n                last_modified\n            FROM blocklists\n            WHERE enabled = 1\n            ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -29,18 +29,23 @@
         "type_info": "Integer"
       },
       {
-        "name": "last_updated",
+        "name": "skipped_count!",
         "ordinal": 5,
         "type_info": "Integer"
       },
       {
-        "name": "etag",
+        "name": "last_updated",
         "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "etag",
+        "ordinal": 7,
         "type_info": "Text"
       },
       {
         "name": "last_modified",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Text"
       }
     ],
@@ -53,10 +58,11 @@
       false,
       false,
       false,
+      false,
       true,
       true,
       true
     ]
   },
-  "hash": "6179feff637412cef4d50c9cb455a228ee8a9bc09df91b3fbd503181a30159b8"
+  "hash": "8478177b6b8d3e6fb2c53e80a8614fd49e8d3dc76a05988b8f9481f8b45e55db"
 }
