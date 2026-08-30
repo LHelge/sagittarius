@@ -1,16 +1,18 @@
 ---
 id: xff
 title: "E19.2 · AttributedSet: suffix + exception tiers with O(labels) match walk"
-status: open
+status: done
 priority: P2
 created: "2026-08-30T12:17:09.373223409Z"
-updated: "2026-08-30T12:18:45.916875262Z"
+updated: "2026-08-30T13:12:03.280098686Z"
 tags:
   - blocklist
   - dns
 depends_on:
   - "9kf"
 parent: "8j5"
+assignee: opencode
+attempts: 1
 ---
 
 Epic: E19. Extend the aggregated blocklist snapshot to carry **exact + suffix + exception** sets with attribution, and make the hot-path decision an O(labels) hash-walk. Depends on E19.1's `ParsedRules` shape.

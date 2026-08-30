@@ -1,10 +1,10 @@
 ---
 id: mzd
 title: "E19.4 · Storage + UI: adblock format, skipped-rule counts"
-status: open
+status: done
 priority: P2
 created: "2026-08-30T12:18:13.112044350Z"
-updated: "2026-08-30T12:18:46.926037196Z"
+updated: "2026-08-30T13:24:27.388423061Z"
 tags:
   - blocklist
   - web
@@ -13,6 +13,8 @@ depends_on:
   - "9kf"
   - xff
 parent: "8j5"
+assignee: opencode
+attempts: 1
 ---
 
 Epic: E19. Surface the `adblock` format and parse/skip accounting in storage and the admin UI. Depends on E19.1 and E19.2.
