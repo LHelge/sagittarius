@@ -1,10 +1,10 @@
 ---
 id: u2q
 title: E19.5 · SPEC/README update + e2e coverage
-status: open
+status: in_progress
 priority: P2
 created: "2026-08-30T12:18:40.349133236Z"
-updated: "2026-08-30T12:18:47.582364130Z"
+updated: "2026-08-30T13:24:37.829222945Z"
 tags:
   - blocklist
   - docs
@@ -12,6 +12,8 @@ depends_on:
   - peg
   - mzd
 parent: "8j5"
+assignee: opencode
+attempts: 1
 ---
 
 Epic: E19. Documentation and end-to-end closure. Depends on E19.1–E19.4.

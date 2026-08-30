@@ -1,16 +1,18 @@
 ---
 id: peg
 title: "E19.3 · Decision layer: suffix matching, exceptions, and log attribution"
-status: open
+status: done
 priority: P2
 created: "2026-08-30T12:17:48.248301810Z"
-updated: "2026-08-30T12:45:26.944880699Z"
+updated: "2026-08-30T13:19:02.177794423Z"
 tags:
   - blocklist
   - dns
 depends_on:
   - xff
 parent: "8j5"
+assignee: opencode
+attempts: 1
 ---
 
 Epic: E19. Wire the tiered blocklist decision into the query pipeline and make suffix/exception blocks attribute correctly in the query log. Depends on E19.2.

@@ -1,10 +1,10 @@
 ---
 id: "9kf"
 title: "E19.1 · AdBlock parser: tiered rule parsing with skip accounting"
-status: in_progress
+status: done
 priority: P2
 created: "2026-08-30T12:15:42.315619626Z"
-updated: "2026-08-30T12:45:37.175647176Z"
+updated: "2026-08-30T12:56:12.373013776Z"
 tags:
   - blocklist
 parent: "8j5"
