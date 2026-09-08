@@ -152,14 +152,10 @@ impl ForwardZoneSet {
             if let Some(&target) = self.zones.get(search) {
                 return Some(target);
             }
-            match search.find('.') {
-                Some(pos) => {
-                    search = &search[pos + 1..];
-                    if search.is_empty() || search == "." {
-                        return None;
-                    }
-                }
-                None => return None,
+            let pos = search.find('.')?;
+            search = &search[pos + 1..];
+            if search.is_empty() || search == "." {
+                return None;
             }
         }
     }
