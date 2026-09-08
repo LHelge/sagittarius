@@ -5,9 +5,8 @@
 //! in-memory aggregated **blocklist set size** read from the shared
 //! [`ResolverState`](crate::resolver::state::ResolverState).
 //!
-//! The four scalar counters are seeded into Datastar **signals** and formatted
-//! client-side, so the live SSE stream (E8.6) can update them with a single
-//! `PatchSignals` event without re-rendering the page.  The top-N tables and
+//! The scalar counters are server-formatted HTML fragments, updated by htmx
+//! from a single SSE event without re-rendering the page. The top-N tables and
 //! the blocklist size are server-rendered and refresh on navigation.
 //!
 //! v0.1 figures are since-startup and non-persistent.
@@ -28,6 +27,39 @@ use crate::{
 
 /// How many entries to show in the top-domains / top-clients tables.
 const TOP_N: usize = 10;
+
+/// The same formatted values seed the page and update it over SSE. The raw
+/// total travels as a data attribute for Alpine's local queries/sec clock.
+#[derive(Template)]
+#[template(path = "live_counters.html")]
+pub(super) struct LiveCounters {
+    total: u64,
+    queries: String,
+    blocked: String,
+    ratio: String,
+    cached: String,
+    forwarded: String,
+}
+
+impl From<&StatsSnapshot> for LiveCounters {
+    fn from(s: &StatsSnapshot) -> Self {
+        Self {
+            total: s.total,
+            queries: group(s.total),
+            blocked: group(s.blocked),
+            ratio: format!(
+                "{:.1}%",
+                if s.total == 0 {
+                    0.0
+                } else {
+                    s.blocked as f64 * 100.0 / s.total as f64
+                }
+            ),
+            cached: group(s.cached),
+            forwarded: group(s.forwarded),
+        }
+    }
+}
 
 /// The persisted-figures window: the last 24 hours.
 const WINDOW: Duration = time::days(1);
@@ -188,17 +220,12 @@ struct WindowStats {
 
 /// The dashboard view model.
 ///
-/// The scalar counters are raw numbers (seeded into Datastar signals and
-/// formatted client-side via `toLocaleString()`); the tables and blocklist
-/// size are pre-formatted strings.
+/// Counters, tables, and blocklist size are pre-formatted for display.
 #[derive(Template, WebTemplate)]
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
     chrome: Chrome,
-    total: u64,
-    blocked: u64,
-    cached: u64,
-    forwarded: u64,
+    live: LiveCounters,
     blocklist_size: String,
     top_domains: Vec<(String, String)>,
     top_clients: Vec<(String, String)>,
@@ -231,10 +258,7 @@ impl DashboardTemplate {
             chrome,
             upstreams,
             system,
-            total: snap.total,
-            blocked: snap.blocked,
-            cached: snap.cached,
-            forwarded: snap.forwarded,
+            live: LiveCounters::from(&snap),
             blocklist_size: group(blocklist_size as u64),
             top_domains: snap
                 .top_domains
@@ -345,9 +369,10 @@ mod tests {
         )
         .render()
         .expect("render");
-        // Live counters seeded as raw Datastar signal values.
-        assert!(html.contains("queries: 1000"));
-        assert!(html.contains("blocked: 382"));
+        // Live counters are formatted HTML, with a raw total for local QPS.
+        assert!(html.contains("data-count=\"1000\">1,000</span>"));
+        assert!(html.contains("id=\"live-blocked\" class=\"sgt-figure\">382</span>"));
+        assert!(html.contains("38.2%"));
         // Blocklist size is server-formatted.
         assert!(html.contains("65,432"));
         // Live top tables rendered without the canonical trailing dot.
@@ -492,7 +517,7 @@ mod tests {
         assert!(html.contains("8,123 / 100,000"), "cache fill shown");
         assert!(html.contains("14.2 MiB"), "process memory shown");
         // The uptime ticker drives the live uptime + queries/sec figures.
-        assert!(html.contains("data-on-interval"));
+        assert!(html.contains("x-data=\"systemClock("));
     }
 
     #[test]

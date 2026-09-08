@@ -24,9 +24,8 @@ use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
     extract::{Query, State},
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Redirect, Response},
 };
-use datastar::prelude::PatchElements;
 use serde::Deserialize;
 
 use crate::{
@@ -35,7 +34,7 @@ use crate::{
     web::{
         AppState,
         auth::CurrentUser,
-        render::{DomainDisplay, WebError, WebResult, datastar_response},
+        render::{DomainDisplay, WebError, WebResult},
     },
 };
 
@@ -326,15 +325,15 @@ pub struct ActionQuery {
     pub domain: String,
 }
 
-/// Build the one-shot Datastar SSE response confirming a one-click action by
-/// patching the `#sgt-toast` notice.  The button itself is not touched — its
+/// Build the HTML response confirming a one-click action by replacing the
+/// `#sgt-toast` notice. The button itself is not touched — its
 /// action is fixed by the row's outcome, and the toast is the click feedback.
 fn toast(message: String) -> Response {
     let html = format!(
         r#"<div id="sgt-toast" class="sgt-toast sgt-notice--ok" role="status">{}</div>"#,
         crate::web::render::html_escape(&message)
     );
-    datastar_response(vec![PatchElements::new(html).write_as_axum_sse_event()])
+    Html(html).into_response()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

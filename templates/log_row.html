@@ -1,4 +1,5 @@
-<tr data-id="{{ id }}" data-show="($f_outcome === '' || $f_outcome === '{{ outcome_cat }}') && ($f_text === '' || '{{ search }}'.includes($f_text.toLowerCase()))">
+<tr data-id="{{ id }}" data-outcome="{{ outcome_cat }}" data-search="{{ search }}"
+    x-show="(f_outcome === '' || f_outcome === $el.dataset.outcome) && (f_text === '' || $el.dataset.search.includes(f_text.toLowerCase()))" x-cloak>
   <td class="sgt-mono">{{ client }}</td>
   <td class="sgt-mono">{{ qname }}</td>
   <td>{{ qtype }}</td>

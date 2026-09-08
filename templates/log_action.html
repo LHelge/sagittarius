@@ -1,5 +1,6 @@
 {% if label.is_empty() %}
 <span class="sgt-muted">—</span>
 {% else %}
-<button class="sgt-btn-sm {{ class }}" data-on:click="@post('{{ endpoint }}?domain={{ domain }}')">{{ label }}</button>
+<button class="sgt-btn-sm {{ class }}" hx-post="{{ endpoint }}?domain={{ domain|urlencode }}"
+        hx-target="#sgt-toast" hx-swap="outerHTML" hx-disable="this">{{ label }}</button>
 {% endif %}

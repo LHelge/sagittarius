@@ -11,10 +11,10 @@
 //!    different origin is rejected.
 //! 3. **Session-bound anti-CSRF token** — a token derived as
 //!    `HMAC-SHA256(server_key, session_id)` is issued to every rendered page
-//!    (via [`crate::web::Chrome`], exposed as the Datastar `csrf` signal on
-//!    `<body>`) and must accompany authenticated mutations. It is accepted from
+//!    (via [`crate::web::Chrome`], exposed in a meta tag for htmx's request hook)
+//!    and must accompany authenticated mutations. It is accepted from
 //!    any of: the `X-CSRF-Token` header, the `csrf` field of a JSON body
-//!    (Datastar `@post` sends all signals as JSON), or a `csrf_token` urlencoded
+//!    (for JSON API clients), or a `csrf_token` urlencoded
 //!    form field. Because it is keyed by the session id it rotates on login.
 //!
 //! Pre-authentication forms (login, the first-run wizard) are rendered before a
@@ -154,8 +154,7 @@ pub async fn guard(State(state): State<AppState>, req: Request, next: Next) -> R
 
     // … or in the request body, which we buffer and then put back so the
     // handler still sees it. Two body shapes carry the token:
-    //   - Datastar `@post` sends all signals as a JSON object → the `csrf`
-    //     field (signal set on <body> via data-signals-csrf),
+    //   - JSON API clients can supply the `csrf` field,
     //   - plain HTML forms send urlencoded → the `csrf_token` field.
     let is_json = req
         .headers()
@@ -204,8 +203,7 @@ fn origin_ok(state: &AppState, headers: &axum::http::HeaderMap, require_header: 
     !require_header
 }
 
-/// Extract a string field from a JSON object body by key (used for Datastar's
-/// signal payload).
+/// Extract a string field from a JSON API request body by key.
 fn json_field(body: &Bytes, key: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     value.get(key)?.as_str().map(str::to_owned)

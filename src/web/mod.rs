@@ -2,8 +2,8 @@
 //!
 //! An [`axum`] HTTP server sharing the tokio runtime with the DNS engine.
 //! Renders HTML with [`askama`] compile-time templates and drives
-//! interactivity via [Datastar](https://data-star.dev/) (SSE-based fragments
-//! and reactive signals) — no JavaScript build step.  Styling is
+//! interactivity via htmx (HTML over SSE) and Alpine (local reactive state)
+//! — no JavaScript build step. Styling is
 //! [Pico CSS](https://picocss.com/) plus a thin custom layer, both vendored
 //! into the binary (see [`assets`]).
 //!
@@ -106,7 +106,7 @@ pub struct Chrome {
     pub csrf_token: String,
     /// Seconds of blocking-pause remaining, or `None` when blocking is active
     /// (E12). When `Some`, `base.html` renders the countdown banner on every
-    /// page; the value seeds the client-side Datastar countdown.
+    /// page; the value seeds the client-side Alpine countdown.
     pub pause_remaining: Option<i64>,
     /// Cache-busting token appended to embedded-asset URLs (`?v=…`) so an
     /// upgraded binary's CSS/JS reaches browsers holding an immutable-cached
@@ -199,7 +199,7 @@ impl AppState {
     ///
     /// Only reached from handlers gated by the [`CurrentUser`] extractor, so
     /// `authenticated` is always `true`.  The session-bound CSRF token is
-    /// embedded so forms and Datastar actions on the page can authorise their
+    /// embedded so forms and htmx actions on the page can authorise their
     /// mutations (E8.3).
     async fn chrome(&self, active: &'static str, user: &CurrentUser) -> Chrome {
         Chrome {
@@ -321,7 +321,11 @@ impl AppState {
             .route("/login", get(Self::login_form).post(Self::login_submit))
             .route("/logout", post(Self::logout))
             // Embedded static assets (no CDN, no Node build).
-            .route("/assets/datastar.js", get(Assets::datastar_js))
+            .route("/assets/htmx.js", get(Assets::htmx_js))
+            .route("/assets/hx-sse.js", get(Assets::sse_js))
+            .route("/assets/hx-alpine-compat.js", get(Assets::alpine_compat_js))
+            .route("/assets/alpine.js", get(Assets::alpine_js))
+            .route("/assets/app.js", get(Assets::app_js))
             .route("/assets/pico.pumpkin.min.css", get(Assets::pico_css))
             .route("/assets/app.css", get(Assets::app_css))
             .route("/assets/icons.svg", get(Icons::sprite))
@@ -684,7 +688,9 @@ mod tests {
         // The dashboard renders inside the base layout with the vendored assets,
         // the active nav marker, and the session-bound CSRF token.
         assert!(dash.contains("/assets/pico.pumpkin.min.css"));
-        assert!(dash.contains("/assets/datastar.js"));
+        assert!(dash.contains("/assets/htmx.js"));
+        assert!(dash.contains("/assets/alpine.js"));
+        assert!(dash.contains("/assets/hx-alpine-compat.js"));
         assert!(dash.contains("aria-current=\"page\""));
         assert!(dash.contains(app.csrf_token(&session_id_of(&cookie)).as_str()));
 
@@ -1025,8 +1031,9 @@ mod tests {
             .unwrap();
         assert!(log.contains("Query log"));
         assert!(log.contains("id=\"log-body\""));
-        // The page opens the SSE stream on load via Datastar's data-init.
-        assert!(log.contains("data-init=\"@get('/events')\""));
+        // The page keeps streaming while hidden; live events have no replay IDs.
+        assert!(log.contains("hx-sse:connect=\"/events\""));
+        assert!(log.contains("sse.pauseOnBackground:false"));
 
         // Open the SSE stream.
         let mut resp = ts
@@ -1066,9 +1073,10 @@ mod tests {
             }
         }
 
-        // The stream opens with the dashboard counter signals.
+        // The stream opens with unnamed HTML counter updates.
         let head = read_until(&mut resp, "queries").await;
-        assert!(head.contains("datastar-patch-signals"));
+        assert!(head.contains("hx-swap-oob=\"true\""));
+        assert!(!head.contains("event:"));
 
         // Publish a live query; it must arrive as a prepended log row.
         ts.app.telemetry.record(
@@ -1081,7 +1089,7 @@ mod tests {
             .with_latency(Duration::from_millis(3)),
         );
         let body = read_until(&mut resp, "sse-row.example.com").await;
-        assert!(body.contains("datastar-patch-elements"));
+        assert!(body.contains("hx-swap=\"afterbegin\""));
         assert!(body.contains("log-body"));
         assert!(body.contains("sgt-badge--blocked"));
 
@@ -1420,7 +1428,10 @@ mod tests {
         let c_pos = page.find("c.test").unwrap();
         let a_pos = page.find("a.test").unwrap();
         assert!(c_pos < a_pos, "newest (c) must render before oldest (a)");
-        assert!(page.contains("oldest: 1"), "cursor seeded to smallest id");
+        assert!(
+            page.contains("hx-get=\"/log/older?before=1\""),
+            "cursor seeded to smallest id"
+        );
         assert!(page.contains("Load older"));
 
         // Scroll back from id 2 → only the older row (id 1, a.test) appended.
@@ -1434,14 +1445,17 @@ mod tests {
             .text()
             .await
             .unwrap();
-        assert!(older.contains("datastar-patch-elements"));
+        assert!(older.contains("hx-swap=\"beforeend\""));
         assert!(older.contains("log-body"));
         assert!(older.contains("a.test"));
         assert!(!older.contains("b.test"), "no overlap with the seen page");
         assert!(!older.contains("c.test"));
-        assert!(older.contains(r#""oldest":1"#), "cursor advances to id 1");
+        assert!(
+            older.contains("hx-get=\"/log/older?before=1\""),
+            "cursor advances to id 1"
+        );
 
-        // Past the start: nothing to append, cursor resets to 0 (hides control).
+        // Past the start: no rows to append; replace the control with an empty wrapper.
         let empty = ts
             .client
             .get(ts.url("/log/older?before=1"))
@@ -1452,8 +1466,9 @@ mod tests {
             .text()
             .await
             .unwrap();
-        assert!(empty.contains(r#""oldest":0"#));
-        assert!(!empty.contains("datastar-patch-elements"));
+        assert!(empty.contains("id=\"log-older\""));
+        assert!(!empty.contains("<button"));
+        assert!(!empty.contains("<tr"));
 
         ts.shutdown().await;
     }
@@ -1477,7 +1492,7 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 403);
 
-        // With the token it succeeds and returns a Datastar toast patch. The
+        // With the token it succeeds and returns an HTML toast. The
         // domain is not admin-blacklisted, so Unblock allowlists it.
         let r = ts
             .client
@@ -1489,7 +1504,7 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 200);
         let body = r.text().await.unwrap();
-        assert!(body.contains("datastar-patch-elements"));
+        assert!(body.contains("id=\"sgt-toast\""));
         assert!(body.contains("Unblocked"));
 
         // Persisted to the DB and swapped into the live set.
@@ -1497,7 +1512,7 @@ mod tests {
         let names = ts.app.db.allowlist().load_all().await.unwrap();
         assert!(names.contains(&dom));
 
-        // The real Datastar path: token in the JSON signal body (no header).
+        // htmx sends the session-bound token in its request header.
         // Block adds the resolved domain to the blacklist; the response is just
         // the toast — the button is not toggled.
         let dom2: Name = "ads2.example.com".parse().unwrap();
@@ -1505,8 +1520,8 @@ mod tests {
             .client
             .post(ts.url("/log/block?domain=ads2.example.com"))
             .header("cookie", &ts.cookie)
-            .header("content-type", "application/json")
-            .body(format!("{{\"csrf\":\"{}\",\"f_text\":\"\"}}", ts.csrf))
+            .header("x-csrf-token", &ts.csrf)
+            .header("hx-request", "true")
             .send()
             .await
             .unwrap();
@@ -1786,7 +1801,7 @@ mod tests {
             .await
             .unwrap();
         assert!(page.contains("Blocking paused"));
-        assert!(page.contains("data-on-interval"));
+        assert!(page.contains("x-data=\"pauseTimer("));
         assert!(page.contains("Pause for 5 min"));
         assert!(page.contains("/blocking/resume"));
 
@@ -1834,20 +1849,22 @@ mod tests {
             .await
             .unwrap();
 
-        // The hamburger toggle drives a Datastar `navOpen` signal, and the
+        // The hamburger toggle drives Alpine's `navOpen` state, and the
         // link row / actions collapse via the shared `sgt-collapse--open` class.
         // Asset URLs carry a cache-busting ?v= token so an upgraded binary's
         // CSS/JS reaches browsers holding an immutable-cached previous build.
         assert!(page.contains("/assets/app.css?v="));
-        assert!(page.contains("/assets/datastar.js?v="));
+        assert!(page.contains("/assets/htmx.js?v="));
+        assert!(page.contains("/assets/alpine.js?v="));
+        assert!(page.contains("/assets/app.js?v="));
         // Icons declare an intrinsic 1em size, so a missing/stale stylesheet can
         // never blow them up to the SVG default 300x150.
         assert!(page.contains("<svg class=\"sgt-icon\" width=\"1em\" height=\"1em\""));
 
-        assert!(page.contains("data-signals=\"{navOpen: false}\""));
+        assert!(page.contains("x-data=\"{navOpen: false}\""));
         assert!(page.contains("class=\"sgt-hamburger\""));
-        assert!(page.contains("data-on:click=\"$navOpen = !$navOpen\""));
-        assert!(page.contains("data-class=\"{'sgt-collapse--open': $navOpen}\""));
+        assert!(page.contains("@click=\"navOpen = !navOpen\""));
+        assert!(page.contains(":class=\"{'sgt-collapse--open': navOpen}\""));
         // The hamburger renders icons from the embedded sprite via <use>.
         assert!(page.contains("/assets/icons.svg#menu"));
         assert!(page.contains("/assets/icons.svg#close"));
@@ -1953,8 +1970,7 @@ mod tests {
             );
         }
 
-        // The live-log "load older" button uses the colon event binding (the
-        // hyphen form registers no handler in this Datastar build).
+        // An empty log has a pagination wrapper but no unusable older button.
         let log = ts
             .client
             .get(ts.url("/log"))
@@ -1965,7 +1981,8 @@ mod tests {
             .text()
             .await
             .unwrap();
-        assert!(log.contains("data-on:click=\"@get('/log/older?before=' + $oldest)\""));
+        assert!(log.contains("id=\"log-older\""));
+        assert!(!log.contains("hx-get=\"/log/older?before=0\""));
 
         ts.shutdown().await;
     }

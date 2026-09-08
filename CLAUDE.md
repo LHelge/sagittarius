@@ -17,7 +17,7 @@ and web admin UI all included.
 Stack at a glance (see `SPEC.md` §2 for the full table and rationale): `tokio` +
 `tower`, a custom lazy DNS codec over `bytes`, `hickory` for upstream transport
 (DoT/DoH), SQLite via `sqlx`, `moka` cache, `arc-swap` for hot-path state,
-`axum` + `askama` + Datastar (SSE) + Pico CSS, `tracing` to stdout, `clap` CLI.
+`axum` + `askama` + htmx (SSE) + Alpine + Pico CSS, `tracing` to stdout, `clap` CLI.
 
 ## Task tracking — use bears
 

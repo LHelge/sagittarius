@@ -10,35 +10,32 @@
 <h2 class="sgt-section-title">{% call ui::icon("live") %}{% endcall %}Live (since startup)</h2>
 <section
   class="sgt-cards"
-  data-signals="{queries: {{ total }}, blocked: {{ blocked }}, cached: {{ cached }}, forwarded: {{ forwarded }}}"
-  data-init="@get('/events')"
+  hx-sse:connect="/events" hx-swap="none"
+  hx-config="sse.pauseOnBackground:false"
 >
   <article class="sgt-card">
     {% call ui::icon("queries") %}{% endcall %}
-    <span class="sgt-figure" data-text="$queries.toLocaleString()">{{ total }}</span>
+    <span id="live-queries" class="sgt-figure" data-count="{{ live.total }}">{{ live.queries }}</span>
     <span class="sgt-label">Queries</span>
   </article>
   <article class="sgt-card">
     {% call ui::icon("blocked") %}{% endcall %}
-    <span class="sgt-figure" data-text="$blocked.toLocaleString()">{{ blocked }}</span>
+    <span id="live-blocked" class="sgt-figure">{{ live.blocked }}</span>
     <span class="sgt-label">Blocked</span>
   </article>
   <article class="sgt-card">
     {% call ui::icon("ratio") %}{% endcall %}
-    <span
-      class="sgt-figure"
-      data-text="($queries ? ($blocked * 100 / $queries).toFixed(1) : '0.0') + '%'"
-    >0.0%</span>
+    <span id="live-ratio" class="sgt-figure">{{ live.ratio }}</span>
     <span class="sgt-label">Blocked ratio</span>
   </article>
   <article class="sgt-card">
     {% call ui::icon("cached") %}{% endcall %}
-    <span class="sgt-figure" data-text="$cached.toLocaleString()">{{ cached }}</span>
+    <span id="live-cached" class="sgt-figure">{{ live.cached }}</span>
     <span class="sgt-label">Cached</span>
   </article>
   <article class="sgt-card">
     {% call ui::icon("forwarded") %}{% endcall %}
-    <span class="sgt-figure" data-text="$forwarded.toLocaleString()">{{ forwarded }}</span>
+    <span id="live-forwarded" class="sgt-figure">{{ live.forwarded }}</span>
     <span class="sgt-label">Forwarded</span>
   </article>
   <article class="sgt-card">
@@ -49,7 +46,7 @@
 </section>
 
 <h2 class="sgt-section-title">{% call ui::icon("system") %}{% endcall %}System</h2>
-<section class="sgt-cards" data-signals="{uptime: {{ system.uptime_secs }}}" data-on-interval="$uptime = $uptime + 1">
+<section class="sgt-cards" x-data="systemClock({{ system.uptime_secs }})">
   <article class="sgt-card">
     {% call ui::icon("version") %}{% endcall %}
     <span class="sgt-figure">{{ system.version }}</span>
@@ -58,12 +55,12 @@
   <article class="sgt-card">
     {% call ui::icon("uptime") %}{% endcall %}
     <span class="sgt-figure"
-      data-text="Math.floor($uptime / 86400) + 'd ' + Math.floor($uptime % 86400 / 3600) + 'h ' + Math.floor($uptime % 3600 / 60) + 'm'">{{ system.uptime }}</span>
+      x-text="formatted">{{ system.uptime }}</span>
     <span class="sgt-label">Uptime</span>
   </article>
   <article class="sgt-card">
     {% call ui::icon("qps") %}{% endcall %}
-    <span class="sgt-figure" data-text="($uptime > 0 ? ($queries / $uptime).toFixed(1) : '0.0')">0.0</span>
+    <span id="live-qps" class="sgt-figure" x-text="queryRate">0.0</span>
     <span class="sgt-label">Queries/sec</span>
   </article>
   <article class="sgt-card">

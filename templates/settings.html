@@ -14,7 +14,7 @@
 <p class="sgt-notice sgt-notice--error" role="alert">{{ error }}</p>
 {% endif %}
 
-<form method="post" action="/settings">
+<form method="post" action="/settings" x-data="{blocking_mode: '{{ blocking_mode }}', upstream_selection_strategy: '{{ upstream_selection_strategy }}'}">
   <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />
 
   <fieldset>
@@ -41,14 +41,14 @@
   <fieldset>
     <legend><strong>Blocking</strong></legend>
     <label>Mode
-      <select name="blocking_mode" data-bind="blocking_mode">
+      <select name="blocking_mode" x-model="blocking_mode">
         <option value="nxdomain"{% if blocking_mode == "nxdomain" %} selected{% endif %}>NXDOMAIN</option>
         <option value="null-ip"{% if blocking_mode == "null-ip" %} selected{% endif %}>Null IP (0.0.0.0 / ::)</option>
         <option value="custom"{% if blocking_mode == "custom" %} selected{% endif %}>Custom IP</option>
       </select>
     </label>
     <!-- Custom IPs only apply in “Custom IP” mode, so reveal them only then. -->
-    <div data-show="$blocking_mode === 'custom'"{% if blocking_mode != "custom" %} style="display: none"{% endif %}>
+    <div x-show="blocking_mode === 'custom'"{% if blocking_mode != "custom" %} style="display: none"{% endif %}>
       <div class="grid">
         <label>Custom IPv4
           <input type="text" name="custom_block_ipv4" value="{{ custom_block_ipv4 }}" placeholder="(optional)" />
@@ -72,7 +72,7 @@
   <fieldset>
     <legend><strong>Upstreams</strong></legend>
     <label>Selection strategy
-      <select name="upstream_selection_strategy" data-bind="upstream_selection_strategy">
+      <select name="upstream_selection_strategy" x-model="upstream_selection_strategy">
         <option value="random"{% if upstream_selection_strategy == "random" %} selected{% endif %}>Random</option>
         <option value="latency-weighted"{% if upstream_selection_strategy == "latency-weighted" %} selected{% endif %}>Latency-weighted</option>
         <option value="parallel"{% if upstream_selection_strategy == "parallel" %} selected{% endif %}>Parallel (race fastest)</option>
@@ -80,7 +80,7 @@
       <small class="sgt-muted">How the resolver picks an upstream per query.</small>
     </label>
     <!-- Fan-out only applies to the parallel strategy, so reveal it only then. -->
-    <div data-show="$upstream_selection_strategy === 'parallel'"{% if upstream_selection_strategy != "parallel" %} style="display: none"{% endif %}>
+    <div x-show="upstream_selection_strategy === 'parallel'"{% if upstream_selection_strategy != "parallel" %} style="display: none"{% endif %}>
       <label>Parallel fan-out
         <input type="number" name="upstream_parallel_fanout" value="{{ upstream_parallel_fanout }}" min="1" required />
         <small class="sgt-muted">How many upstreams to query at once; the first answer wins.</small>

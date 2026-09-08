@@ -5,8 +5,8 @@
 //! stream to `/events`.  That one stream drives **both** the log and the
 //! dashboard:
 //!
-//! - [`PatchElements`] prepends each new query as a `<tr>` into `#log-body`,
-//! - [`PatchSignals`] pushes the cumulative runtime counters so the dashboard
+//! - HTML partials prepend each new query as a `<tr>` into `#log-body`,
+//! - HTML counter fragments push cumulative totals so the dashboard
 //!   cards update live (SPEC §9: a single stream updates log + dashboard).
 //!
 //! # History / live seam
@@ -19,8 +19,8 @@
 //! DB. **Scroll-back** is served by `GET /log/older?before=<id>`, which appends
 //! the next older page keyed on the smallest currently-visible row `id`.
 //!
-//! Filtering is client-side: each row carries a Datastar `data-show` expression
-//! evaluated against the `f_outcome` / `f_text` filter signals, so narrowing the
+//! Filtering is client-side: each row carries an Alpine `x-show` expression
+//! evaluated against the `f_outcome` / `f_text` component state, so narrowing the
 //! view is instant and needs no round-trip.  Each row also records its detailed
 //! [`Outcome`] category, which E8.7 uses to show only effective one-click
 //! actions.
@@ -32,13 +32,9 @@ use askama_web::WebTemplate;
 use axum::{
     extract::{Query, State},
     response::{
-        IntoResponse, Response, Sse,
+        Html, IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
-};
-use datastar::{
-    consts::ElementPatchMode,
-    prelude::{PatchElements, PatchSignals},
 };
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
@@ -50,7 +46,8 @@ use crate::{
     web::{
         AppState, Chrome,
         auth::CurrentUser,
-        render::{DomainDisplay, WebError, datastar_response},
+        dashboard::LiveCounters,
+        render::{DomainDisplay, WebError},
     },
 };
 
@@ -87,10 +84,8 @@ impl AppState {
 
     /// `GET /log/older?before=<id>` — append the next older page of history.
     ///
-    /// Returns a one-shot Datastar SSE response that appends the older rows into
-    /// `#log-body` and updates the `oldest` cursor signal so repeated clicks
-    /// paginate further back. An empty result just sets `oldest` to 0, which
-    /// hides the "Load older" control.
+    /// Returns an HTML partial appending rows into `#log-body`, followed by
+    /// the replacement pagination control. An empty result removes the button.
     pub async fn query_log_older(
         _user: CurrentUser,
         State(state): State<AppState>,
@@ -115,20 +110,14 @@ impl AppState {
             }
         }
 
-        // Append the older rows (if any), then update the scroll-back cursor.
-        let mut events = Vec::new();
-        if !html.is_empty() {
-            events.push(
-                PatchElements::new(html)
-                    .selector("#log-body")
-                    .mode(ElementPatchMode::Append)
-                    .write_as_axum_sse_event(),
-            );
-        }
-        events.push(
-            PatchSignals::new(format!(r#"{{"oldest":{new_oldest}}}"#)).write_as_axum_sse_event(),
-        );
-        datastar_response(events)
+        let control = match (LogOlderTemplate { oldest: new_oldest }).render() {
+            Ok(control) => control,
+            Err(e) => return WebError::internal(e.to_string()).into_response(),
+        };
+        Html(format!(
+            r##"<hx-partial hx-target="#log-body" hx-swap="beforeend">{html}</hx-partial>{control}"##
+        ))
+        .into_response()
     }
 
     /// `GET /events` — the shared SSE stream feeding the log and dashboard.
@@ -164,25 +153,23 @@ impl AppState {
     }
 }
 
-/// Build the `PatchElements` event that prepends one query row.
+/// Build an unnamed SSE event containing a row-targeted HTML partial.
 fn row_event(ev: &QueryEvent, client: String, read_only: bool) -> Event {
     let html = LogRowView::from_event(ev, client, read_only)
         .render()
         .unwrap_or_default();
-    PatchElements::new(html)
-        .selector("#log-body")
-        .mode(ElementPatchMode::Prepend)
-        .write_as_axum_sse_event()
+    Event::default().data(format!(
+        r##"<hx-partial hx-target="#log-body" hx-swap="afterbegin">{html}</hx-partial>"##
+    ))
 }
 
-/// Build the `PatchSignals` event carrying the cumulative counters.
+/// Build an unnamed SSE event carrying server-formatted counter fragments.
 fn counters_event(stats: &Stats) -> Event {
-    let s = stats.snapshot(0);
-    let json = format!(
-        r#"{{"queries":{},"blocked":{},"cached":{},"forwarded":{}}}"#,
-        s.total, s.blocked, s.cached, s.forwarded
-    );
-    PatchSignals::new(json).write_as_axum_sse_event()
+    Event::default().data(
+        LiveCounters::from(&stats.snapshot(0))
+            .render()
+            .unwrap_or_default(),
+    )
 }
 
 // ── Templates ───────────────────────────────────────────────────────────────
@@ -262,7 +249,7 @@ impl LogRowView {
         latency_ms: u64,
         read_only: bool,
     ) -> Self {
-        let search = format!("{} {}", qname.to_lowercase(), client);
+        let search = format!("{qname} {client}").to_lowercase();
         // A read-only secondary offers no one-click list actions — those routes
         // are refused by the read-only guard, so hide the buttons entirely.
         let action = if read_only { None } else { action };
@@ -333,6 +320,12 @@ struct LogPageTemplate {
     oldest: i64,
 }
 
+#[derive(Template)]
+#[template(path = "log_older.html")]
+struct LogOlderTemplate {
+    oldest: i64,
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -349,6 +342,29 @@ mod tests {
     }
 
     #[test]
+    fn row_filter_keeps_client_text_out_of_javascript() {
+        let html = LogRowView::from_event(
+            &event("mixed.test", Outcome::Forwarded),
+            "O'Reilly <Device> (192.168.1.5)".to_owned(),
+            false,
+        )
+        .render()
+        .unwrap();
+        assert!(
+            html.contains("data-search=\"mixed.test o&#39;reilly &#60;device&#62; (192.168.1.5)\"")
+        );
+        let expression = html
+            .split("x-show=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        assert!(expression.contains("$el.dataset.search"));
+        assert!(!expression.contains("reilly"));
+    }
+
+    #[test]
     fn row_renders_outcome_filter_and_search() {
         let html = LogRowView::from_event(
             &event("ads.example.com", Outcome::BlockedByBlocklist),
@@ -362,9 +378,9 @@ mod tests {
         assert!(!html.contains("ads.example.com."));
         assert!(html.contains("192.168.1.5"));
         assert!(html.contains("sgt-badge--blocked"));
-        // Carries the filter category and the data-show expression.
+        // Carries the filter category and the Alpine visibility expression.
         assert!(html.contains("blocked"));
-        assert!(html.contains("data-show"));
+        assert!(html.contains("x-show"));
         assert!(html.contains("7 ms"));
         // A blocked row offers the one-click Unblock action.
         assert!(html.contains("Unblock"));
@@ -427,7 +443,7 @@ mod tests {
         let stats = Stats::new();
         stats.record(&event("a.test", Outcome::Forwarded));
         let ev = counters_event(&stats);
-        // The datastar signal payload is carried in the event data lines.
+        // Formatted counter HTML is carried in the event data lines.
         let rendered = format!("{ev:?}");
         assert!(rendered.contains("queries"));
     }
