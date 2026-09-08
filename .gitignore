@@ -1,4 +1,5 @@
 /target
+/tests/browser/node_modules
 
 # cargo-fuzz build artifacts and runtime output (fuzz/ itself is committed)
 /fuzz/target

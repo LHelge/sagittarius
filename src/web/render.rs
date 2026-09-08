@@ -7,11 +7,9 @@
 //! so implementation detail never leaks to the browser; client errors show a
 //! short, HTML-escaped message.
 
-use std::convert::Infallible;
-
 use axum::{
     http::StatusCode,
-    response::{Html, IntoResponse, Response, Sse, sse::Event},
+    response::{Html, IntoResponse, Response},
 };
 use tracing::error;
 
@@ -133,21 +131,6 @@ impl DomainDisplay for str {
             _ => self,
         }
     }
-}
-
-/// Wrap one or more Datastar patch events into a one-shot SSE [`Response`].
-///
-/// Datastar's `@get`/`@post` actions expect a `text/event-stream` reply that
-/// carries the patch events and then closes. This centralizes that wrapping for
-/// the short, fire-once responses (toasts, scroll-back appends); the long-lived
-/// streams (e.g. `/events`) build their own [`Sse`] directly.
-pub(crate) fn datastar_response(events: Vec<Event>) -> Response {
-    Sse::new(async_stream::stream! {
-        for event in events {
-            yield Ok::<Event, Infallible>(event);
-        }
-    })
-    .into_response()
 }
 
 /// Minimal HTML-escaping for the few interpolated strings on the error page

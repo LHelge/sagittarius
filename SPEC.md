@@ -66,7 +66,7 @@ interface all included.
 | HTTP server | [`axum`](https://docs.rs/axum) | Admin API + UI, on tokio/tower |
 | Password hashing | [`argon2`](https://docs.rs/argon2) | Argon2id admin password hashing (§9, §11) |
 | HTML templating | [`askama`](https://docs.rs/askama) + [`askama_web`](https://docs.rs/askama_web) | Compile-time checked templates; `askama_web` for the axum response integration |
-| Frontend interactivity | [Datastar](https://data-star.dev) (over SSE) | Fragments + reactive signals + SSE in one ~14 KB lib; no Alpine, no Node build step |
+| Frontend interactivity | [htmx 4](https://four.htmx.org) + [Alpine](https://alpinejs.dev) | htmx handles requests and streamed HTML; Alpine handles local UI state; no Node build step |
 | Styling | [Pico CSS](https://picocss.com) + thin custom layer | Classless/semantic-first; one CSS file, dark mode, no build step |
 | Asset delivery | `include_str!` / `include_bytes!` | All JS, CSS, images, favicon, and Lucide icon sprite (`icondata_lu`) vendored and compiled into the binary |
 
@@ -138,7 +138,7 @@ DoT/DoH); it is not used to deserialize received messages on the hot path.
         ▼                    │  │ local records  │  ┌──────────────────┐     │
    ┌──────────────┐          │  │ moka cache     │◄─┤ SQLite (one file)│     │
    │ axum+askama  │◄────────►│  │ live-log buf   │  │ config, creds,   │     │
-   │ +Datastar/SSE│          │  │ runtime stats  │  │ lists, records,  │     │
+   │ +htmx/SSE    │          │  │ runtime stats  │  │ lists, records,  │     │
    └──────────────┘          │  └────────────────┘  │ blocklist cache  │     │
                              │                       └──────────────────┘     │
                              └──────────────────────────────────────────────┘
@@ -575,13 +575,19 @@ null-IP / custom, per the configured block mode) and authoritative local
 
 - **Server.** `axum` on the shared tokio runtime, fronted by `tower` middleware.
 - **Rendering.** `askama` compile-time templates render the HTML and fragments;
-  **Datastar** drives interactivity (fragment merges + reactive signals) with no
-  JS build toolchain. The live query log streams over **SSE**, and a single SSE
-  stream can update the log *and* the dashboard counters together (merge-signals)
-  — which is why Datastar suits this UI. Styling is **Pico CSS** (classless, so
+  **htmx 4** handles requests and HTML swaps; **Alpine** manages local filters,
+  toggles, conditional fields, and lifecycle-managed timers. The live query log
+  streams unnamed HTML events through the **hx-sse** extension; a single SSE
+  stream can prepend log rows and update server-formatted dashboard counters.
+  **hx-alpine-compat** coordinates Alpine initialization with swaps. Filter state
+  lives on a stable ancestor of the log table, surviving prepends and scroll-back.
+  Pagination and one-click actions return ordinary HTML; htmx sends the CSRF
+  token in a request header. Persistent streams disable background pausing;
+  reconnection resumes the live tail without replaying missed events (as before).
+  Styling is **Pico CSS** (classless, so
   the semantic HTML rendered by Askama is styled automatically) plus a thin
   custom stylesheet for bespoke widgets.
-- **Asset delivery.** All frontend assets — the Datastar JS, Pico CSS, the custom
+- **Asset delivery.** All frontend assets — htmx, its extensions, Alpine, Pico CSS, the custom
   stylesheet, images, and favicon — are **vendored into the repository and
   compiled into the binary** via `include_str!` / `include_bytes!`. No external
   CDN fetches at runtime and no Node build step. **Icons** are a curated handful

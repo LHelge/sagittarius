@@ -9,11 +9,16 @@
     <link rel="icon" type="image/png" href="/assets/icon.png?v={{ chrome.asset_version }}" />
     <link rel="stylesheet" href="/assets/pico.pumpkin.min.css?v={{ chrome.asset_version }}" />
     <link rel="stylesheet" href="/assets/app.css?v={{ chrome.asset_version }}" />
-    <script type="module" src="/assets/datastar.js?v={{ chrome.asset_version }}"></script>
+    {% if chrome.authenticated %}<meta name="csrf-token" content="{{ chrome.csrf_token }}" />{% endif %}
+    <script defer src="/assets/htmx.js?v={{ chrome.asset_version }}"></script>
+    <script defer src="/assets/hx-sse.js?v={{ chrome.asset_version }}"></script>
+    <script defer src="/assets/hx-alpine-compat.js?v={{ chrome.asset_version }}"></script>
+    <script defer src="/assets/app.js?v={{ chrome.asset_version }}"></script>
+    <script defer src="/assets/alpine.js?v={{ chrome.asset_version }}"></script>
   </head>
-  <body{% if chrome.authenticated %} data-signals:csrf="'{{ chrome.csrf_token }}'"{% endif %}>
+  <body>
     {% if chrome.show_nav %}
-    <header class="sgt-topbar" data-signals="{navOpen: false}">
+    <header class="sgt-topbar" x-data="{navOpen: false}">
       <nav class="container-fluid">
         <ul>
           <li>
@@ -26,14 +31,14 @@
         <ul class="sgt-nav-toggle">
           <li>
             <button type="button" class="sgt-hamburger" aria-label="Toggle navigation"
-                    data-attr="{'aria-expanded': $navOpen}"
-                    data-on:click="$navOpen = !$navOpen">
-              <span data-show="!$navOpen">{% call ui::icon("menu") %}{% endcall %}</span>
-              <span data-show="$navOpen">{% call ui::icon("close") %}{% endcall %}</span>
+                    aria-expanded="false" :aria-expanded="navOpen"
+                    @click="navOpen = !navOpen">
+              <span x-show="!navOpen">{% call ui::icon("menu") %}{% endcall %}</span>
+              <span x-show="navOpen" x-cloak>{% call ui::icon("close") %}{% endcall %}</span>
             </button>
           </li>
         </ul>
-        <ul class="sgt-nav" data-class="{'sgt-collapse--open': $navOpen}">
+        <ul class="sgt-nav" :class="{'sgt-collapse--open': navOpen}">
           <li><a href="/"{% if chrome.active == "dashboard" %} aria-current="page"{% endif %}>{% call ui::icon("dashboard") %}{% endcall %}Dashboard</a></li>
           <li><a href="/log"{% if chrome.active == "log" %} aria-current="page"{% endif %}>{% call ui::icon("log") %}{% endcall %}Query log</a></li>
           <li><a href="/blacklist"{% if chrome.active == "blacklist" %} aria-current="page"{% endif %}>{% call ui::icon("blacklist") %}{% endcall %}Blacklist</a></li>
@@ -43,7 +48,7 @@
           <li><a href="/upstreams"{% if chrome.active == "upstreams" %} aria-current="page"{% endif %}>{% call ui::icon("upstreams") %}{% endcall %}Upstreams</a></li>
           <li><a href="/forwarding"{% if chrome.active == "forwarding" %} aria-current="page"{% endif %}>{% call ui::icon("forwarding") %}{% endcall %}Forwarding</a></li>
         </ul>
-        <ul class="sgt-nav-actions" data-class="{'sgt-collapse--open': $navOpen}">
+        <ul class="sgt-nav-actions" :class="{'sgt-collapse--open': navOpen}">
           {% if chrome.authenticated %}
           {% if !chrome.read_only %}
           <li>
@@ -101,11 +106,10 @@
     {% endif %}
     {% if let Some(remaining) = chrome.pause_remaining %}
     <div class="sgt-paused" role="status"
-         data-signals="{pauseLeft: {{ remaining }}}"
-         data-on-interval="$pauseLeft = $pauseLeft - 1; $pauseLeft <= 0 && window.location.reload()">
+         x-data="pauseTimer({{ remaining }})">
       <span>
         ⏸ Blocking paused — resumes in
-        <strong data-text="$pauseLeft >= 3600 ? Math.floor($pauseLeft / 3600) + ':' + String(Math.floor($pauseLeft % 3600 / 60)).padStart(2, '0') + ':' + String($pauseLeft % 60).padStart(2, '0') : Math.floor($pauseLeft / 60) + ':' + String(Math.max($pauseLeft % 60, 0)).padStart(2, '0')">{{ remaining }}</strong>
+        <strong x-text="formatted">{{ remaining }}</strong>
       </span>
       <form method="post" action="/blocking/resume" class="sgt-inline-form">
         <input type="hidden" name="csrf_token" value="{{ chrome.csrf_token }}" />

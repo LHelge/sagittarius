@@ -7,12 +7,11 @@
   <p class="sgt-muted">Resolved queries, newest first. History is persisted; the newest rows stream live.</p>
 </hgroup>
 
-<div
-  class="sgt-actions"
-  data-signals="{f_outcome: '', f_text: '', queries: 0, blocked: 0, cached: 0, forwarded: 0, oldest: {{ oldest }}}"
-  data-init="@get('/events')"
->
-  <select data-bind="f_outcome" aria-label="Filter by outcome">
+<div x-data="{f_outcome: '', f_text: ''}"
+     hx-sse:connect="/events" hx-swap="none"
+     hx-config="sse.pauseOnBackground:false">
+<div class="sgt-actions">
+  <select x-model="f_outcome" aria-label="Filter by outcome">
     <option value="">All outcomes</option>
     <option value="blocked">Blocked</option>
     <option value="forwarded">Forwarded</option>
@@ -20,7 +19,7 @@
     <option value="local">Local</option>
     <option value="other">Other</option>
   </select>
-  <input type="search" data-bind="f_text" placeholder="Filter by domain or client" aria-label="Filter by domain or client" />
+  <input type="search" x-model="f_text" placeholder="Filter by domain or client" aria-label="Filter by domain or client" />
 </div>
 
 <div class="sgt-table-wrap">
@@ -41,9 +40,6 @@
   </table>
 </div>
 
-<div class="sgt-actions">
-  <button class="secondary" data-show="$oldest > 0" data-on:click="@get('/log/older?before=' + $oldest)">
-    {% call ui::icon("older") %}{% endcall %}Load older
-  </button>
+{% include "log_older.html" %}
 </div>
 {% endblock %}

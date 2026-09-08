@@ -202,7 +202,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use bytes::Bytes;
-    use tower::ServiceExt as _;
 
     use super::*;
     use crate::codec::{

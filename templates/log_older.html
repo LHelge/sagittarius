@@ -1,0 +1,9 @@
+{%- import "_macros.html" as ui -%}
+<div id="log-older" class="sgt-actions">
+  {% if oldest > 0 %}
+  <button class="secondary" hx-get="/log/older?before={{ oldest }}"
+          hx-target="#log-older" hx-swap="outerHTML" hx-disable="this">
+    {% call ui::icon("older") %}{% endcall %}Load older
+  </button>
+  {% endif %}
+</div>

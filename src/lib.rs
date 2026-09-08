@@ -18,7 +18,7 @@
 //! | [`storage`] | SQLite persistence (config, lists, credentials) |
 //! | [`sync`] | Secondary/fallback config mirroring (snapshot DTOs + syncer) |
 //! | [`telemetry`] | Logging initialisation (tracing subscriber setup) |
-//! | [`web`] | axum-based admin HTTP server with askama/Datastar UI |
+//! | [`web`] | axum-based admin HTTP server with Askama, htmx, and Alpine UI |
 
 pub mod app;
 pub mod blocklist;

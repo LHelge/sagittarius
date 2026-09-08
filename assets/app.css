@@ -115,7 +115,7 @@ summary:has(.sgt-icon) {
 }
 
 /* Hamburger toggle. Hidden on desktop; revealed by the mobile breakpoint at
- * the foot of this file. Datastar flips the `navOpen` signal on click and we
+ * the foot of this file. Alpine flips the `navOpen` state on click and we
  * toggle a class (not inline display) so the desktop layout stays pure CSS. */
 .sgt-nav-toggle {
   display: none;
@@ -491,4 +491,9 @@ summary:has(.sgt-icon) {
     padding: 0.5rem 0.75rem;
     font-size: 0.85rem;
   }
+}
+
+/* Prevent uninitialized Alpine controls and filtered rows from flashing. */
+[x-cloak] {
+  display: none !important;
 }
