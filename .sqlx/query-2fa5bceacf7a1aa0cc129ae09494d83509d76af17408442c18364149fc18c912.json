@@ -6,67 +6,145 @@
       {
         "name": "cache_min_ttl",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "cache_min_ttl"
+          }
+        }
       },
       {
         "name": "cache_max_ttl",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "cache_max_ttl"
+          }
+        }
       },
       {
         "name": "cache_negative_ttl_cap",
         "ordinal": 2,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "cache_negative_ttl_cap"
+          }
+        }
       },
       {
         "name": "cache_capacity",
         "ordinal": 3,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "cache_capacity"
+          }
+        }
       },
       {
         "name": "blocking_mode",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "blocking_mode"
+          }
+        }
       },
       {
         "name": "custom_block_ipv4",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "custom_block_ipv4"
+          }
+        }
       },
       {
         "name": "custom_block_ipv6",
         "ordinal": 6,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "custom_block_ipv6"
+          }
+        }
       },
       {
         "name": "blocklist_refresh_interval",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "blocklist_refresh_interval"
+          }
+        }
       },
       {
         "name": "ui_theme",
         "ordinal": 8,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "ui_theme"
+          }
+        }
       },
       {
         "name": "query_log_enabled",
         "ordinal": 9,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "query_log_enabled"
+          }
+        }
       },
       {
         "name": "query_log_retention_days",
         "ordinal": 10,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "query_log_retention_days"
+          }
+        }
       },
       {
         "name": "upstream_selection_strategy",
         "ordinal": 11,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "upstream_selection_strategy"
+          }
+        }
       },
       {
         "name": "upstream_parallel_fanout",
         "ordinal": 12,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "upstream_parallel_fanout"
+          }
+        }
       }
     ],
     "parameters": {

@@ -6,34 +6,64 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "local_records",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "name",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "local_records",
+            "name": "name"
+          }
+        }
       },
       {
         "name": "record_type",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "local_records",
+            "name": "record_type"
+          }
+        }
       },
       {
         "name": "value",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "local_records",
+            "name": "value"
+          }
+        }
       },
       {
         "name": "ttl!",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "local_records",
+            "name": "ttl"
+          }
+        }
       }
     ],
     "parameters": {
       "Right": 0
     },
     "nullable": [
-      true,
+      false,
       false,
       false,
       false,

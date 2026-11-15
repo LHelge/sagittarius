@@ -6,12 +6,19 @@
       {
         "name": "qname",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "qname"
+          }
+        }
       },
       {
         "name": "n!: i64",
         "ordinal": 1,
-        "type_info": "Null"
+        "type_info": "Integer",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -19,7 +26,7 @@
     },
     "nullable": [
       false,
-      null
+      false
     ]
   },
   "hash": "dd144cf1d29ac08b4de66995e17fc16fff7ffc1db3d7be0a8534841b322df2a3"

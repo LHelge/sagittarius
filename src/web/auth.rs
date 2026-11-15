@@ -38,7 +38,7 @@ use std::sync::OnceLock;
 
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use axum::{
     extract::{FromRequestParts, State},
@@ -93,12 +93,9 @@ pub struct Password(String);
 impl Password {
     /// Hash a plaintext password into a new [`Password`] (random per-hash salt).
     pub fn hash(plain: &str) -> WebResult<Self> {
-        let mut salt_bytes = [0u8; 16];
-        rand::rng().fill_bytes(&mut salt_bytes);
-        let salt = SaltString::encode_b64(&salt_bytes)
-            .map_err(|e| WebError::internal(format!("salt encode: {e}")))?;
-        let phc = Self::hasher()
-            .hash_password(plain.as_bytes(), &salt)
+        // `hash_password` draws a fresh 16-byte salt from the OS RNG.
+        let phc: PasswordHash = Self::hasher()
+            .hash_password(plain.as_bytes())
             .map_err(|e| WebError::internal(format!("password hash: {e}")))?;
         Ok(Self(phc.to_string()))
     }
