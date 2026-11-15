@@ -1122,4 +1122,112 @@ mod tests {
             "still exactly 2 upstream rows after re-seeding"
         );
     }
+
+    // ── blocklists.format 'adblock' migration ─────────────────────────────────
+
+    /// The table rebuild that widens the `format` CHECK must round-trip:
+    /// down narrows the constraint (dropping only `adblock` sources), up
+    /// widens it again, and both keep the surviving rows, their cached
+    /// content, and the AUTOINCREMENT high-water mark.
+    #[tokio::test]
+    async fn blocklist_adblock_format_migration_round_trips() {
+        let (_dir, db) = crate::test_support::temp_db().await;
+        let pool = db.pool();
+
+        sqlx::raw_sql(
+            "INSERT INTO blocklists (id, url, format, entry_count, skipped_count, etag)
+                 VALUES (1, 'https://a.example/hosts', 'hosts', 7, 2, 'tag-a'),
+                        (2, 'https://b.example/adblock', 'adblock', 3, 1, NULL),
+                        (3, 'https://c.example/gone', 'domain-list', 0, 0, NULL);
+             INSERT INTO blocklist_cache (blocklist_id, content, fetched_at)
+                 VALUES (1, x'aa', 11), (2, x'bb', 22);
+             DELETE FROM blocklists WHERE id = 3;",
+        )
+        .execute(pool)
+        .await
+        .expect("seed blocklists");
+
+        let insert = "INSERT INTO blocklists (url, format) VALUES (?, ?) RETURNING id";
+
+        // ── down: back to ('hosts', 'domain-list') ──
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261115231300_blocklist_adblock_format.down.sql"
+        ))
+        .execute(pool)
+        .await
+        .expect("apply down migration");
+
+        let urls: Vec<String> = sqlx::query_scalar("SELECT url FROM blocklists ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .expect("list after down");
+        assert_eq!(urls, ["https://a.example/hosts"], "adblock source dropped");
+
+        let cache: Vec<(i64, Vec<u8>, i64)> =
+            sqlx::query_as("SELECT blocklist_id, content, fetched_at FROM blocklist_cache")
+                .fetch_all(pool)
+                .await
+                .expect("cache after down");
+        assert_eq!(cache, [(1, vec![0xaa], 11)], "surviving cache preserved");
+
+        sqlx::query(insert)
+            .bind("https://d.example/adblock")
+            .bind("adblock")
+            .fetch_one(pool)
+            .await
+            .expect_err("narrowed CHECK must reject adblock");
+
+        // ── up: widen to include 'adblock' ──
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20261115231300_blocklist_adblock_format.up.sql"
+        ))
+        .execute(pool)
+        .await
+        .expect("apply up migration");
+
+        let row: (i64, String, String, i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT id, url, format, entry_count, skipped_count, etag FROM blocklists",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("row after up");
+        assert_eq!(
+            row,
+            (
+                1,
+                "https://a.example/hosts".to_owned(),
+                "hosts".to_owned(),
+                7,
+                2,
+                Some("tag-a".to_owned())
+            )
+        );
+
+        let cache: Vec<(i64, Vec<u8>, i64)> =
+            sqlx::query_as("SELECT blocklist_id, content, fetched_at FROM blocklist_cache")
+                .fetch_all(pool)
+                .await
+                .expect("cache after up");
+        assert_eq!(cache, [(1, vec![0xaa], 11)], "cache preserved across up");
+
+        // 'adblock' is accepted, and ids of removed sources are not reused.
+        let id: i64 = sqlx::query_scalar(insert)
+            .bind("https://d.example/adblock")
+            .bind("adblock")
+            .fetch_one(pool)
+            .await
+            .expect("widened CHECK must accept adblock");
+        assert_eq!(id, 4, "AUTOINCREMENT high-water mark carried over");
+
+        // The cache FK still cascades from the rebuilt parent.
+        sqlx::query("DELETE FROM blocklists WHERE id = 1")
+            .execute(pool)
+            .await
+            .expect("delete source");
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blocklist_cache")
+            .fetch_one(pool)
+            .await
+            .expect("count cache");
+        assert_eq!(remaining, 0, "cache rows cascade-delete with their source");
+    }
 }

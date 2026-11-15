@@ -171,7 +171,13 @@ impl AppState {
             })
             .await
             .map_err(|e| match e {
-                crate::storage::Error::Sqlx(_) => {
+                // Only a UNIQUE violation on `url` is a user error; any other
+                // database failure must surface as such, not as a duplicate.
+                crate::storage::Error::Sqlx(ref sqlx)
+                    if sqlx
+                        .as_database_error()
+                        .is_some_and(|db| db.is_unique_violation()) =>
+                {
                     WebError::bad_request("That URL is already subscribed.")
                 }
                 other => WebError::from(other),
@@ -361,7 +367,7 @@ mod tests {
             Err(WebError::BadRequest(_))
         ));
         assert!(matches!(
-            st.add_blocklist("https://x/y", "adblock").await,
+            st.add_blocklist("https://x/y", "rpz").await,
             Err(WebError::BadRequest(_))
         ));
     }
@@ -489,6 +495,20 @@ mod tests {
         assert!(html.contains("https://a.example/hosts"));
         assert!(html.contains("—"), "zero-total share renders as em-dash");
         assert!(!html.contains("removed list"));
+    }
+
+    #[tokio::test]
+    async fn every_offered_format_can_be_subscribed() {
+        // Guards the `blocklists.format` CHECK constraint against drifting
+        // from `BlocklistFormat` (it once rejected `adblock`).
+        let (_d, st) = state().await;
+        for format in ["hosts", "domain-list", "adblock"] {
+            st.add_blocklist(&format!("https://{format}.example/list"), format)
+                .await
+                .unwrap_or_else(|e| panic!("add {format}: {e:?}"));
+        }
+        let sources = st.db.blocklists().list().await.expect("list");
+        assert_eq!(sources.len(), 3);
     }
 
     #[tokio::test]
