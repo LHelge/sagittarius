@@ -6,47 +6,101 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "url",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "url"
+          }
+        }
       },
       {
         "name": "format",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "format"
+          }
+        }
       },
       {
         "name": "enabled!: bool",
         "ordinal": 3,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "enabled"
+          }
+        }
       },
       {
         "name": "entry_count!",
         "ordinal": 4,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "entry_count"
+          }
+        }
       },
       {
         "name": "skipped_count!",
         "ordinal": 5,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "skipped_count"
+          }
+        }
       },
       {
         "name": "last_updated",
         "ordinal": 6,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "last_updated"
+          }
+        }
       },
       {
         "name": "etag",
         "ordinal": 7,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "etag"
+          }
+        }
       },
       {
         "name": "last_modified",
         "ordinal": 8,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blocklists",
+            "name": "last_modified"
+          }
+        }
       }
     ],
     "parameters": {

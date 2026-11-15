@@ -6,12 +6,24 @@
       {
         "name": "content",
         "ordinal": 0,
-        "type_info": "Blob"
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "blocklist_cache",
+            "name": "content"
+          }
+        }
       },
       {
         "name": "fetched_at!",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blocklist_cache",
+            "name": "fetched_at"
+          }
+        }
       }
     ],
     "parameters": {

@@ -6,12 +6,19 @@
       {
         "name": "blocklist_id",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "blocklist_id"
+          }
+        }
       },
       {
         "name": "n!: i64",
         "ordinal": 1,
-        "type_info": "Null"
+        "type_info": "Integer",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -19,7 +26,7 @@
     },
     "nullable": [
       true,
-      null
+      false
     ]
   },
   "hash": "1f6cdcda5d35948f4e3701b9c4001c6c5685edb0f975f0fcd62afaea60f16890"

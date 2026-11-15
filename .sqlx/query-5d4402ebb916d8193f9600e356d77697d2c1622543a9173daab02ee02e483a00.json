@@ -6,52 +6,112 @@
       {
         "name": "id!",
         "ordinal": 0,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "id"
+          }
+        }
       },
       {
         "name": "ts!",
         "ordinal": 1,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "ts"
+          }
+        }
       },
       {
         "name": "client",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "client"
+          }
+        }
       },
       {
         "name": "qname",
         "ordinal": 3,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "qname"
+          }
+        }
       },
       {
         "name": "qtype",
         "ordinal": 4,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "qtype"
+          }
+        }
       },
       {
         "name": "outcome",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "outcome"
+          }
+        }
       },
       {
         "name": "rcode",
         "ordinal": 6,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "rcode"
+          }
+        }
       },
       {
         "name": "upstream",
         "ordinal": 7,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "upstream"
+          }
+        }
       },
       {
         "name": "latency_ms!",
         "ordinal": 8,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "latency_ms"
+          }
+        }
       },
       {
         "name": "blocklist_id",
         "ordinal": 9,
-        "type_info": "Integer"
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "query_log",
+            "name": "blocklist_id"
+          }
+        }
       }
     ],
     "parameters": {
